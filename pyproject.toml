@@ -1,0 +1,19 @@
+[project]
+name = "ComfyUI-UtilsCollection"
+description = "Utilities making it easy to set up inference parameters."
+version = "0.0.1"
+license = { file = "LICENSE" }
+classifiers = [
+    "Operating System :: OS Independent",
+    "Development Status :: 5 - Production/Stable",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Repository = "https://github.com/silveroxides/ComfyUI-UtilsCollection"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "silveroxides"
+DisplayName = "ComfyUI-UtilsCollection"
+Icon = "https://github.com/silveroxides/ComfyUI-UtilsCollection/raw/refs/heads/main/assets/tools-icon.png"
