@@ -1,20 +1,11 @@
-import os
-import json
-
 from comfy_api.latest import ComfyExtension, io
-from .presets_collection import system_instructions_vlm, system_query_additional_vlm, additional_instructions_vlm
+from .vlm_presets import system_instructions_vlm, system_query_additional_vlm, additional_instructions_vlm
+
 
 class UC_VLMSysInstrPresets(io.ComfyNode):
     @classmethod
     def get_presets(cls):
-        presets = {}
-        json_path = os.path.join(os.path.dirname(__file__), "system_instructions_vlm.json")
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                presets = json.load(f)
-        except Exception as e:
-            print(f"Error loading VLMSysInstrPresets: {e}")
-        return presets
+        return system_instructions_vlm
 
     @classmethod
     def define_schema(cls):
@@ -48,14 +39,8 @@ class UC_VLMSysQueryAddPresets(io.ComfyNode):
     @classmethod
     def get_presets(cls):
         base_names = set()
-        json_path = os.path.join(os.path.dirname(__file__), "system_query_additional_vlm.json")
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for key in data:
-                    base_names.add(key.removesuffix("_prefix").removesuffix("_suffix"))
-        except Exception as e:
-            print(f"Error loading VLMSysQueryAddPresets: {e}")
+        for key in system_query_additional_vlm:
+            base_names.add(key.removesuffix("_prefix").removesuffix("_suffix"))
         return sorted(list(base_names))
 
     @classmethod
@@ -85,46 +70,19 @@ class UC_VLMSysQueryAddPresets(io.ComfyNode):
 
     @classmethod
     def execute(cls, preset, text) -> io.NodeOutput:
-        json_path = os.path.join(os.path.dirname(__file__), "system_query_additional_vlm.json")
-        prefix = ""
-        suffix = ""
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                prefix = data.get(f"{preset}_prefix", "")
-                suffix = data.get(f"{preset}_suffix", "")
-        except Exception as e:
-            print(f"Error executing VLMSysQueryAddPresets: {e}")
-
+        prefix = system_query_additional_vlm.get(f"{preset}_prefix", "")
+        suffix = system_query_additional_vlm.get(f"{preset}_suffix", "")
         return io.NodeOutput(f"{prefix}{text}{suffix}")
 
 
 class UC_VLMSysInstrAdvPresets(io.ComfyNode):
     @classmethod
     def get_presets(cls):
-        presets = {}
-        json_path = os.path.join(
-            os.path.dirname(__file__), "system_instructions_vlm.json"
-        )
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                presets = json.load(f)
-        except Exception as e:
-            print(f"Error loading VLMSysInstrPresets: {e}")
-        return presets
+        return system_instructions_vlm
 
     @classmethod
     def get_additional_instructions(cls):
-        instructions = {}
-        json_path = os.path.join(
-            os.path.dirname(__file__), "additional_instructions_vlm.json"
-        )
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                instructions = json.load(f)
-        except Exception as e:
-            print(f"Error loading additional_instructions_vlm: {e}")
-        return instructions
+        return additional_instructions_vlm
 
     @classmethod
     def define_schema(cls):
