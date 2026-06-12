@@ -7,10 +7,8 @@ from .vlm_nodes import *
 from .parameter_nodes import *
 from .utils_nodes import *
 
-from comfy_api.latest import ComfyExtension, io, ComfyAPI
-
-# Initialize ComfyAPI instance
-api = ComfyAPI()
+from comfy_api.latest import ComfyExtension, io
+from .node_replacements import register_replacements
 
 class UtilsCollectionExtension(ComfyExtension):
     @override
@@ -69,35 +67,7 @@ class UtilsCollectionExtension(ComfyExtension):
     @override
     async def on_load(self) -> None:
         """Called by ComfyUI backend on startup to initialize resources and register API extensions."""
-        node_classes = await self.get_node_list()
-        custom_mappings = {
-            "UC_LoadImagePath": "SU_LoadImagePath",
-            "UC_LoadImageDirectory": "SU_LoadImageDirectory",
-            "UC_SwitchInverseNode": "ComfySwitchInverseNode",
-            "UC_SoftSwitchInverseNode": "ComfySoftSwitchInverseNode",
-            "UC_RandInt": "PrimitiveRandomInt",
-            "UC_StaticInt": "PrimitiveStaticInt",
-            "UC_RandIntRange": "PrimitiveRandomIntRange",
-        }
-        for node_class in node_classes:
-            try:
-                schema = node_class.define_schema()
-                new_node_id = schema.node_id
-
-                # Check if there is a custom mapping defined
-                if new_node_id in custom_mappings:
-                    old_node_id = custom_mappings[new_node_id]
-                elif new_node_id.startswith("UC_"):
-                    old_node_id = new_node_id[3:]  # Strip 'UC_'
-                else:
-                    continue  # Not a UC_ node and no custom mapping, skip
-
-                await api.node_replacement.register(io.NodeReplace(
-                    new_node_id=new_node_id,
-                    old_node_id=old_node_id,
-                ))
-            except Exception as e:
-                print(f"[ComfyUI-UtilsCollection] Failed to register replacement: {e}")
+        await register_replacements()
 
 async def comfy_entrypoint() -> UtilsCollectionExtension:
     return UtilsCollectionExtension()
