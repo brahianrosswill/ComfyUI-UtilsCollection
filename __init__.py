@@ -6,6 +6,7 @@ from .preset_nodes import *
 from .vlm_nodes import *
 from .parameter_nodes import *
 from .utils_nodes import *
+from .legacy_nodes import *
 
 from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
@@ -62,6 +63,56 @@ class UtilsCollectionExtension(ComfyExtension):
             UC_RandIntRange,
             UC_TextGenerateQwen35SystemPrompt,
             UC_ColorConvertNode,
+
+            # Legacy / Backward Compatibility Nodes
+            AdjustedResolutionParameters,
+            ResolutionSelectorExtended,
+            ImageScaleAndResolutionPicker,
+            Image_Color_Noise,
+            TextEncodeFlux2SystemPrompt,
+            TextEncodeKleinSystemPrompt,
+            TextEncodeLtxv2SystemPrompt,
+            TextEncodeZITSystemPrompt,
+            TextEncodeZImageThinkPrompt,
+            TextEncodeSystemPrompt,
+            ScaledBiasTextEncodeFlux2SystemPrompt,
+            ScaledBiasTextEncodeKleinSystemPrompt,
+            ScaledBiasTextEncodeLtxv2SystemPrompt,
+            ScaledBiasTextEncodeZITSystemPrompt,
+            ScaledBiasTextEncodeZImageThinkPrompt,
+            ScaledBiasTextEncodeSystemPrompt,
+            ModifyMask,
+            ImageBlendByMask,
+            SystemMessagePresets,
+            SystemMessageVideoPresets,
+            InstructPromptPresets,
+            InstructPromptVideoPresets,
+            BonusPromptPresets,
+            BonusPromptVideoPresets,
+            EditTargetPresets,
+            EditOpPresets,
+            CameraShotPresets,
+            VLMSysInstrPresets,
+            VLMSysQueryAddPresets,
+            VLMSysInstrAdvPresets,
+            UnifiedPresets,
+            AttentionBiasTextEncode,
+            TagNormalizeCombine,
+            SU_LoadImagePath,
+            SU_LoadImageDirectory,
+            SwitchInverseNode,
+            SoftSwitchInverseNode,
+            IntegerRangeRandom,
+            ImageMatchPropertiesNode,
+            OpticalFlowComposite,
+            ImageInwardEdgeFill,
+            ImageIterativeStretchFill,
+            TextOverlayNode,
+            RandInt,
+            StaticInt,
+            RandIntRange,
+            TextGenerateQwen35SystemPrompt,
+            ColorConvertNode,
         ]
 
     @override
