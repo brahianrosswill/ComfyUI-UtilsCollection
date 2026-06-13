@@ -1,5 +1,5 @@
 from typing_extensions import override
-from comfy_api.latest import io
+from comfy_api.latest import ComfyExtension, io
 
 from .encoder_nodes import *
 from .image_nodes import *
@@ -487,3 +487,61 @@ class ColorConvertNode(UC_ColorConvertNode):
         schema.node_id = "ColorConvertNode"
         schema.display_name = f"{schema.display_name or 'ColorConvertNode'} (Legacy)"
         return schema
+
+class SamplingUtils(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            # Legacy / Backward Compatibility Nodes
+            AdjustedResolutionParameters,
+            ResolutionSelectorExtended,
+            ImageScaleAndResolutionPicker,
+            Image_Color_Noise,
+            TextEncodeFlux2SystemPrompt,
+            TextEncodeKleinSystemPrompt,
+            TextEncodeLtxv2SystemPrompt,
+            TextEncodeZITSystemPrompt,
+            TextEncodeZImageThinkPrompt,
+            TextEncodeSystemPrompt,
+            ScaledBiasTextEncodeFlux2SystemPrompt,
+            ScaledBiasTextEncodeKleinSystemPrompt,
+            ScaledBiasTextEncodeLtxv2SystemPrompt,
+            ScaledBiasTextEncodeZITSystemPrompt,
+            ScaledBiasTextEncodeZImageThinkPrompt,
+            ScaledBiasTextEncodeSystemPrompt,
+            ModifyMask,
+            ImageBlendByMask,
+            SystemMessagePresets,
+            SystemMessageVideoPresets,
+            InstructPromptPresets,
+            InstructPromptVideoPresets,
+            BonusPromptPresets,
+            BonusPromptVideoPresets,
+            EditTargetPresets,
+            EditOpPresets,
+            CameraShotPresets,
+            VLMSysInstrPresets,
+            VLMSysQueryAddPresets,
+            VLMSysInstrAdvPresets,
+            UnifiedPresets,
+            AttentionBiasTextEncode,
+            TagNormalizeCombine,
+            SU_LoadImagePath,
+            SU_LoadImageDirectory,
+            SwitchInverseNode,
+            SoftSwitchInverseNode,
+            IntegerRangeRandom,
+            ImageMatchPropertiesNode,
+            OpticalFlowComposite,
+            ImageInwardEdgeFill,
+            ImageIterativeStretchFill,
+            TextOverlayNode,
+            RandInt,
+            StaticInt,
+            RandIntRange,
+            TextGenerateQwen35SystemPrompt,
+            ColorConvertNode,
+        ]
+
+async def comfy_entrypoint() -> SamplingUtils:
+    return SamplingUtils()
