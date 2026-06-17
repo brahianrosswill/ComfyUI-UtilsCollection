@@ -77,6 +77,7 @@ class SamplingUtils(ComfyExtension):
             TextEncodeSystemPrompt,
             ScaledBiasTextEncodeFlux2SystemPrompt,
             ScaledBiasTextEncodeKleinSystemPrompt,
+            TextEncodeKleinSystemEditPlus,
             ScaledBiasTextEncodeLtxv2SystemPrompt,
             ScaledBiasTextEncodeZITSystemPrompt,
             ScaledBiasTextEncodeZImageThinkPrompt,

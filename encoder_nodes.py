@@ -1,8 +1,10 @@
 import re
 import torch
+import math
 
 from comfy_api.latest import ComfyExtension, io
-
+from comfy.utils import common_upscale
+import node_helpers
 from .helper_functions import get_token_count, get_token_count_scaled
 
 class UC_AttentionBiasTextEncode(io.ComfyNode):
@@ -482,6 +484,83 @@ class UC_TextEncodeKleinSystemPrompt(io.ComfyNode):
 
         tokens = clip.tokenize(prompt, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
+        return io.NodeOutput(conditioning)
+
+
+class TextEncodeKleinSystemEditPlus(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="TextEncodeKleinSystemEditPlus",
+            category="model/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.String.Input(
+                    "thinking_content",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    default="",
+                    tooltip="Custom thinking content to inject. Leave empty for default.",
+                ),
+                io.Vae.Input("vae", optional=True),
+                io.Image.Input("image1", optional=True),
+                io.Image.Input("image2", optional=True),
+                io.Image.Input("image3", optional=True),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, system_prompt, thinking_content, vae=None, image1=None, image2=None, image3=None) -> io.NodeOutput:
+        ref_latents = []
+        images = [image1, image2, image3]
+        images_vl = []
+        image_prompt = ""
+
+        for i, image in enumerate(images):
+            if image is not None:
+                samples = image.movedim(-1, 1)
+                total = int(384 * 384)
+
+                scale_by = math.sqrt(total / (samples.shape[3] * samples.shape[2]))
+                width = round(samples.shape[3] * scale_by)
+                height = round(samples.shape[2] * scale_by)
+
+                s = common_upscale(samples, width, height, "area", "disabled")
+                images_vl.append(s.movedim(1, -1))
+                if vae is not None:
+                    total = int(1024 * 1024)
+                    scale_by = math.sqrt(total / (samples.shape[3] * samples.shape[2]))
+                    width = round(samples.shape[3] * scale_by / 8.0) * 8
+                    height = round(samples.shape[2] * scale_by / 8.0) * 8
+
+                    s = common_upscale(samples, width, height, "area", "disabled")
+                    ref_latents.append(vae.encode(s.movedim(1, -1)[:, :, :, :3]))
+
+                image_prompt += "Picture {}: <|vision_start|><|image_pad|><|vision_end|>".format(i + 1)
+
+        # Construct the complete template string via safe concatenation to prevent formatting errors and double think blocks
+        if len(system_prompt) > 0:
+            full_prompt = (
+                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n"
+                "<|im_start|>user\n" + image_prompt + prompt + "<|im_end|>\n"
+                "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
+            )
+        else:
+            full_prompt = (
+                "<|im_start|>user\n" + image_prompt + prompt + "<|im_end|>\n"
+                "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
+            )
+
+        # Pass skip_template=True so the tokenizer doesn't try to wrap or append extra blocks
+        tokens = clip.tokenize(full_prompt, images=images_vl, skip_template=True)
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
+        if len(ref_latents) > 0:
+            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
         return io.NodeOutput(conditioning)
 
 
