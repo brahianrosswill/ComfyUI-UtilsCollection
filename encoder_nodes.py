@@ -487,12 +487,14 @@ class UC_TextEncodeKleinSystemPrompt(io.ComfyNode):
         return io.NodeOutput(conditioning)
 
 
-class TextEncodeKleinSystemEditPlus(io.ComfyNode):
+class TextEncodeSystemEditPlus(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="TextEncodeKleinSystemEditPlus",
+            node_id="TextEncodeSystemEditPlus",
+            display_name="TextEncodeSystemEditPlus",
             category="model/conditioning",
+            tooltip="Enhanced text encoding with system prompt and optional image inputs for models such as Ideogram 4 or Flux 2.",
             inputs=[
                 io.Clip.Input("clip"),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True),
@@ -503,6 +505,18 @@ class TextEncodeKleinSystemEditPlus(io.ComfyNode):
                     dynamic_prompts=True,
                     default="",
                     tooltip="Custom thinking content to inject. Leave empty for default.",
+                ),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                ),
+                io.Combo.Input(
+                    "vae_resolution",
+                    options=["Fast (1024)", "Balanced (1280)", "Detailed (1536)", "Original"],
+                    default="Fast (1024)",
+                    tooltip="Resolution of the reference latent encoded by the VAE (structural path). 'Fast' = 1024x1024, 'Balanced' = 1280x1280, 'Detailed' = 1536x1536, 'Original' uses native resolution.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Image.Input("image1", optional=True),
@@ -515,31 +529,57 @@ class TextEncodeKleinSystemEditPlus(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, thinking_content, vae=None, image1=None, image2=None, image3=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, thinking_content, vlm_resolution, vae_resolution, vae=None, image1=None, image2=None, image3=None) -> io.NodeOutput:
         ref_latents = []
         images = [image1, image2, image3]
         images_vl = []
         image_prompt = ""
 
+        VLM_RESOLUTIONS = {
+            "Fast (384)": 384,
+            "Balanced (512)": 512,
+            "Detailed (768)": 768
+        }
+
+        VAE_RESOLUTIONS = {
+            "Fast (1024)": 1024,
+            "Balanced (1280)": 1280,
+            "Detailed (1536)": 1536
+        }
+
         for i, image in enumerate(images):
             if image is not None:
                 samples = image.movedim(-1, 1)
-                total = int(384 * 384)
 
-                scale_by = math.sqrt(total / (samples.shape[3] * samples.shape[2]))
-                width = round(samples.shape[3] * scale_by)
-                height = round(samples.shape[2] * scale_by)
+                # 1. Semantic Path Scaling (VLM)
+                if vlm_resolution == "Original":
+                    images_vl.append(image)
+                else:
+                    vlm_size = VLM_RESOLUTIONS[vlm_resolution]
+                    total_vlm = vlm_size * vlm_size
+                    scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                    width_vlm = round(samples.shape[3] * scale_by_vlm)
+                    height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                s = common_upscale(samples, width, height, "area", "disabled")
-                images_vl.append(s.movedim(1, -1))
+                    s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                    images_vl.append(s_vlm.movedim(1, -1))
+
+                # 2. Structural Path Scaling (VAE)
                 if vae is not None:
-                    total = int(1024 * 1024)
-                    scale_by = math.sqrt(total / (samples.shape[3] * samples.shape[2]))
-                    width = round(samples.shape[3] * scale_by / 8.0) * 8
-                    height = round(samples.shape[2] * scale_by / 8.0) * 8
+                    if vae_resolution == "Original":
+                        width_vae = round(samples.shape[3] / 8.0) * 8
+                        height_vae = round(samples.shape[2] / 8.0) * 8
+                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
+                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    else:
+                        vae_size = VAE_RESOLUTIONS[vae_resolution]
+                        total_vae = vae_size * vae_size
+                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
+                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
+                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
 
-                    s = common_upscale(samples, width, height, "area", "disabled")
-                    ref_latents.append(vae.encode(s.movedim(1, -1)[:, :, :, :3]))
+                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
+                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
                 image_prompt += "Picture {}: <|vision_start|><|image_pad|><|vision_end|>".format(i + 1)
 
