@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import hashlib
 import scipy
-import tqdm
+from tqdm import tqdm
 import pilgram
 from PIL import Image, ImageOps, ImageSequence, ImageDraw, ImageFont, ImageFilter
 import kornia.morphology as morph
