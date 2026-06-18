@@ -494,7 +494,6 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
             node_id="TextEncodeSystemEditPlus",
             display_name="TextEncodeSystemEditPlus",
             category="model/conditioning",
-            tooltip="Enhanced text encoding with system prompt and optional image inputs for models such as Ideogram 4 or Flux 2.",
             inputs=[
                 io.Clip.Input("clip"),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True),
