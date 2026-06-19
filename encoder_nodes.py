@@ -241,13 +241,13 @@ class UC_ScaledBiasTextEncodeKleinSystemPrompt(io.ComfyNode):
         # Build template with string concat (ComfyUI pattern)
         if len(system_prompt) > 0:
             llama_template = (
-                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n"
-                "<|im_start|>user\n{}<|im_end|>\n"
+                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                "<|im_start|>user\n{}<|im_end|>\n" +
                 "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
             )
         else:
             llama_template = (
-                "<|im_start|>user\n{}<|im_end|>\n"
+                "<|im_start|>user\n{}<|im_end|>\n" +
                 "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
             )
 
@@ -278,12 +278,12 @@ class UC_ScaledBiasTextEncodeLtxv2SystemPrompt(io.ComfyNode):
         # Build template with string concat (ComfyUI pattern)
         if image is not None:
             llama_template = (
-                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n"
+                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n" +
                 "<start_of_turn>user\n\n<image_soft_token>{}<end_of_turn>\n\n<start_of_turn>model\n"
             )
         elif len(system_prompt) > 0:
             llama_template = (
-                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n"
+                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n" +
                 "<start_of_turn>user\n{}<end_of_turn>\n<start_of_turn>model\n"
             )
         else:
@@ -393,13 +393,13 @@ class UC_ScaledBiasTextEncodeSystemPrompt(io.ComfyNode):
             # Klein with custom thinking content
             if len(system_prompt) > 0:
                 llama_template = (
-                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-                    f"<|im_start|>user\n{{}}<|im_end|>\n"
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n" +
+                    f"<|im_start|>user\n{{}}<|im_end|>\n" +
                     f"<|im_start|>assistant\n<think>\n{thinking_content}\n</think>\n\n"
                 )
             else:
                 llama_template = (
-                    "<|im_start|>user\n{}<|im_end|>\n"
+                    "<|im_start|>user\n{}<|im_end|>\n" +
                     f"<|im_start|>assistant\n<think>\n{thinking_content}\n</think>\n\n"
                 )
         elif len(system_prompt) > 0:
@@ -472,13 +472,13 @@ class UC_TextEncodeKleinSystemPrompt(io.ComfyNode):
         # Build template with string concat (ComfyUI pattern)
         if len(system_prompt) > 0:
             llama_template = (
-                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n"
-                "<|im_start|>user\n{}<|im_end|>\n"
+                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                "<|im_start|>user\n{}<|im_end|>\n" +
                 "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
             )
         else:
             llama_template = (
-                "<|im_start|>user\n{}<|im_end|>\n"
+                "<|im_start|>user\n{}<|im_end|>\n" +
                 "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
             )
 
@@ -587,13 +587,13 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
         # Construct the complete template string via safe concatenation to prevent formatting errors and double think blocks
         if len(system_prompt) > 0:
             full_prompt = (
-                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n"
-                "<|im_start|>user\n" + image_prompt + prompt + "<|im_end|>\n"
+                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                "<|im_start|>user\n" + image_prompt + prompt + "<|im_end|>\n" +
                 "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
             )
         else:
             full_prompt = (
-                "<|im_start|>user\n" + image_prompt + prompt + "<|im_end|>\n"
+                "<|im_start|>user\n" + image_prompt + prompt + "<|im_end|>\n" +
                 "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
             )
 
@@ -628,12 +628,12 @@ class UC_TextEncodeLtxv2SystemPrompt(io.ComfyNode):
         # Build template with string concat (ComfyUI pattern)
         if image is not None:
             llama_template = (
-                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n"
+                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n" +
                 "<start_of_turn>user\n\n<image_soft_token>{}<end_of_turn>\n\n<start_of_turn>model\n"
             )
         elif len(system_prompt) > 0:
             llama_template = (
-                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n"
+                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n" +
                 "<start_of_turn>user\n{}<end_of_turn>\n<start_of_turn>model\n"
             )
         else:
@@ -765,13 +765,13 @@ class UC_TextEncodeSystemPrompt(io.ComfyNode):
             # Klein with custom thinking content
             if len(system_prompt) > 0:
                 llama_template = (
-                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-                    f"<|im_start|>user\n{{}}<|im_end|>\n"
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n" +
+                    f"<|im_start|>user\n{{}}<|im_end|>\n" +
                     f"<|im_start|>assistant\n<think>\n{thinking_content}\n</think>\n\n"
                 )
             else:
                 llama_template = (
-                    "<|im_start|>user\n{}<|im_end|>\n"
+                    "<|im_start|>user\n{}<|im_end|>\n" +
                     f"<|im_start|>assistant\n<think>\n{thinking_content}\n</think>\n\n"
                 )
             tokens = clip.tokenize(prompt, llama_template=llama_template)
