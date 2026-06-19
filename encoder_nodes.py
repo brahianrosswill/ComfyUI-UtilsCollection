@@ -513,7 +513,7 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "vae_resolution",
-                    options=["Fast (1024)", "Balanced (1280)", "Detailed (1536)", "Original"],
+                    options=["Ultra (512)", "Turbo (768)", "Fast (1024)", "Balanced (1280)", "Detailed (1536)", "Original"],
                     default="Fast (1024)",
                     tooltip="Resolution of the reference latent encoded by the VAE (structural path). 'Fast' = 1024x1024, 'Balanced' = 1280x1280, 'Detailed' = 1536x1536, 'Original' uses native resolution.",
                 ),
@@ -541,6 +541,8 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
         }
 
         VAE_RESOLUTIONS = {
+            "Ultra (512)": 512,
+            "Turbo (768)": 768,
             "Fast (1024)": 1024,
             "Balanced (1280)": 1280,
             "Detailed (1536)": 1536
