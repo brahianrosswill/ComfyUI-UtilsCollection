@@ -380,3 +380,75 @@ class UC_ColorConvertNode(io.ComfyNode):
             raise ValueError(f"Unknown from_mode '{from_mode}'")
 
         return io.NodeOutput(color_hex_output, color_int_output, color_string_output)
+
+
+class UC_ExtractBoundingBox(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_ExtractBoundingBox",
+            display_name="Extract Bounding Box",
+            category="utils/primitive",
+            inputs=[
+                io.AnyType.Input(
+                    "input_data",
+                    tooltip="Input data containing bounding boxes (JSON string, list, dict, or nested structure)"
+                ),
+                io.Int.Input(
+                    "index",
+                    default=0,
+                    min=0,
+                    max=sys.maxsize,
+                    tooltip="Index of the bounding box to extract"
+                ),
+            ],
+            outputs=[
+                io.Int.Output(display_name="x"),
+                io.Int.Output(display_name="y"),
+                io.Int.Output(display_name="width"),
+                io.Int.Output(display_name="height"),
+            ],
+        )
+
+    @classmethod
+    def find_boxes(cls, data) -> list:
+        boxes = []
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                pass
+
+        if isinstance(data, dict):
+            if all(k in data for k in ("x", "y", "width", "height")):
+                boxes.append(data)
+            else:
+                for v in data.values():
+                    boxes.extend(cls.find_boxes(v))
+        elif isinstance(data, (list, tuple)):
+            for item in data:
+                boxes.extend(cls.find_boxes(item))
+
+        return boxes
+
+    @classmethod
+    def execute(cls, input_data: any, index: int) -> io.NodeOutput:
+        boxes = cls.find_boxes(input_data)
+        if not boxes:
+            raise ValueError("No bounding boxes containing 'x', 'y', 'width', and 'height' were found in the input data.")
+
+        if index < 0 or index >= len(boxes):
+            raise ValueError(f"Index {index} is out of range. Found {len(boxes)} bounding box(es).")
+
+        box = boxes[index]
+
+        try:
+            x = int(float(box["x"]))
+            y = int(float(box["y"]))
+            w = int(float(box["width"]))
+            h = int(float(box["height"]))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Failed to convert bounding box values at index {index} to integers: {e}")
+
+        return io.NodeOutput(x, y, w, h)
+

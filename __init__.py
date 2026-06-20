@@ -64,6 +64,7 @@ class SamplingUtils(ComfyExtension):
             UC_RandIntRange,
             UC_TextGenerateQwen35SystemPrompt,
             UC_ColorConvertNode,
+            UC_ExtractBoundingBox,
             # Legacy / Backward Compatibility Nodes
             AdjustedResolutionParameters,
             ResolutionSelectorExtended,
