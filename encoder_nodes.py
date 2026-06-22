@@ -732,6 +732,141 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
         return io.NodeOutput(conditioning)
 
 
+class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("image", optional=True),
+            prefix="image",
+            min=1,
+            max=16
+        )
+        return io.Schema(
+            node_id="TextEncodeGemmaSystemEditPlusAdvanced",
+            display_name="TextEncodeGemmaSystemEditPlusAdvanced",
+            category="model/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                ),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        # Collect and parse all autogrow keys
+        raw_images = {}
+        if image_inputs is not None:
+            for k, v in image_inputs.items():
+                if v is not None:
+                    # Extract numeric suffix (e.g. "image1" -> 1)
+                    digits = re.findall(r'\d+', k)
+                    if digits:
+                        idx = int(digits[0])
+                    else:
+                        idx = 1
+                    raw_images[idx] = v
+
+        # Determine indexing: 0-indexed or 1-indexed.
+        is_zero_indexed = 0 in raw_images
+
+        # Check if the prompt has any image_input_ keyword matches (case-insensitive)
+        pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
+        has_keywords = bool(pattern.search(prompt))
+
+        images_vl_raw = []
+
+        if has_keywords:
+            # Replace keywords dynamically and build images_vl_raw in order of appearance
+            def replace_keyword(match):
+                num = int(match.group(1))
+                dict_key = num - 1 if is_zero_indexed else num
+                if dict_key in raw_images:
+                    img = raw_images[dict_key]
+                    images_vl_raw.append(img)
+                    return "<img><image_soft_token><end_of_image>"
+                return ""
+
+            modified_prompt = pattern.sub(replace_keyword, prompt)
+        else:
+            # Fallback: prepend all connected images in numerical order of their slots
+            image_prompt = ""
+            for num in sorted(raw_images.keys()):
+                img = raw_images[num]
+                images_vl_raw.append(img)
+                display_num = num + 1 if is_zero_indexed else num
+                image_prompt += f"Picture {display_num}: <img><image_soft_token><end_of_image>"
+
+            modified_prompt = image_prompt + prompt
+
+        # Construct the complete template string via safe concatenation
+        if len(system_prompt) > 0:
+            full_prompt = (
+                "<start_of_turn>system\n" + system_prompt + "<end_of_turn>\n" +
+                "<start_of_turn>user\n" + modified_prompt + "<end_of_turn>\n<start_of_turn>model\n"
+            )
+        else:
+            full_prompt = (
+                "<start_of_turn>system\nYou are a helpful assistant.<end_of_turn>\n" +
+                "<start_of_turn>user\n" + modified_prompt + "<end_of_turn>\n<start_of_turn>model\n"
+            )
+
+        # 1. First tokenize the text without passing images, getting raw 262144 token IDs
+        tokens = clip.tokenize(full_prompt, skip_template=True)
+
+        # 2. Helper to process image for VLM
+        def process_vlm_image(image, res):
+            if image is None:
+                return None
+            VLM_RESOLUTIONS = {
+                "Fast (384)": 384,
+                "Balanced (512)": 512,
+                "Detailed (768)": 768,
+                "Original": 896
+            }
+            samples = image.movedim(-1, 1)
+            vlm_size = VLM_RESOLUTIONS.get(res, 896)
+            total_vlm = vlm_size * vlm_size
+            scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+            width_vlm = round(samples.shape[3] * scale_by_vlm)
+            height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+            # Use area interpolation for original/ltxv2 style, bicubic for others
+            s_vlm = common_upscale(samples, width_vlm, height_vlm, "area" if res == "Original" else "bicubic", "disabled")
+            return s_vlm.movedim(1, -1)[:, :, :, :3]
+
+        # 3. Process the images and manually inject them sequentially into the 262144 tokens
+        if len(images_vl_raw) > 0:
+            processed_images = [process_vlm_image(img, vlm_resolution) for img in images_vl_raw]
+
+            # Loop over all tokenizer sections (e.g. 'gemma3_12b')
+            for key, val in tokens.items():
+                if isinstance(val, list):
+                    embed_count = 0
+                    for r in val:
+                        if isinstance(r, list):
+                            for i, token in enumerate(r):
+                                if isinstance(token, tuple) and len(token) > 0:
+                                    if token[0] == 262144 and embed_count < len(processed_images):
+                                        # Replace the token ID (index 0 of the tuple) with the visual payload dict
+                                        r[i] = ({"type": "image", "data": processed_images[embed_count]},) + token[1:]
+                                        embed_count += 1
+
+        # 4. Encode from the modified tokens dict
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
+        return io.NodeOutput(conditioning)
+
+
 class UC_TextEncodeLtxv2SystemPrompt(io.ComfyNode):
     @classmethod
     def define_schema(cls):

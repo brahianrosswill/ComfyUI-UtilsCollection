@@ -46,6 +46,7 @@ class SamplingUtils(ComfyExtension):
             UC_VLMSysInstrPresets,
             UC_VLMSysQueryAddPresets,
             UC_VLMSysInstrAdvPresets,
+            UC_LegacyPromptPresets,
             UC_UnifiedPresets,
             UC_AttentionBiasTextEncode,
             UC_TagNormalizeCombine,
@@ -65,7 +66,6 @@ class SamplingUtils(ComfyExtension):
             UC_TextGenerateQwen35SystemPrompt,
             UC_ColorConvertNode,
             UC_ExtractBoundingBox,
-            # Legacy / Backward Compatibility Nodes
             AdjustedResolutionParameters,
             ResolutionSelectorExtended,
             ImageScaleAndResolutionPicker,
@@ -80,6 +80,7 @@ class SamplingUtils(ComfyExtension):
             ScaledBiasTextEncodeKleinSystemPrompt,
             TextEncodeSystemEditPlus,
             TextEncodeSystemEditPlusAdvanced,
+            TextEncodeGemmaSystemEditPlusAdvanced,
             ScaledBiasTextEncodeLtxv2SystemPrompt,
             ScaledBiasTextEncodeZITSystemPrompt,
             ScaledBiasTextEncodeZImageThinkPrompt,

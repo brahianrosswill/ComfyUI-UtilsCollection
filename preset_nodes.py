@@ -122,6 +122,43 @@ class UC_BonusPromptPresets(io.ComfyNode):
         return io.NodeOutput(bonus_prompt)
 
 
+class UC_LegacyPromptPresets(io.ComfyNode):
+    @classmethod
+    def get_presets(cls):
+        presets = {}
+        for name in dir(presets_collection):
+            if name.startswith("LEGACY_PROMPT_"):
+                val = getattr(presets_collection, name)
+                if isinstance(val, str):
+                    presets[name.replace("LEGACY_PROMPT_", "")] = val
+        return presets
+
+    @classmethod
+    def define_schema(cls):
+        presets = cls.get_presets()
+        return io.Schema(
+            node_id="UC_LegacyPromptPresets",
+            category="advanced/text",
+            display_name="Legacy Prompt Presets",
+            inputs=[
+                io.Combo.Input(
+                    "preset",
+                    options=sorted(list(presets.keys())),
+                    default=sorted(list(presets.keys()))[0] if presets else "",
+                ),
+            ],
+            outputs=[
+                io.String.Output(display_name="legacy_prompt"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, preset) -> io.NodeOutput:
+        presets_dict = cls.get_presets()
+        legacy_prompt = presets_dict.get(preset, "")
+        return io.NodeOutput(legacy_prompt)
+
+
 class UC_SystemMessageVideoPresets(io.ComfyNode):
     @classmethod
     def get_presets(cls):
