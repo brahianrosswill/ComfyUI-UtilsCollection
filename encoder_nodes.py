@@ -487,6 +487,44 @@ class UC_TextEncodeKleinSystemPrompt(io.ComfyNode):
         return io.NodeOutput(conditioning)
 
 
+class UC_TextEncodeKrea2SystemPrompt(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_TextEncodeKrea2SystemPrompt",
+            category="advanced/conditioning",
+            display_name="Text Encode with Krea2 System Prompt",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, system_prompt="") -> io.NodeOutput:
+        # Build template with string concat (ComfyUI pattern)
+        if len(system_prompt) > 0:
+            llama_template = (
+                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                "<|im_start|>user\n{}<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            )
+        else:
+            llama_template = (
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
+                "<|im_start|>user\n{}<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            )
+
+        tokens = clip.tokenize(prompt, llama_template=llama_template)
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
+        return io.NodeOutput(conditioning)
+
+
 class TextEncodeSystemEditPlus(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -498,13 +536,6 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
                 io.Clip.Input("clip"),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
-                io.String.Input(
-                    "thinking_content",
-                    multiline=True,
-                    dynamic_prompts=True,
-                    default="",
-                    tooltip="Custom thinking content to inject. Leave empty for default.",
-                ),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
@@ -528,7 +559,7 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, thinking_content, vlm_resolution, vae_resolution, vae=None, image1=None, image2=None, image3=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, vae_resolution, vae=None, image1=None, image2=None, image3=None) -> io.NodeOutput:
         ref_latents = []
         images = [image1, image2, image3]
         images_vl = []
@@ -584,17 +615,18 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
 
                 image_prompt += "Picture {}: <|vision_start|><|image_pad|><|vision_end|>".format(i + 1)
 
-        # Construct the complete template string via safe concatenation to prevent formatting errors and double think blocks
+        # Construct the complete template string via safe concatenation to prevent formatting errors
         if len(system_prompt) > 0:
             full_prompt = (
                 "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
                 "<|im_start|>user\n" + image_prompt + prompt + "<|im_end|>\n" +
-                "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
+                "<|im_start|>assistant\n"
             )
         else:
             full_prompt = (
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
                 "<|im_start|>user\n" + image_prompt + prompt + "<|im_end|>\n" +
-                "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
+                "<|im_start|>assistant\n"
             )
 
         # Pass skip_template=True so the tokenizer doesn't try to wrap or append extra blocks
@@ -622,13 +654,6 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                 io.Clip.Input("clip"),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
-                io.String.Input(
-                    "thinking_content",
-                    multiline=True,
-                    dynamic_prompts=True,
-                    default="",
-                    tooltip="Custom thinking content to inject. Leave empty for default.",
-                ),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
@@ -643,7 +668,7 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, thinking_content, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
         # Collect and parse all autogrow keys
         raw_images = {}
         if image_inputs is not None:
@@ -718,12 +743,13 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
             full_prompt = (
                 "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
                 "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
+                "<|im_start|>assistant\n"
             )
         else:
             full_prompt = (
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
                 "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                "<|im_start|>assistant\n<think>\n" + thinking_content + "\n</think>\n\n"
+                "<|im_start|>assistant\n"
             )
 
         # Pass skip_template=True so the tokenizer doesn't try to wrap or append extra blocks
@@ -796,7 +822,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                     images_vl_raw.append(img)
                     return "<img><image_soft_token><end_of_image>"
                 return ""
-
+            
             modified_prompt = pattern.sub(replace_keyword, prompt)
         else:
             # Fallback: prepend all connected images in numerical order of their slots
@@ -806,7 +832,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                 images_vl_raw.append(img)
                 display_num = num + 1 if is_zero_indexed else num
                 image_prompt += f"Picture {display_num}: <img><image_soft_token><end_of_image>"
-
+            
             modified_prompt = image_prompt + prompt
 
         # Construct the complete template string via safe concatenation
@@ -848,7 +874,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
         # 3. Process the images and manually inject them sequentially into the 262144 tokens
         if len(images_vl_raw) > 0:
             processed_images = [process_vlm_image(img, vlm_resolution) for img in images_vl_raw]
-
+            
             # Loop over all tokenizer sections (e.g. 'gemma3_12b')
             for key, val in tokens.items():
                 if isinstance(val, list):

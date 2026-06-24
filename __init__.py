@@ -22,6 +22,7 @@ class SamplingUtils(ComfyExtension):
             UC_Image_Color_Noise,
             UC_TextEncodeFlux2SystemPrompt,
             UC_TextEncodeKleinSystemPrompt,
+            UC_TextEncodeKrea2SystemPrompt,
             UC_TextEncodeLtxv2SystemPrompt,
             UC_TextEncodeZITSystemPrompt,
             UC_TextEncodeZImageThinkPrompt,
