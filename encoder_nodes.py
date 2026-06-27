@@ -758,6 +758,235 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
         return io.NodeOutput(conditioning)
 
 
+class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("image", optional=True),
+            prefix="image",
+            min=1,
+            max=16
+        )
+        return io.Schema(
+            node_id="TextEncodeKrea2SystemEditPlusAdvanced",
+            display_name="TextEncodeKrea2SystemEditPlusAdvanced",
+            category="model/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                ),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        # Collect and parse all autogrow keys
+        raw_images = {}
+        if image_inputs is not None:
+            # image_inputs can be a dict, let's handle cases where it might be empty
+            for k, v in image_inputs.items():
+                if v is not None:
+                    # Extract numeric suffix (e.g. "image1" -> 1)
+                    digits = re.findall(r'\d+', k)
+                    if digits:
+                        idx = int(digits[0])
+                    else:
+                        idx = 1
+                    raw_images[idx] = v
+
+        # Determine indexing: 0-indexed or 1-indexed.
+        is_zero_indexed = 0 in raw_images
+
+        # Check if the prompt has any image_input_ keyword matches (case-insensitive)
+        pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
+        has_keywords = bool(pattern.search(prompt))
+
+        images_vl = []
+
+        def process_vlm_image(image, res):
+            if image is None:
+                return None
+            VLM_RESOLUTIONS = {
+                "Fast (384)": 384,
+                "Balanced (512)": 512,
+                "Detailed (768)": 768
+            }
+            samples = image.movedim(-1, 1)
+            if res == "Original":
+                return image
+            else:
+                vlm_size = VLM_RESOLUTIONS[res]
+                total_vlm = vlm_size * vlm_size
+                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                width_vlm = round(samples.shape[3] * scale_by_vlm)
+                height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                return s_vlm.movedim(1, -1)
+
+        if has_keywords:
+            # Replace keywords dynamically and build images_vl in order of appearance
+            def replace_keyword(match):
+                num = int(match.group(1))
+                dict_key = num - 1 if is_zero_indexed else num
+                if dict_key in raw_images:
+                    img = raw_images[dict_key]
+                    processed_img = process_vlm_image(img, vlm_resolution)
+                    images_vl.append(processed_img)
+                    return "<|vision_start|><|image_pad|><|vision_end|>"
+                return ""
+
+            modified_prompt = pattern.sub(replace_keyword, prompt)
+        else:
+            # Fallback: prepend all connected images in numerical order of their slots
+            image_prompt = ""
+            for num in sorted(raw_images.keys()):
+                img = raw_images[num]
+                processed_img = process_vlm_image(img, vlm_resolution)
+                images_vl.append(processed_img)
+                display_num = num + 1 if is_zero_indexed else num
+                image_prompt += f"Picture {display_num}: <|vision_start|><|image_pad|><|vision_end|>"
+
+            modified_prompt = image_prompt + prompt
+
+        # Construct the complete template string via safe concatenation
+        if len(system_prompt) > 0:
+            full_prompt = (
+                "<|im_start|>user\n" + "<|im_end|>\n" +
+                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            )
+        else:
+            full_prompt = (
+                "<|im_start|>user\n" + "<|im_end|>\n" +
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
+                "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            )
+
+        # Pass skip_template=True so the tokenizer doesn't try to wrap or append extra blocks
+        tokens = clip.tokenize(full_prompt, images=images_vl, skip_template=True)
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
+        return io.NodeOutput(conditioning)
+
+
+class TextEncodeEditPlusAdvanced(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("image", optional=True),
+            prefix="image",
+            min=1,
+            max=16
+        )
+        return io.Schema(
+            node_id="TextEncodeEditPlusAdvanced",
+            display_name="TextEncodeEditPlusAdvanced",
+            category="model/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                ),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        # Collect and parse all autogrow keys
+        raw_images = {}
+        if image_inputs is not None:
+            # image_inputs can be a dict, let's handle cases where it might be empty
+            for k, v in image_inputs.items():
+                if v is not None:
+                    # Extract numeric suffix (e.g. "image1" -> 1)
+                    digits = re.findall(r'\d+', k)
+                    if digits:
+                        idx = int(digits[0])
+                    else:
+                        idx = 1
+                    raw_images[idx] = v
+
+        # Determine indexing: 0-indexed or 1-indexed.
+        is_zero_indexed = 0 in raw_images
+
+        # Check if the prompt has any image_input_ keyword matches (case-insensitive)
+        pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
+        has_keywords = bool(pattern.search(prompt))
+
+        images_vl = []
+
+        def process_vlm_image(image, res):
+            if image is None:
+                return None
+            VLM_RESOLUTIONS = {
+                "Fast (384)": 384,
+                "Balanced (512)": 512,
+                "Detailed (768)": 768
+            }
+            samples = image.movedim(-1, 1)
+            if res == "Original":
+                return image
+            else:
+                vlm_size = VLM_RESOLUTIONS[res]
+                total_vlm = vlm_size * vlm_size
+                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                width_vlm = round(samples.shape[3] * scale_by_vlm)
+                height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                return s_vlm.movedim(1, -1)
+
+        if has_keywords:
+            # Replace keywords dynamically and build images_vl in order of appearance
+            def replace_keyword(match):
+                num = int(match.group(1))
+                dict_key = num - 1 if is_zero_indexed else num
+                if dict_key in raw_images:
+                    img = raw_images[dict_key]
+                    processed_img = process_vlm_image(img, vlm_resolution)
+                    images_vl.append(processed_img)
+                    return "<|vision_start|><|image_pad|><|vision_end|>"
+                return ""
+
+            modified_prompt = pattern.sub(replace_keyword, prompt)
+        else:
+            # Fallback: prepend all connected images in numerical order of their slots
+            image_prompt = ""
+            for num in sorted(raw_images.keys()):
+                img = raw_images[num]
+                processed_img = process_vlm_image(img, vlm_resolution)
+                images_vl.append(processed_img)
+                display_num = num + 1 if is_zero_indexed else num
+                image_prompt += f"Picture {display_num}: <|vision_start|><|image_pad|><|vision_end|>"
+
+            modified_prompt = image_prompt + prompt
+
+        # Pass standard tokens to tokenize (with images mapped to tags) and encode
+        tokens = clip.tokenize(modified_prompt, images=images_vl)
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
+        return io.NodeOutput(conditioning)
+
+
 class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
     @classmethod
     def define_schema(cls):
