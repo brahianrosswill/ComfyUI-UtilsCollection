@@ -734,7 +734,7 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                 processed_img = process_vlm_image(img, vlm_resolution)
                 images_vl.append(processed_img)
                 display_num = num + 1 if is_zero_indexed else num
-                image_prompt += f"Picture {display_num}: <|vision_start|><|image_pad|><|vision_end|>"
+                image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
 
             modified_prompt = image_prompt + prompt
 
@@ -855,7 +855,7 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                 processed_img = process_vlm_image(img, vlm_resolution)
                 images_vl.append(processed_img)
                 display_num = num + 1 if is_zero_indexed else num
-                image_prompt += f"Picture {display_num}: <|vision_start|><|image_pad|><|vision_end|>"
+                image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
 
             modified_prompt = image_prompt + prompt
 
@@ -977,7 +977,7 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                 processed_img = process_vlm_image(img, vlm_resolution)
                 images_vl.append(processed_img)
                 display_num = num + 1 if is_zero_indexed else num
-                image_prompt += f"Picture {display_num}: <|vision_start|><|image_pad|><|vision_end|>"
+                image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
 
             modified_prompt = image_prompt + prompt
 
@@ -1060,7 +1060,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                 img = raw_images[num]
                 images_vl_raw.append(img)
                 display_num = num + 1 if is_zero_indexed else num
-                image_prompt += f"Picture {display_num}: <img><image_soft_token><end_of_image>"
+                image_prompt += f"<img><image_soft_token><end_of_image>"
             
             modified_prompt = image_prompt + prompt
 
