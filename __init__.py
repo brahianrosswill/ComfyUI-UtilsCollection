@@ -69,6 +69,7 @@ class SamplingUtils(ComfyExtension):
             UC_ExtractBoundingBox,
             UC_Krea2LayerProbe,
             UC_Krea2LayerAblator,
+            UC_EncoderNodesGuide,
             AdjustedResolutionParameters,
             ResolutionSelectorExtended,
             ImageScaleAndResolutionPicker,
@@ -124,6 +125,7 @@ class SamplingUtils(ComfyExtension):
             RandIntRange,
             TextGenerateQwen35SystemPrompt,
             ColorConvertNode,
+            EncoderNodesGuide,
             Ideogram4SchedulerPreset,
         ]
 

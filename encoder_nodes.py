@@ -239,7 +239,7 @@ def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
     except Exception as e:
         raise RuntimeError(f"Error evaluating visual math expression '|{expression}|': {e}")
 
-def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, pooled_tensors: dict) -> tuple:
+def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, pooled_tensors: dict, padding_method: str = "zero-pad") -> tuple:
     # Preprocess classic weighting syntax inside math expression to math scaling
     # e.g., (image_input_1:10) -> (image_input_1 * 10)
     expression = re.sub(
@@ -251,13 +251,19 @@ def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, poole
     # Determine max sequence length across all tensors
     max_len = max(tensor.shape[1] for tensor in sequence_tensors.values())
 
-    # Pad all tensors to match max length exactly
+    # Pad/interpolate all tensors to match max length exactly
     aligned_sequence_tensors = {}
     for name, tensor in sequence_tensors.items():
         if tensor.shape[1] < max_len:
-            pad_size = max_len - tensor.shape[1]
-            padding = torch.zeros((tensor.shape[0], pad_size, tensor.shape[2]), device=tensor.device, dtype=tensor.dtype)
-            tensor = torch.cat([tensor, padding], dim=1)
+            if padding_method == "interpolate":
+                import torch.nn.functional as F
+                tensor_perm = tensor.permute(0, 2, 1)
+                tensor_interp = F.interpolate(tensor_perm, size=max_len, mode='linear', align_corners=False)
+                tensor = tensor_interp.permute(0, 2, 1)
+            else: # zero-pad
+                pad_size = max_len - tensor.shape[1]
+                padding = torch.zeros((tensor.shape[0], pad_size, tensor.shape[2]), device=tensor.device, dtype=tensor.dtype)
+                tensor = torch.cat([tensor, padding], dim=1)
         aligned_sequence_tensors[name] = tensor
 
     safe_dict_cond = {
@@ -1801,6 +1807,13 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
                 ),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
+                io.Combo.Input(
+                    "padding_method",
+                    options=["zero-pad", "interpolate"],
+                    default="zero-pad",
+                    tooltip="Alignment method for images with different aspect ratios/resolutions. 'zero-pad' pads with zeros (matches ComfyUI core), 'interpolate' linearly resizes visual tokens to preserve attention alignment.",
+                ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
@@ -1809,7 +1822,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, multiplier, padding_method, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
         # Collect and parse all autogrow keys
         raw_images = {}
         if image_inputs is not None:
@@ -1905,7 +1918,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
 
                 if sequence_tensors:
                     # 2. Evaluate conditioning-space formula
-                    C_blended, P_blended = evaluate_conditioning_formula(expression, sequence_tensors, pooled_tensors)
+                    C_blended, P_blended = evaluate_conditioning_formula(expression, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
                     # 3. Final main encoding pass
                     # Replace formula |...| in prompt with a single image pad token
@@ -1950,6 +1963,11 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
 
                     if P_blended is not None:
                         final_cond_dict["pooled_output"] = P_blended
+
+                    if multiplier != 1.0:
+                        C_final = C_final * multiplier
+                        if "pooled_output" in final_cond_dict and final_cond_dict["pooled_output"] is not None:
+                            final_cond_dict["pooled_output"] = final_cond_dict["pooled_output"] * multiplier
 
                     return io.NodeOutput([[C_final, final_cond_dict]])
 
@@ -2014,7 +2032,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             )
 
         # Pass skip_template=True so the tokenizer doesn't try to wrap or append extra blocks
-        conditioning = encode_embedding_classical_scaled_bias(clip, full_prompt, images=images_vl, skip_template=True)
+        conditioning = encode_embedding_classical_scaled_bias(clip, full_prompt, images=images_vl, skip_template=True, multiplier=multiplier)
         return io.NodeOutput(conditioning)
 
 
@@ -2050,6 +2068,13 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
                 ),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
+                io.Combo.Input(
+                    "padding_method",
+                    options=["zero-pad", "interpolate"],
+                    default="zero-pad",
+                    tooltip="Alignment method for images with different aspect ratios/resolutions. 'zero-pad' pads with zeros (matches ComfyUI core), 'interpolate' linearly resizes visual tokens to preserve attention alignment.",
+                ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
@@ -2058,7 +2083,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+    def execute(cls, clip, prompt, vlm_resolution, multiplier, padding_method, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
         # Collect and parse all autogrow keys
         raw_images = {}
         if image_inputs is not None:
@@ -2140,7 +2165,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
 
                 if sequence_tensors:
                     # 2. Evaluate conditioning-space formula
-                    C_blended, P_blended = evaluate_conditioning_formula(expression, sequence_tensors, pooled_tensors)
+                    C_blended, P_blended = evaluate_conditioning_formula(expression, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
                     # 3. Final main encoding pass
                     # Replace formula |...| in prompt with a single image pad token
@@ -2169,6 +2194,11 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
 
                     if P_blended is not None:
                         final_cond_dict["pooled_output"] = P_blended
+
+                    if multiplier != 1.0:
+                        C_final = C_final * multiplier
+                        if "pooled_output" in final_cond_dict and final_cond_dict["pooled_output"] is not None:
+                            final_cond_dict["pooled_output"] = final_cond_dict["pooled_output"] * multiplier
 
                     return io.NodeOutput([[C_final, final_cond_dict]])
 
@@ -2217,6 +2247,6 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
             modified_prompt = image_prompt + modified_prompt
 
         # Pass standard tokens to tokenize (with images mapped to tags) and encode
-        conditioning = encode_embedding_classical_scaled_bias(clip, modified_prompt, images=images_vl)
+        conditioning = encode_embedding_classical_scaled_bias(clip, modified_prompt, images=images_vl, multiplier=multiplier)
         return io.NodeOutput(conditioning)
 

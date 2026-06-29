@@ -649,3 +649,99 @@ class UC_Krea2LayerAblator(io.ComfyNode):
 
         return io.NodeOutput(modified_cond)
 
+
+class UC_EncoderNodesGuide(io.ComfyNode):
+    """
+    Detailed Markdown formatted documentation and guide for advanced, plus, and scaled-bias encoder nodes.
+    Choose topics to view in any Markdown rendering node.
+    """
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_EncoderNodesGuide",
+            display_name="Encoder Nodes Guide",
+            category="utils/documentation",
+            inputs=[
+                io.Combo.Input(
+                    "topic",
+                    options=[
+                        "system_prompt",
+                        "image_input_how_it_works",
+                        "scaled_bias_and_weighting",
+                        "math_expressions",
+                    ],
+                    default="system_prompt",
+                    tooltip="Select the topic you would like to view documentation for.",
+                ),
+            ],
+            outputs=[
+                io.String.Output(display_name="markdown"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, topic: str) -> io.NodeOutput:
+        if topic == "system_prompt":
+            markdown = (
+                "##### System Prompt Guide\n"
+                "The System Prompt is a high-level instruction injected at the very beginning of the chat template "
+                "(before user prompt tokenization). It guides the behavior, style, and tone of the underlying Vision-Language Model (VLM).\n\n"
+                "##### Key Details:\n"
+                "- If system_prompt is left empty, the node falls back to a default high-quality description prompt (e.g., the detailed Krea2 visual formatting template).\n"
+                "- When a custom system_prompt is provided, it completely overrides the default block instructions (for example, instructing the VLM to focus exclusively on specific subjects, lighting styles, or color palettes).\n"
+                "- Safe concatenation templates are utilized to format the system, user, and assistant turns cleanly, ensuring special characters such as brackets or parentheses are never corrupted."
+            )
+        elif topic == "image_input_how_it_works":
+            markdown = (
+                "##### How Image Inputs Work\n"
+                "All advanced encoder nodes allow you to dynamically load multiple images through dynamic Autogrow inputs.\n\n"
+                "##### Key Details:\n"
+                "- When you connect images to the 'image_inputs' slot, they are automatically parsed from their slots.\n"
+                "- Inside your main prompt, you can use the keywords `image_input_1`, `image_input_2`, etc., to specify exactly where those images should be injected.\n"
+                "- If you use keywords in your prompt, the images are injected at those specific positions, replaced by the correct VLM-specific visual start, pad, and end tokens (e.g. `<|vision_start|><|image_pad|><|vision_end|>`).\n"
+                "- If you do not use any keywords, the node falls back to a standard prepending mode where all connected images are automatically placed at the very beginning of the prompt in order of their slots.\n"
+                "- All images are resized to the set `vlm_resolution` (e.g. 'Fast (384)', 'Balanced (512)', etc.) using high-quality upscaling/downscaling."
+            )
+        elif topic == "scaled_bias_and_weighting":
+            markdown = (
+                "##### Scaled Bias & Weighting Syntax\n"
+                "Standard ComfyUI weighting (using parentheses and colons) is not natively supported by the custom tokenizers of advanced models like Qwen or Gemma. To bridge this gap, our Scaled Bias nodes implement a classical weight translation engine.\n\n"
+                "##### Key Details:\n"
+                "- You can write your weights using standard weighting syntax: `(prompt text:weight)`, for example `(beautiful sunset:1.25)` or `(red car:0.8)`.\n"
+                "- Before tokenization, our weight translation engine parses and extracts these markers, strips the outer parenthesis and weight markers, and compiles the clean text.\n"
+                "- To handle the complex visual/image token expansions precisely, a dynamic token-to-embedding mapping calculates the exact sequence locations in the final encoded embedding tensor.\n"
+                "- The precise slices of the conditioning tensor are then multiplied element-wise by the target strength.\n"
+                "- The pooled output (the global embedding representing the entire sequence) is also safely scaled by the maximum weight found."
+            )
+        elif topic == "math_expressions":
+            markdown = (
+                "##### Math Expressions for Image Merging\n"
+                "Visual Math Blending allows you to perform continuous element-wise PyTorch mathematical operations directly in the CLIP/VLM conditioning embedding space (latent vector space) inside a single node. This preserves maximum visual detail, supports arbitrary scaling weights without pixel clipping/saturation, and replaces complex external conditioning formula nodes.\n\n"
+                "##### Key Details:\n"
+                "- To write a math expression, enclose it between pipes: `|formula|`.\n"
+                "- Inside the formula, you can use variables `image_input_1` to `image_input_16` representing your preprocessed VLM image conditionings.\n"
+                "- Under the hood, the node automatically runs independent, native single-image encoding passes for each referenced image, then evaluates the mathematical formula directly on those extracted high-dimensional continuous sequence tensors ($C \\in \\mathbb{R}^{B \\times L \\times D}$) and pooled tensors ($P \\in \\mathbb{R}^{B \\times D}$).\n"
+                "- Supported operations:\n"
+                "  - Addition (+), Subtraction (-), Multiplication (*), Division (/)\n"
+                "  - Parentheses for nesting operations: `((image_input_1 * 1.05) + image_input_2) / 2`\n"
+                "  - Functions: `clamp(tensor, min, max)`, `min(tensor1, tensor2)`, `max(tensor1, tensor2)`, `abs(tensor)`\n"
+                "- **Nested Weights Support**: Inside the math expression, you can use classical weight syntax like `(image_input_1:10)` or `(image_input_2:15)`. Under the hood, these are dynamically preprocessed into scalar embedding multiplications `(image_input_1 * 10.0)` and `(image_input_2 * 15.0)` respectively before math evaluation.\n"
+                "- **Sequence Alignment Modes**: If your images have different aspect ratios or resolutions, the node supports two alignment options below the multiplier widget:\n"
+                "  - `zero-pad`: Silently zero-pads shorter sequence tensors to align lengths (matches ComfyUI core conditioning logic exactly).\n"
+                "  - `interpolate`: Dynamically resizes the visual token sequence using 1D linear interpolation to align attention features perfectly across the entire sequence without dead space.\n"
+                "- **Three-Image Averaging Examples**:\n"
+                "  - Weighted Token Format (Automatic Preprocessing):\n"
+                "    `|((image_input_1:40) + (image_input_2:35) + (image_input_3:30)) / 3|`\n"
+                "  - Direct PyTorch Multiplier Format:\n"
+                "    `|((image_input_1 * 40) + (image_input_2 * 35) + (image_input_3 * 30)) / 3|`\n"
+                "- Security: All formulas are parsed and evaluated within a completely sandboxed namespace (`__builtins__ = {}`), preventing any insecure code executions while giving you full access to PyTorch's tensor math.\n"
+                "- Composability: The math block runs seamlessly before final prompt compilation and token range slice overwriting, allowing clean blend integration."
+            )
+        else:
+            markdown = "Unknown topic selected."
+
+        return io.NodeOutput(markdown)
+
+
+EncoderNodesGuide = UC_EncoderNodesGuide
+
