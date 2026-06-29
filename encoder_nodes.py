@@ -182,6 +182,174 @@ def encode_embedding_scaled_bias(clip, text, llama_template=None, **kwargs):
 
     return new_conditioning
 
+from enum import Enum
+
+class ImageInputMapping(Enum):
+    ZERO_INDEXED_OFFSET = 1
+    ONE_INDEXED_OFFSET = 0
+
+    @classmethod
+    def get_display_num(cls, num, is_zero_indexed):
+        offset = cls.ZERO_INDEXED_OFFSET.value if is_zero_indexed else cls.ONE_INDEXED_OFFSET.value
+        return num + offset
+
+    @classmethod
+    def get_display_name(cls, num, is_zero_indexed):
+        return f"image_input_{cls.get_display_num(num, is_zero_indexed)}"
+
+    @classmethod
+    def get_dict_key(cls, num, is_zero_indexed):
+        offset = cls.ZERO_INDEXED_OFFSET.value if is_zero_indexed else cls.ONE_INDEXED_OFFSET.value
+        return num - offset
+
+def is_image_token(t):
+    if isinstance(t, tuple) and len(t) > 0:
+        val = t[0]
+    else:
+        val = t
+
+    if isinstance(val, dict) and val.get("type") == "image":
+        return True
+
+    if val in (151655, 262144): # Qwen & Gemma image pad IDs
+        return True
+
+    return False
+
+def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
+    # Sandboxed evaluation dictionary
+    safe_dict = {
+        "__builtins__": {},
+        "clamp": torch.clamp,
+        "min": torch.minimum,
+        "max": torch.maximum,
+        "abs": torch.abs,
+    }
+
+    # Inject variables
+    for name, tensor in processed_images.items():
+        safe_dict[name] = tensor
+
+    try:
+        # PyTorch overloads +, -, *, /, ** on tensors automatically!
+        result = eval(expression, safe_dict, {})
+
+        # Ensure result stays bounded between 0.0 and 1.0 (clamping standard image pixel range)
+        return torch.clamp(result, 0.0, 1.0)
+    except Exception as e:
+        raise RuntimeError(f"Error evaluating visual math expression '|{expression}|': {e}")
+
+def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, **kwargs):
+    if clip is None:
+        raise RuntimeError("ERROR: clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
+
+    if "(" not in text or ":" not in text or ")" not in text:
+        tokens = clip.tokenize(text, llama_template=llama_template, **kwargs)
+        return clip.encode_from_tokens_scheduled(tokens)
+
+    # Regex for classical weighting syntax, e.g., (blue sky:1.2) or (sunset:0.8)
+    bias_pattern = re.compile(r"\(\s*([^:)]+?)\s*:\s*([0-9.-]+)\s*\)")
+    split_pattern = re.compile(r"(\(\s*[^:)]+?\s*:\s*[0-9.-]+\s*\))")
+    segments = split_pattern.split(text)
+
+    clean_text = ""
+    biases_to_apply = []
+
+    for segment in segments:
+        if not segment:
+            continue
+
+        match = bias_pattern.fullmatch(segment)
+        if match:
+            # Measure token length of clean text before appending bias text
+            start_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
+            key_name = next(iter(start_tokens.keys()))
+            start_count = len(start_tokens[key_name][0])
+
+            bias_text, strength_str = match.groups()
+            clean_text += bias_text
+
+            # Measure token length of clean text after appending bias text
+            end_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
+            end_count = len(end_tokens[key_name][0])
+
+            if end_count > start_count:
+                biases_to_apply.append({"start": start_count, "end": end_count, "strength": float(strength_str)})
+        else:
+            clean_text += segment
+
+    tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
+    conditioning = clip.encode_from_tokens_scheduled(tokens)
+
+    if not biases_to_apply:
+        return conditioning
+
+    # Apply bias scaling directly to each schedule in conditioning
+    new_conditioning = []
+    max_strength = 1.0
+    for bias in biases_to_apply:
+        max_strength = max(max_strength, bias["strength"])
+
+    for i in range(len(conditioning)):
+        cond, cond_dict = conditioning[i]
+        new_cond = cond.clone()
+
+        # Build dynamic mapping from tokens to embeddings
+        key_name = next(iter(tokens.keys()))
+        token_list = tokens[key_name][0]
+
+        text_token_count = 0
+        image_token_count = 0
+        for t in token_list:
+            if is_image_token(t):
+                image_token_count += 1
+            else:
+                text_token_count += 1
+
+        # Calculate expansion factor V
+        if image_token_count > 0:
+            V = (new_cond.shape[1] - text_token_count) // image_token_count
+        else:
+            V = 1
+
+        # Build start/end embedding index mapping for each token
+        mapping = []
+        current_idx = 0
+        for t in token_list:
+            is_img = is_image_token(t)
+            size = V if is_img else 1
+            start = current_idx
+            end = current_idx + size
+            mapping.append((start, end))
+            current_idx = end
+
+        # Scale embeddings using mapped ranges
+        for bias in biases_to_apply:
+            strength = bias["strength"]
+
+            # Map token indices to embedding indices
+            t_start = bias["start"]
+            t_end = bias["end"]
+
+            if t_start >= len(mapping):
+                continue
+
+            start = mapping[t_start][0]
+            end = mapping[min(t_end - 1, len(mapping) - 1)][1]
+
+            if start >= end:
+                continue
+
+            new_cond[:, start:end, :] *= strength
+
+        new_cond_dict = cond_dict.copy()
+        if "pooled_output" in new_cond_dict and new_cond_dict["pooled_output"] is not None:
+            new_cond_dict["pooled_output"] = new_cond_dict["pooled_output"].clone() * max_strength
+
+        new_conditioning.append([new_cond, new_cond_dict])
+
+    return new_conditioning
+
 class UC_ScaledBiasTextEncodeFlux2SystemPrompt(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -688,7 +856,6 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
 
         # Check if the prompt has any image_input_ keyword matches (case-insensitive)
         pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
-        has_keywords = bool(pattern.search(prompt))
 
         images_vl = []
 
@@ -713,40 +880,61 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                 s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
                 return s_vlm.movedim(1, -1)
 
+        # Create dict of preprocessed VLM images for math evaluation
+        processed_images = {}
+        for num, img in raw_images.items():
+            name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+            processed_images[name] = process_vlm_image(img, vlm_resolution)
+
+        # Parse and replace any math formulas enclosed in pipes |formula|
+        math_pattern = re.compile(r"\|([^|]+)\|")
+
+        def replace_formula(match):
+            expression = match.group(1).strip()
+            result_tensor = evaluate_formula(expression, processed_images)
+            images_vl.append(result_tensor)
+            return "<|vision_start|><|image_pad|><|vision_end|>"
+
+        modified_prompt = math_pattern.sub(replace_formula, prompt)
+
+        # Re-check for keywords in the modified prompt
+        has_keywords = bool(pattern.search(modified_prompt)) or len(images_vl) > 0
+
         if has_keywords:
             # Replace keywords dynamically and build images_vl in order of appearance
             def replace_keyword(match):
                 num = int(match.group(1))
-                dict_key = num - 1 if is_zero_indexed else num
+                dict_key = ImageInputMapping.get_dict_key(num, is_zero_indexed)
                 if dict_key in raw_images:
                     img = raw_images[dict_key]
-                    processed_img = process_vlm_image(img, vlm_resolution)
+                    processed_img = processed_images.get(ImageInputMapping.get_display_name(dict_key, is_zero_indexed), process_vlm_image(img, vlm_resolution))
                     images_vl.append(processed_img)
                     return "<|vision_start|><|image_pad|><|vision_end|>"
                 return ""
 
-            modified_prompt = pattern.sub(replace_keyword, prompt)
+            modified_prompt = pattern.sub(replace_keyword, modified_prompt)
         else:
             # Fallback: prepend all connected images in numerical order of their slots
             image_prompt = ""
             for num in sorted(raw_images.keys()):
-                img = raw_images[num]
-                processed_img = process_vlm_image(img, vlm_resolution)
+                name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+                processed_img = processed_images[name]
                 images_vl.append(processed_img)
-                display_num = num + 1 if is_zero_indexed else num
                 image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
 
-            modified_prompt = image_prompt + prompt
+            modified_prompt = image_prompt + modified_prompt
 
         # Construct the complete template string via safe concatenation
         if len(system_prompt) > 0:
             full_prompt = (
+                "<|im_start|>user\n" + "<|im_end|>\n" +
                 "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
                 "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
                 "<|im_start|>assistant\n"
             )
         else:
             full_prompt = (
+                "<|im_start|>user\n" + "<|im_end|>\n" +
                 "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
                 "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
                 "<|im_start|>assistant\n"
@@ -773,7 +961,16 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
             category="model/conditioning",
             inputs=[
                 io.Clip.Input("clip"),
-                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input(
+                    "prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    tooltip=(
+                        "Main text prompt. Supports visual math blending: |formula| to blend image inputs at pixel-tensor level before encoding. "
+                        "Example: |((image_input_1 * 1.075) + (image_input_2 * 1.025)) / 1.5| to blend styles/concepts. "
+                        "Supported math operations: +, -, *, /, clamp, min, max, abs, on variables image_input_1 to image_input_16."
+                    ),
+                ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input(
                     "vlm_resolution",
@@ -809,7 +1006,6 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
 
         # Check if the prompt has any image_input_ keyword matches (case-insensitive)
         pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
-        has_keywords = bool(pattern.search(prompt))
 
         images_vl = []
 
@@ -834,30 +1030,49 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                 s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
                 return s_vlm.movedim(1, -1)
 
+        # Create dict of preprocessed VLM images for math evaluation
+        processed_images = {}
+        for num, img in raw_images.items():
+            name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+            processed_images[name] = process_vlm_image(img, vlm_resolution)
+
+        # Parse and replace any math formulas enclosed in pipes |formula|
+        math_pattern = re.compile(r"\|([^|]+)\|")
+
+        def replace_formula(match):
+            expression = match.group(1).strip()
+            result_tensor = evaluate_formula(expression, processed_images)
+            images_vl.append(result_tensor)
+            return "<|vision_start|><|image_pad|><|vision_end|>"
+
+        modified_prompt = math_pattern.sub(replace_formula, prompt)
+
+        # Re-check for keywords in the modified prompt
+        has_keywords = bool(pattern.search(modified_prompt)) or len(images_vl) > 0
+
         if has_keywords:
             # Replace keywords dynamically and build images_vl in order of appearance
             def replace_keyword(match):
                 num = int(match.group(1))
-                dict_key = num - 1 if is_zero_indexed else num
+                dict_key = ImageInputMapping.get_dict_key(num, is_zero_indexed)
                 if dict_key in raw_images:
                     img = raw_images[dict_key]
-                    processed_img = process_vlm_image(img, vlm_resolution)
+                    processed_img = processed_images.get(ImageInputMapping.get_display_name(dict_key, is_zero_indexed), process_vlm_image(img, vlm_resolution))
                     images_vl.append(processed_img)
                     return "<|vision_start|><|image_pad|><|vision_end|>"
                 return ""
 
-            modified_prompt = pattern.sub(replace_keyword, prompt)
+            modified_prompt = pattern.sub(replace_keyword, modified_prompt)
         else:
             # Fallback: prepend all connected images in numerical order of their slots
             image_prompt = ""
             for num in sorted(raw_images.keys()):
-                img = raw_images[num]
-                processed_img = process_vlm_image(img, vlm_resolution)
+                name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+                processed_img = processed_images[name]
                 images_vl.append(processed_img)
-                display_num = num + 1 if is_zero_indexed else num
                 image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
 
-            modified_prompt = image_prompt + prompt
+            modified_prompt = image_prompt + modified_prompt
 
         # Construct the complete template string via safe concatenation
         if len(system_prompt) > 0:
@@ -896,7 +1111,16 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
             category="model/conditioning",
             inputs=[
                 io.Clip.Input("clip"),
-                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input(
+                    "prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    tooltip=(
+                        "Main text prompt. Supports visual math blending: |formula| to blend image inputs at pixel-tensor level before encoding. "
+                        "Example: |((image_input_1 * 1.075) + (image_input_2 * 1.025)) / 1.5| to blend styles/concepts. "
+                        "Supported math operations: +, -, *, /, clamp, min, max, abs, on variables image_input_1 to image_input_16."
+                    ),
+                ),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
@@ -931,7 +1155,6 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
 
         # Check if the prompt has any image_input_ keyword matches (case-insensitive)
         pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
-        has_keywords = bool(pattern.search(prompt))
 
         images_vl = []
 
@@ -956,30 +1179,49 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                 s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
                 return s_vlm.movedim(1, -1)
 
+        # Create dict of preprocessed VLM images for math evaluation
+        processed_images = {}
+        for num, img in raw_images.items():
+            name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+            processed_images[name] = process_vlm_image(img, vlm_resolution)
+
+        # Parse and replace any math formulas enclosed in pipes |formula|
+        math_pattern = re.compile(r"\|([^|]+)\|")
+
+        def replace_formula(match):
+            expression = match.group(1).strip()
+            result_tensor = evaluate_formula(expression, processed_images)
+            images_vl.append(result_tensor)
+            return "<|vision_start|><|image_pad|><|vision_end|>"
+
+        modified_prompt = math_pattern.sub(replace_formula, prompt)
+
+        # Re-check for keywords in the modified prompt
+        has_keywords = bool(pattern.search(modified_prompt)) or len(images_vl) > 0
+
         if has_keywords:
             # Replace keywords dynamically and build images_vl in order of appearance
             def replace_keyword(match):
                 num = int(match.group(1))
-                dict_key = num - 1 if is_zero_indexed else num
+                dict_key = ImageInputMapping.get_dict_key(num, is_zero_indexed)
                 if dict_key in raw_images:
                     img = raw_images[dict_key]
-                    processed_img = process_vlm_image(img, vlm_resolution)
+                    processed_img = processed_images.get(ImageInputMapping.get_display_name(dict_key, is_zero_indexed), process_vlm_image(img, vlm_resolution))
                     images_vl.append(processed_img)
                     return "<|vision_start|><|image_pad|><|vision_end|>"
                 return ""
 
-            modified_prompt = pattern.sub(replace_keyword, prompt)
+            modified_prompt = pattern.sub(replace_keyword, modified_prompt)
         else:
             # Fallback: prepend all connected images in numerical order of their slots
             image_prompt = ""
             for num in sorted(raw_images.keys()):
-                img = raw_images[num]
-                processed_img = process_vlm_image(img, vlm_resolution)
+                name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+                processed_img = processed_images[name]
                 images_vl.append(processed_img)
-                display_num = num + 1 if is_zero_indexed else num
                 image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
 
-            modified_prompt = image_prompt + prompt
+            modified_prompt = image_prompt + modified_prompt
 
         # Pass standard tokens to tokenize (with images mapped to tags) and encode
         tokens = clip.tokenize(modified_prompt, images=images_vl)
@@ -1051,7 +1293,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                     images_vl_raw.append(img)
                     return "<img><image_soft_token><end_of_image>"
                 return ""
-            
+
             modified_prompt = pattern.sub(replace_keyword, prompt)
         else:
             # Fallback: prepend all connected images in numerical order of their slots
@@ -1061,7 +1303,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                 images_vl_raw.append(img)
                 display_num = num + 1 if is_zero_indexed else num
                 image_prompt += f"<img><image_soft_token><end_of_image>"
-            
+
             modified_prompt = image_prompt + prompt
 
         # Construct the complete template string via safe concatenation
@@ -1103,7 +1345,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
         # 3. Process the images and manually inject them sequentially into the 262144 tokens
         if len(images_vl_raw) > 0:
             processed_images = [process_vlm_image(img, vlm_resolution) for img in images_vl_raw]
-            
+
             # Loop over all tokenizer sections (e.g. 'gemma3_12b')
             for key, val in tokens.items():
                 if isinstance(val, list):
@@ -1438,3 +1680,287 @@ class UC_TextGenerateQwen35SystemPrompt(io.ComfyNode):
 
         generated_text = clip.decode(generated_ids, skip_special_tokens=True)
         return io.NodeOutput(generated_text)
+
+
+class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("image", optional=True),
+            prefix="image",
+            min=1,
+            max=16
+        )
+        return io.Schema(
+            node_id="TextEncodeKrea2SystemEditScaledAdv",
+            display_name="TextEncodeKrea2SystemEditScaledAdv",
+            category="model/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input(
+                    "prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    tooltip=(
+                        "Main text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2). "
+                        "Also supports visual math blending: |formula| to blend image inputs at pixel-tensor level before encoding. "
+                        "Example: |((image_input_1 * 1.075) + (image_input_2 * 1.025)) / 1.5| to blend styles/concepts. "
+                        "Supported math operations: +, -, *, /, clamp, min, max, abs, on variables image_input_1 to image_input_16."
+                    ),
+                ),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                ),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        # Collect and parse all autogrow keys
+        raw_images = {}
+        if image_inputs is not None:
+            # image_inputs can be a dict, let's handle cases where it might be empty
+            for k, v in image_inputs.items():
+                if v is not None:
+                    # Extract numeric suffix (e.g. "image1" -> 1)
+                    digits = re.findall(r'\d+', k)
+                    if digits:
+                        idx = int(digits[0])
+                    else:
+                        idx = 1
+                    raw_images[idx] = v
+
+        # Determine indexing: 0-indexed or 1-indexed.
+        is_zero_indexed = 0 in raw_images
+
+        # Check if the prompt has any image_input_ keyword matches (case-insensitive)
+        pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
+
+        images_vl = []
+
+        def process_vlm_image(image, res):
+            if image is None:
+                return None
+            VLM_RESOLUTIONS = {
+                "Fast (384)": 384,
+                "Balanced (512)": 512,
+                "Detailed (768)": 768
+            }
+            samples = image.movedim(-1, 1)
+            if res == "Original":
+                return image
+            else:
+                vlm_size = VLM_RESOLUTIONS[res]
+                total_vlm = vlm_size * vlm_size
+                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                width_vlm = round(samples.shape[3] * scale_by_vlm)
+                height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                return s_vlm.movedim(1, -1)
+
+        # Create dict of preprocessed VLM images for math evaluation
+        processed_images = {}
+        for num, img in raw_images.items():
+            name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+            processed_images[name] = process_vlm_image(img, vlm_resolution)
+
+        # Parse and replace any math formulas enclosed in pipes |formula|
+        math_pattern = re.compile(r"\|([^|]+)\|")
+
+        def replace_formula(match):
+            expression = match.group(1).strip()
+            result_tensor = evaluate_formula(expression, processed_images)
+            images_vl.append(result_tensor)
+            return "<|vision_start|><|image_pad|><|vision_end|>"
+
+        modified_prompt = math_pattern.sub(replace_formula, prompt)
+
+        # Re-check for keywords in the modified prompt
+        has_keywords = bool(pattern.search(modified_prompt)) or len(images_vl) > 0
+
+        if has_keywords:
+            # Replace keywords dynamically and build images_vl in order of appearance
+            def replace_keyword(match):
+                num = int(match.group(1))
+                dict_key = ImageInputMapping.get_dict_key(num, is_zero_indexed)
+                if dict_key in raw_images:
+                    img = raw_images[dict_key]
+                    processed_img = processed_images.get(ImageInputMapping.get_display_name(dict_key, is_zero_indexed), process_vlm_image(img, vlm_resolution))
+                    images_vl.append(processed_img)
+                    return "<|vision_start|><|image_pad|><|vision_end|>"
+                return ""
+
+            modified_prompt = pattern.sub(replace_keyword, modified_prompt)
+        else:
+            # Fallback: prepend all connected images in numerical order of their slots
+            image_prompt = ""
+            for num in sorted(raw_images.keys()):
+                name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+                processed_img = processed_images[name]
+                images_vl.append(processed_img)
+                image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
+
+            modified_prompt = image_prompt + modified_prompt
+
+        # Construct the complete template string via safe concatenation
+        if len(system_prompt) > 0:
+            full_prompt = (
+                "<|im_start|>user\n" + "<|im_end|>\n" +
+                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            )
+        else:
+            full_prompt = (
+                "<|im_start|>user\n" + "<|im_end|>\n" +
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
+                "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            )
+
+        # Pass skip_template=True so the tokenizer doesn't try to wrap or append extra blocks
+        conditioning = encode_embedding_classical_scaled_bias(clip, full_prompt, images=images_vl, skip_template=True)
+        return io.NodeOutput(conditioning)
+
+
+class TextEncodeEditScaledAdv(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("image", optional=True),
+            prefix="image",
+            min=1,
+            max=16
+        )
+        return io.Schema(
+            node_id="TextEncodeEditScaledAdv",
+            display_name="TextEncodeEditScaledAdv",
+            category="model/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input(
+                    "prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    tooltip=(
+                        "Main text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2). "
+                        "Also supports visual math blending: |formula| to blend image inputs at pixel-tensor level before encoding. "
+                        "Example: |((image_input_1 * 1.075) + (image_input_2 * 1.025)) / 1.5| to blend styles/concepts. "
+                        "Supported math operations: +, -, *, /, clamp, min, max, abs, on variables image_input_1 to image_input_16."
+                    ),
+                ),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                ),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        # Collect and parse all autogrow keys
+        raw_images = {}
+        if image_inputs is not None:
+            # image_inputs can be a dict, let's handle cases where it might be empty
+            for k, v in image_inputs.items():
+                if v is not None:
+                    # Extract numeric suffix (e.g. "image1" -> 1)
+                    digits = re.findall(r'\d+', k)
+                    if digits:
+                        idx = int(digits[0])
+                    else:
+                        idx = 1
+                    raw_images[idx] = v
+
+        # Determine indexing: 0-indexed or 1-indexed.
+        is_zero_indexed = 0 in raw_images
+
+        # Check if the prompt has any image_input_ keyword matches (case-insensitive)
+        pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
+
+        images_vl = []
+
+        def process_vlm_image(image, res):
+            if image is None:
+                return None
+            VLM_RESOLUTIONS = {
+                "Fast (384)": 384,
+                "Balanced (512)": 512,
+                "Detailed (768)": 768
+            }
+            samples = image.movedim(-1, 1)
+            if res == "Original":
+                return image
+            else:
+                vlm_size = VLM_RESOLUTIONS[res]
+                total_vlm = vlm_size * vlm_size
+                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                width_vlm = round(samples.shape[3] * scale_by_vlm)
+                height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                return s_vlm.movedim(1, -1)
+
+        # Create dict of preprocessed VLM images for math evaluation
+        processed_images = {}
+        for num, img in raw_images.items():
+            name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+            processed_images[name] = process_vlm_image(img, vlm_resolution)
+
+        # Parse and replace any math formulas enclosed in pipes |formula|
+        math_pattern = re.compile(r"\|([^|]+)\|")
+
+        def replace_formula(match):
+            expression = match.group(1).strip()
+            result_tensor = evaluate_formula(expression, processed_images)
+            images_vl.append(result_tensor)
+            return "<|vision_start|><|image_pad|><|vision_end|>"
+
+        modified_prompt = math_pattern.sub(replace_formula, prompt)
+
+        # Re-check for keywords in the modified prompt
+        has_keywords = bool(pattern.search(modified_prompt)) or len(images_vl) > 0
+
+        if has_keywords:
+            # Replace keywords dynamically and build images_vl in order of appearance
+            def replace_keyword(match):
+                num = int(match.group(1))
+                dict_key = ImageInputMapping.get_dict_key(num, is_zero_indexed)
+                if dict_key in raw_images:
+                    img = raw_images[dict_key]
+                    processed_img = processed_images.get(ImageInputMapping.get_display_name(dict_key, is_zero_indexed), process_vlm_image(img, vlm_resolution))
+                    images_vl.append(processed_img)
+                    return "<|vision_start|><|image_pad|><|vision_end|>"
+                return ""
+
+            modified_prompt = pattern.sub(replace_keyword, modified_prompt)
+        else:
+            # Fallback: prepend all connected images in numerical order of their slots
+            image_prompt = ""
+            for num in sorted(raw_images.keys()):
+                name = ImageInputMapping.get_display_name(num, is_zero_indexed)
+                processed_img = processed_images[name]
+                images_vl.append(processed_img)
+                image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
+
+            modified_prompt = image_prompt + modified_prompt
+
+        # Pass standard tokens to tokenize (with images mapped to tags) and encode
+        conditioning = encode_embedding_classical_scaled_bias(clip, modified_prompt, images=images_vl)
+        return io.NodeOutput(conditioning)
+

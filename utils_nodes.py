@@ -2,6 +2,8 @@ import sys
 import random
 from typing import Union
 import json
+import os
+import torch
 from comfy_api.latest import io
 from comfy_extras.nodes_logic import SwitchNode, SoftSwitchNode
 
@@ -451,4 +453,199 @@ class UC_ExtractBoundingBox(io.ComfyNode):
             raise ValueError(f"Failed to convert bounding box values at index {index} to integers: {e}")
 
         return io.NodeOutput(x, y, w, h)
+
+
+class UC_Krea2LayerProbe(io.ComfyNode):
+    """
+    Krea 2 Text Encoder Activation Probing Node.
+
+    This node unpacks the flattened 12-layer text conditioning tensor of shape (B, seq, 30720)
+    back into its original 12 tapped components of shape (B, 12, seq, 2560) representing the
+    last 12 layers of Qwen3-VL-4B.
+
+    It calculates layer-wise activation statistics (Mean, Standard Deviation, Max, Min, L2 Norm)
+    and saves them in a JSONL file to compare safe and refused prompt dynamics. It can also save
+    sequence-averaged raw activation tensors to build offline datasets for pinpoint weight-level
+    ablation.
+    """
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_Krea2LayerProbe",
+            display_name="Krea 2 Layer Probe",
+            category="advanced/conditioning",
+            inputs=[
+                io.Conditioning.Input("conditioning"),
+                io.String.Input(
+                    "prompt_label",
+                    default="safe_prompt",
+                    tooltip="A unique name/tag to log this prompt in the stats. Tag safe prompts with 'safe_...' and refused prompts with 'refused_...' to perform differential analysis."
+                ),
+                io.String.Input(
+                    "log_dir",
+                    default="krea2_stats",
+                    tooltip="The directory where JSONL statistical logs and optional raw tensor files (.pt) will be written."
+                ),
+                io.Boolean.Input(
+                    "save_activations",
+                    default=False,
+                    tooltip="If True, saves raw 12-layer sequence-averaged activation tensors as .pt files in the log directory for difference-vector computations."
+                ),
+            ],
+            outputs=[
+                io.Conditioning.Output(display_name="conditioning"),
+                io.String.Output(display_name="statistics_summary"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, conditioning, prompt_label: str = "safe_prompt", log_dir: str = "krea2_stats", save_activations: bool = False) -> io.NodeOutput:
+        # Conditioning is a list of tuples: [(tensor, {"pooled_output": pooled})]
+        cond_tensor = conditioning[0][0]  # Shape: (B, seq, 30720)
+
+        B, seq, total_dim = cond_tensor.shape
+        num_layers = 12
+        hidden_size = 2560
+
+        if total_dim != num_layers * hidden_size:
+            raise ValueError(f"Expected conditioning dimension {num_layers * hidden_size}, got {total_dim}")
+
+        # Unpack layers: (B, seq, 12, 2560) -> (B, 12, seq, 2560)
+        unpacked = cond_tensor.view(B, seq, num_layers, hidden_size).permute(0, 2, 1, 3)
+
+        # Calculate Layer-wise Stats
+        stats = {}
+        os.makedirs(log_dir, exist_ok=True)
+
+        for i in range(num_layers):
+            layer_act = unpacked[:, i, :, :]  # (B, seq, 2560)
+
+            mean_val = torch.mean(layer_act).item()
+            std_val = torch.std(layer_act).item()
+            max_val = torch.max(layer_act).item()
+            min_val = torch.min(layer_act).item()
+            l2_norm = torch.norm(layer_act, p=2, dim=-1).mean().item()
+
+            stats[f"layer_{i}"] = {
+                "mean": mean_val,
+                "std": std_val,
+                "max": max_val,
+                "min": min_val,
+                "l2_norm": l2_norm
+            }
+
+        # Write summary to log
+        log_file = os.path.join(log_dir, "probe_log.jsonl")
+        log_entry = {
+            "prompt_label": prompt_label,
+            "seq_len": seq,
+            "stats": stats
+        }
+
+        with open(log_file, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+
+        # Optionally save raw tensor activations to calculate average directions later
+        if save_activations:
+            avg_activation = torch.mean(unpacked, dim=2)  # Shape: (B, 12, 2560)
+            save_path = os.path.join(log_dir, f"act_{prompt_label}.pt")
+            torch.save(avg_activation.cpu(), save_path)
+
+        summary_str = f"Probed {seq} tokens across {num_layers} layers.\n"
+        summary_str += f"Layer 7 (Max weight projection) L2: {stats['layer_7']['l2_norm']:.4f}, Max: {stats['layer_7']['max']:.4f}"
+
+        return io.NodeOutput(conditioning, summary_str)
+
+
+class UC_Krea2LayerAblator(io.ComfyNode):
+    """
+    Krea 2 Text Encoder Activation Pinpoint Ablator.
+
+    This node loads pre-computed difference vectors representing the shift in activation spaces
+    during safety refusals, and performs a clean orthogonal projection to subtract the refusal
+    direction component.
+
+    Warning: As direct activation manipulation (swapping/clamping/orthogonal subtraction) can
+    have subtle side-effects on photographic style, this node is primarily an analytical testbed.
+    Using the analytical probing results to surgically ablate weights on the diff LoRA is
+    the recommended production approach.
+    """
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_Krea2LayerAblator",
+            display_name="Krea 2 Layer Pinpoint Ablator",
+            category="advanced/conditioning",
+            inputs=[
+                io.Conditioning.Input("conditioning"),
+                io.String.Input(
+                    "vectors_path",
+                    default="krea2_stats/refusal_directions.pt",
+                    tooltip="Path to the .pt file containing pre-computed difference vectors for each of the 12 tapped layers."
+                ),
+                io.Float.Input(
+                    "ablation_strength",
+                    default=1.0,
+                    min=0.0,
+                    max=2.0,
+                    step=0.05,
+                    tooltip="Ablation scale. 1.0 performs pure orthogonal projection (subtraction of the refusal vector component)."
+                ),
+                io.String.Input(
+                    "layers_mask",
+                    default="0,0,0,0,0,0,0,1,1,1,1,0",
+                    tooltip="12 comma-separated binary integers (0 or 1) selecting which layers undergo orthogonal projection (e.g., '0,0,0,0,0,0,0,1,1,1,1,0' to target deep layers)."
+                ),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, conditioning, vectors_path: str = "krea2_stats/refusal_directions.pt", ablation_strength: float = 1.0, layers_mask: str = "0,0,0,0,0,0,0,1,1,1,1,0") -> io.NodeOutput:
+        if not os.path.exists(vectors_path):
+            print(f"Warning: Refusal vectors file not found at {vectors_path}. Skipping ablation.")
+            return io.NodeOutput(conditioning)
+
+        refusal_vectors = torch.load(vectors_path).to(torch.float32)
+
+        mask = [int(x.strip()) for x in layers_mask.split(",")]
+        if len(mask) != 12:
+            raise ValueError("Layers mask must contain exactly 12 comma-separated binary digits (0 or 1)")
+
+        modified_cond = []
+        for cond_tensor, extra in conditioning:
+            B, seq, total_dim = cond_tensor.shape
+            num_layers = 12
+            hidden_size = 2560
+
+            unpacked = cond_tensor.view(B, seq, num_layers, hidden_size).permute(0, 2, 1, 3).clone()
+
+            device = cond_tensor.device
+            dtype = cond_tensor.dtype
+
+            for i in range(num_layers):
+                if mask[i] == 1:
+                    v_refuse = refusal_vectors[0, i, :].to(device=device, dtype=torch.float32)
+
+                    norm = torch.norm(v_refuse, p=2)
+                    if norm > 1e-6:
+                        v_hat = v_refuse / norm
+
+                        layer_act = unpacked[:, i, :, :].to(dtype=torch.float32)
+
+                        dot_product = torch.sum(layer_act * v_hat, dim=-1, keepdim=True)
+
+                        projection = dot_product * v_hat
+                        ablated = layer_act - ablation_strength * projection
+
+                        unpacked[:, i, :, :] = ablated.to(dtype=dtype)
+
+            repacked = unpacked.permute(0, 2, 1, 3).reshape(B, seq, total_dim)
+
+            new_extra = extra.copy()
+            modified_cond.append((repacked, new_extra))
+
+        return io.NodeOutput(modified_cond)
 
