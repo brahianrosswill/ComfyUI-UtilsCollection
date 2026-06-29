@@ -232,7 +232,7 @@ def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
 
     try:
         # PyTorch overloads +, -, *, /, ** on tensors automatically!
-        result = eval(expression, safe_dict, {})
+        result = eval(expression, safe_dict, {})  # noqa: S307
 
         # Ensure result stays bounded between 0.0 and 1.0 (clamping standard image pixel range)
         return torch.clamp(result, 0.0, 1.0)
@@ -288,10 +288,10 @@ def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, poole
             safe_dict_pooled[name] = tensor
 
     try:
-        C_blended = eval(expression, safe_dict_cond, {})
+        C_blended = eval(expression, safe_dict_cond, {})  # noqa: S307
         P_blended = None
         if any(v is not None for v in pooled_tensors.values()):
-            P_blended = eval(expression, safe_dict_pooled, {})
+            P_blended = eval(expression, safe_dict_pooled, {})  # noqa: S307
         return C_blended, P_blended
     except Exception as e:
         raise RuntimeError(f"Error evaluating conditioning math expression '{expression}': {e}")
