@@ -669,6 +669,7 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                         "image_input_how_it_works",
                         "scaled_bias_and_weighting",
                         "math_expressions",
+                        "saving_embeddings",
                     ],
                     default="system_prompt",
                     tooltip="Select the topic you would like to view documentation for.",
@@ -730,6 +731,18 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "  - `zero-pad`: Silently zero-pads shorter sequence tensors to align lengths (matches ComfyUI core conditioning logic exactly).\n"
                 "  - `interpolate`: Dynamically resizes the visual token sequence using 1D linear interpolation to align attention features perfectly across the entire sequence without dead space.\n"
                 "- Security: All formulas are parsed and evaluated within a completely sandboxed namespace (`__builtins__ = {}`), preventing any insecure code executions while giving you full access to PyTorch's tensor math."
+            )
+        elif topic == "saving_embeddings":
+            markdown = (
+                "##### Saving Pre-Transformer Input Embeddings\n"
+                "You can save raw pre-transformer interleaved text and visual embeddings directly to disk before they enter the transformer layers.\n\n"
+                "##### Key Details:\n"
+                "- The **Krea 2 Input Embeddings** (`UC_Krea2InputEmbeds`) and **Qwen3-VL Unified Input Embeddings** (`UC_Qwen3VLInputEmbeds`) nodes handle this task.\n"
+                "- The prompt text is tokenized with `skip_template=True` so that any model-specific chat/prompt wrappers are skipped, preserving raw text embeddings.\n"
+                "- If an image is connected, the image is tokenized and its visual token pad structures are interleaved within the language tokens.\n"
+                "- The model's `process_tokens` method extracts the high-dimensional continuous input embeddings.\n"
+                "- To isolate language-only features, the nodes automatically locate the visual token bounds and slice out the entire visual pad block, leaving pure language/text embedding tensors.\n"
+                "- Tensors are written as a `.safetensors` file under your specified name in ComfyUI's `embeddings/` folder."
             )
         else:
             markdown = "Unknown topic selected."

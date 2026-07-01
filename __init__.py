@@ -70,6 +70,7 @@ class SamplingUtils(ComfyExtension):
             UC_Krea2LayerProbe,
             UC_Krea2LayerAblator,
             UC_Krea2InputEmbeds,
+            UC_Qwen3VLInputEmbeds,
             UC_EncoderNodesGuide,
             AdjustedResolutionParameters,
             ResolutionSelectorExtended,

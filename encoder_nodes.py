@@ -2222,3 +2222,129 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
 
         return io.NodeOutput(state_dict, tensor_2d)
 
+
+class UC_Qwen3VLInputEmbeds(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_Qwen3VLInputEmbeds",
+            display_name="Qwen3-VL Unified Input Embeddings",
+            category="advanced/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input("prompt", multiline=True, default="", tooltip="Input text prompt. Important: skips any template wrapping."),
+                io.Image.Input("image", optional=True, tooltip="Optional image input to interleave."),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path).",
+                ),
+                io.String.Input("file_name", default="qwen3vl_embed", tooltip="Specify the file name. The embedding will be saved as {file_name}.safetensors directly inside your ComfyUI embeddings directory."),
+            ],
+            outputs=[
+                io.AnyType.Output("state_dict", tooltip="Dictionary structure: {key_name: tensor_2d} of shape [num_tokens, hidden_size]"),
+                io.AnyType.Output("tensor_2d", tooltip="Raw PyTorch 2D tensor of shape [num_tokens, hidden_size]"),
+            ]
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, vlm_resolution, image=None, file_name="qwen3vl_embed") -> io.NodeOutput:
+        # Preprocess image if present
+        processed_img = None
+        images_vl = []
+        if image is not None:
+            def process_vlm_image(img, res):
+                VLM_RESOLUTIONS = {
+                    "Fast (384)": 384,
+                    "Balanced (512)": 512,
+                    "Detailed (768)": 768
+                }
+                samples = img.movedim(-1, 1)
+                if res == "Original":
+                    return img
+                else:
+                    vlm_size = VLM_RESOLUTIONS[res]
+                    total_vlm = vlm_size * vlm_size
+                    scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                    width_vlm = round(samples.shape[3] * scale_by_vlm)
+                    height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                    s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                    return s_vlm.movedim(1, -1)
+            processed_img = process_vlm_image(image, vlm_resolution)
+            images_vl.append(processed_img)
+
+        # Tokenize prompt using skip_template=True so no template wrapping is saved
+        modified_prompt = prompt
+        if image is not None:
+            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
+                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+
+        tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
+
+        # Retrieve the key name dynamically (typically "qwen3vl_4b" or "qwen3vl_8b")
+        key_name = "qwen3vl_8b"
+        if tokens:
+            key_name = next(iter(tokens.keys()))
+        token_list = tokens.get(key_name, [])
+        tokens_only = [[t[0] for t in b] for b in token_list]
+
+        # Process the tokens into raw interleaved input embeddings
+        cond_stage = clip.cond_stage_model
+        clip_model = None
+
+        if hasattr(cond_stage, "clip") and isinstance(cond_stage.clip, str) and hasattr(cond_stage, cond_stage.clip):
+            clip_model = getattr(cond_stage, cond_stage.clip)
+        elif hasattr(cond_stage, "clip_model"):
+            clip_model = cond_stage.clip_model
+        elif hasattr(cond_stage, "clip_d"):
+            clip_model = cond_stage.clip_d
+        else:
+            clip_model = cond_stage
+
+        if clip_model is None or not hasattr(clip_model, "process_tokens"):
+            raise AttributeError("Could not locate underlying model wrapper with 'process_tokens' method in cond_stage_model.")
+
+        embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, clip_model.execution_device)
+
+        # Locate and slice out any visual tokens to save ONLY the pure language/text tokens
+        vis_start, vis_end = find_visual_token_range(tokens, embeds)
+        if vis_start < vis_end:
+            prefix = embeds[:, :vis_start, :]
+            suffix = embeds[:, vis_end:, :]
+            embeds_sliced = torch.cat([prefix, suffix], dim=1)
+        else:
+            embeds_sliced = embeds
+
+        # Convert to 2D tensor [num_tokens, hidden_size]
+        tensor_2d = embeds_sliced.squeeze(0).clone().cpu()
+
+        # Build state dict
+        state_dict = {key_name: tensor_2d}
+
+        # If file_name is provided, save it as a .safetensors file in ComfyUI's embeddings directory
+        if file_name and file_name.strip():
+            import folder_paths
+            from safetensors.torch import save_file
+
+            # Locate ComfyUI embeddings directory
+            try:
+                embed_paths = folder_paths.get_folder_paths("embeddings")
+                if embed_paths:
+                    embeddings_dir = embed_paths[0]
+                else:
+                    embeddings_dir = os.path.join(os.path.dirname(folder_paths.__file__), "models", "embeddings")
+            except Exception:
+                embeddings_dir = "models/embeddings"
+
+            os.makedirs(embeddings_dir, exist_ok=True)
+            target_path = os.path.join(embeddings_dir, f"{file_name.strip()}.safetensors")
+
+            # Save the state dict using safetensors (tensors must be contiguous)
+            state_dict_safe = {k: v.contiguous() for k, v in state_dict.items()}
+            save_file(state_dict_safe, target_path)
+
+        return io.NodeOutput(state_dict, tensor_2d)
+
+
