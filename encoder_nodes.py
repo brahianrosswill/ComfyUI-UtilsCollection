@@ -1,6 +1,7 @@
 import re
 import torch
 import math
+import os
 
 from comfy_api.latest import ComfyExtension, io
 from comfy.utils import common_upscale
@@ -1793,12 +1794,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip=(
-                        "Main text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2). "
-                        "Also supports visual math blending: |formula| to blend image inputs natively in conditioning space (embedding level). "
-                        "Example: |((image_input_1 * 1.075) + (image_input_2 * 1.025)) / 1.5| to blend styles/concepts. "
-                        "Supported math operations: +, -, *, /, clamp, min, max, abs, on variables image_input_1 to image_input_16."
-                    ),
+                    tooltip="Main text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input(
@@ -1814,6 +1810,12 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     default="zero-pad",
                     tooltip="Alignment method for images with different aspect ratios/resolutions. 'zero-pad' pads with zeros (matches ComfyUI core), 'interpolate' linearly resizes visual tokens to preserve attention alignment.",
                 ),
+                io.String.Input(
+                    "formula",
+                    default="a",
+                    multiline=False,
+                    tooltip="Mathematical formula to blend conditioning outputs. Use variables a, b, c, d... to reference active connected image inputs. Supports weight syntax inside the formula, e.g. (a:1.2) + (b:0.8)",
+                ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
@@ -1822,28 +1824,24 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, multiplier, padding_method, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
-        # Collect and parse all autogrow keys
-        raw_images = {}
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, multiplier, padding_method, formula, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        # Collect and parse all active (non-null) connected images sequentially
+        active_images = []
         if image_inputs is not None:
-            # image_inputs can be a dict, let's handle cases where it might be empty
             for k, v in image_inputs.items():
                 if v is not None:
-                    # Extract numeric suffix (e.g. "image1" -> 1)
-                    digits = re.findall(r'\d+', k)
-                    if digits:
-                        idx = int(digits[0])
-                    else:
-                        idx = 1
-                    raw_images[idx] = v
+                    active_images.append(v)
 
-        # Determine indexing: 0-indexed or 1-indexed.
-        is_zero_indexed = 0 in raw_images
+        if not active_images:
+            # Fallback if no images are connected: encode prompt as plain text
+            conditioning = encode_embedding_classical_scaled_bias(clip, prompt, multiplier=multiplier)
+            return io.NodeOutput(conditioning)
 
-        # Check if the prompt has any image_input_ keyword matches (case-insensitive)
-        pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
-
-        images_vl = []
+        # Map active images sequentially to letter variables (a, b, c, ...) and encode each pass
+        sequence_tensors = {}
+        pooled_tensors = {}
+        deepstack_dict = {}
+        last_cond_dict = None
 
         def process_vlm_image(image, res):
             if image is None:
@@ -1866,174 +1864,117 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
                 return s_vlm.movedim(1, -1)
 
-        # Check if we should execute conditioning-space math blending
-        math_pattern = re.compile(r"\|([^|]+)\|")
-        math_match = math_pattern.search(prompt)
-        if math_match:
-            expression = math_match.group(1).strip()
+        for idx, img in enumerate(active_images):
+            letter = chr(97 + idx)  # 0 -> 'a', 1 -> 'b', 2 -> 'c', ...
+            processed_img = process_vlm_image(img, vlm_resolution)
 
-            # Find all referenced variables
-            var_pattern = re.compile(r"image_input_(\d+)")
-            referenced_vars = [int(v) for v in var_pattern.findall(expression)]
+            # Ensure prompt has image pad tokens so tokenizer knows where to inject the image
+            modified_prompt = prompt
+            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
+                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
-            if referenced_vars:
-                # 1. Internal single-image encoding passes
-                sequence_tensors = {}
-                pooled_tensors = {}
-                base_cond_dict = None
+            # Wrap in Llama/Krea2 system prompt template format
+            if len(system_prompt) > 0:
+                full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
+                    "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                    "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                    "<|im_start|>assistant\n"
+                )
+            else:
+                full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
+                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
+                    "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                    "<|im_start|>assistant\n"
+                )
 
-                for var_num in referenced_vars:
-                    dict_key = ImageInputMapping.get_dict_key(var_num, is_zero_indexed)
-                    if dict_key in raw_images:
-                        img = raw_images[dict_key]
-                        processed_img = process_vlm_image(img, vlm_resolution)
+            # Encode individual sequence pass
+            cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
+            C_X = cond_X[0][0]
+            P_X = cond_X[0][1].get("pooled_output", None)
 
-                        # Generate standalone visual prompt wrapped in templates
-                        if len(system_prompt) > 0:
-                            single_prompt = (
-                                "<|im_start|>user\n" + "<|im_end|>\n" +
-                                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
-                                "<|im_start|>user\n" + "<|vision_start|><|image_pad|><|vision_end|>" + "<|im_end|>\n" +
-                                "<|im_start|>assistant\n"
-                            )
-                        else:
-                            single_prompt = (
-                                "<|im_start|>user\n" + "<|im_end|>\n" +
-                                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                                "<|im_start|>user\n" + "<|vision_start|><|image_pad|><|vision_end|>" + "<|im_end|>\n" +
-                                "<|im_start|>assistant\n"
-                            )
+            sequence_tensors[letter] = C_X
+            if P_X is not None:
+                pooled_tensors[letter] = P_X
 
-                        # Encode standalone prompt using classical scaled bias to support scaling weights
-                        cond_X = encode_embedding_classical_scaled_bias(clip, single_prompt, images=[processed_img], skip_template=True)
-                        C_X = cond_X[0][0]
-                        P_X = cond_X[0][1].get("pooled_output", None)
+            # Extract DeepStack per-layer tensors if present
+            if "embeds_info" in cond_X[0][1] and len(cond_X[0][1]["embeds_info"]) > 0:
+                extra = cond_X[0][1]["embeds_info"][0].get("extra", {})
+                if "deepstack" in extra:
+                    deepstack_dict[letter] = extra["deepstack"]
 
-                        sequence_tensors[f"image_input_{var_num}"] = C_X
-                        if P_X is not None:
-                            pooled_tensors[f"image_input_{var_num}"] = P_X
+            last_cond_dict = cond_X[0][1]
 
-                        if base_cond_dict is None:
-                            base_cond_dict = cond_X[0][1].copy()
+        # Evaluate mathematical formula on sequence and pooled tensors
+        C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
-                if sequence_tensors:
-                    # 2. Evaluate conditioning-space formula
-                    C_blended, P_blended = evaluate_conditioning_formula(expression, sequence_tensors, pooled_tensors, padding_method=padding_method)
+        # Evaluate mathematical formula on DeepStack layers
+        deepstack_blended = None
+        if deepstack_dict:
+            first_key = next(iter(sequence_tensors.keys()))
+            num_layers = len(deepstack_dict[first_key])
+            max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
 
-                    # 3. Final main encoding pass
-                    # Replace formula |...| in prompt with a single image pad token
-                    final_prompt_text = math_pattern.sub("<|vision_start|><|image_pad|><|vision_end|>", prompt)
+            deepstack_blended = []
+            import torch.nn.functional as F
 
-                    # Construct final template string
-                    if len(system_prompt) > 0:
-                        full_prompt = (
-                            "<|im_start|>user\n" + "<|im_end|>\n" +
-                            "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
-                            "<|im_start|>user\n" + final_prompt_text + "<|im_end|>\n" +
-                            "<|im_start|>assistant\n"
-                        )
-                    else:
-                        full_prompt = (
-                            "<|im_start|>user\n" + "<|im_end|>\n" +
-                            "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                            "<|im_start|>user\n" + final_prompt_text + "<|im_end|>\n" +
-                            "<|im_start|>assistant\n"
-                        )
+            for l in range(num_layers):
+                layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
 
-                    # Encode final prompt using largest referenced image as dummy
-                    largest_var_name = max(sequence_tensors, key=lambda k: sequence_tensors[k].shape[1])
-                    largest_num = int(re.findall(r'\d+', largest_var_name)[0])
-                    largest_dict_key = ImageInputMapping.get_dict_key(largest_num, is_zero_indexed)
-                    dummy_img = process_vlm_image(raw_images[largest_dict_key], vlm_resolution)
+                # Align layer tensors to maximum length
+                aligned_layer_tensors = {}
+                for name, tensor in layer_tensors.items():
+                    if tensor.shape[0] < max_vis_len:
+                        if padding_method == "interpolate":
+                            tensor_perm = tensor.permute(1, 0).unsqueeze(0)
+                            tensor_interp = F.interpolate(tensor_perm, size=max_vis_len, mode='linear', align_corners=False)
+                            tensor = tensor_interp.squeeze(0).permute(1, 0)
+                        else:  # zero-pad
+                            pad_size = max_vis_len - tensor.shape[0]
+                            padding = torch.zeros((pad_size, tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
+                            tensor = torch.cat([tensor, padding], dim=0)
+                    aligned_layer_tensors[name] = tensor
 
-                    tokens_final = clip.tokenize(full_prompt, images=[dummy_img], skip_template=True)
-                    cond_final = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[dummy_img], skip_template=True)
+                safe_dict_layer = {
+                    "__builtins__": {},
+                    "clamp": torch.clamp,
+                    "min": torch.minimum,
+                    "max": torch.maximum,
+                    "abs": torch.abs,
+                }
+                for name, t in aligned_layer_tensors.items():
+                    safe_dict_layer[name] = t
 
-                    C_final = cond_final[0][0].clone()
-                    final_cond_dict = cond_final[0][1].copy()
+                # Handle classical weighting conversions inside math formula
+                layer_expression = re.sub(
+                    r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)",
+                    r"(\1 * \2)",
+                    formula
+                )
 
-                    # Overwrite the visual block's sequence range inside C_final with C_blended
-                    final_start, final_end = find_visual_token_range(tokens_final, C_final)
+                try:
+                    layer_blended = eval(layer_expression, safe_dict_layer, {}) # noqa: S307
+                    deepstack_blended.append(layer_blended)
+                except Exception as e:
+                    raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
 
-                    single_tokens = clip.tokenize(single_prompt, images=[dummy_img], skip_template=True)
-                    blend_start, blend_end = find_visual_token_range(single_tokens, C_blended)
+        # Build final conditioning dictionary
+        final_cond_dict = last_cond_dict.copy()
+        if P_blended is not None:
+            final_cond_dict["pooled_output"] = P_blended
 
-                    if final_start < final_end and blend_start < blend_end:
-                        C_final[:, final_start:final_end, :] = C_blended[:, blend_start:blend_end, :]
+        if deepstack_blended is not None and "embeds_info" in final_cond_dict and len(final_cond_dict["embeds_info"]) > 0:
+            final_cond_dict["embeds_info"] = [final_cond_dict["embeds_info"][0].copy()]
+            final_cond_dict["embeds_info"][0]["extra"] = final_cond_dict["embeds_info"][0]["extra"].copy()
+            final_cond_dict["embeds_info"][0]["extra"]["deepstack"] = deepstack_blended
 
-                    if P_blended is not None:
-                        final_cond_dict["pooled_output"] = P_blended
+        if multiplier != 1.0:
+            C_blended *= multiplier
+            if "pooled_output" in final_cond_dict and final_cond_dict["pooled_output"] is not None:
+                final_cond_dict["pooled_output"] *= multiplier
 
-                    if multiplier != 1.0:
-                        C_final = C_final * multiplier
-                        if "pooled_output" in final_cond_dict and final_cond_dict["pooled_output"] is not None:
-                            final_cond_dict["pooled_output"] = final_cond_dict["pooled_output"] * multiplier
-
-                    return io.NodeOutput([[C_final, final_cond_dict]])
-
-        # Create dict of preprocessed VLM images for math evaluation
-        processed_images = {}
-        for num, img in raw_images.items():
-            name = ImageInputMapping.get_display_name(num, is_zero_indexed)
-            processed_images[name] = process_vlm_image(img, vlm_resolution)
-
-        # Parse and replace any math formulas enclosed in pipes |formula|
-        math_pattern = re.compile(r"\|([^|]+)\|")
-
-        def replace_formula(match):
-            expression = match.group(1).strip()
-            result_tensor = evaluate_formula(expression, processed_images)
-            images_vl.append(result_tensor)
-            return "<|vision_start|><|image_pad|><|vision_end|>"
-
-        modified_prompt = math_pattern.sub(replace_formula, prompt)
-
-        # Re-check for keywords in the modified prompt
-        has_keywords = bool(pattern.search(modified_prompt)) or len(images_vl) > 0
-
-        if has_keywords:
-            # Replace keywords dynamically and build images_vl in order of appearance
-            def replace_keyword(match):
-                num = int(match.group(1))
-                dict_key = ImageInputMapping.get_dict_key(num, is_zero_indexed)
-                if dict_key in raw_images:
-                    img = raw_images[dict_key]
-                    processed_img = processed_images.get(ImageInputMapping.get_display_name(dict_key, is_zero_indexed), process_vlm_image(img, vlm_resolution))
-                    images_vl.append(processed_img)
-                    return "<|vision_start|><|image_pad|><|vision_end|>"
-                return ""
-
-            modified_prompt = pattern.sub(replace_keyword, modified_prompt)
-        else:
-            # Fallback: prepend all connected images in numerical order of their slots
-            image_prompt = ""
-            for num in sorted(raw_images.keys()):
-                name = ImageInputMapping.get_display_name(num, is_zero_indexed)
-                processed_img = processed_images[name]
-                images_vl.append(processed_img)
-                image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
-
-            modified_prompt = image_prompt + modified_prompt
-
-        # Construct the complete template string via safe concatenation
-        if len(system_prompt) > 0:
-            full_prompt = (
-                "<|im_start|>user\n" + "<|im_end|>\n" +
-                "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
-                "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                "<|im_start|>assistant\n"
-            )
-        else:
-            full_prompt = (
-                "<|im_start|>user\n" + "<|im_end|>\n" +
-                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                "<|im_start|>assistant\n"
-            )
-
-        # Pass skip_template=True so the tokenizer doesn't try to wrap or append extra blocks
-        conditioning = encode_embedding_classical_scaled_bias(clip, full_prompt, images=images_vl, skip_template=True, multiplier=multiplier)
-        return io.NodeOutput(conditioning)
+        return io.NodeOutput([[C_blended, final_cond_dict]])
 
 
 class TextEncodeEditScaledAdv(io.ComfyNode):
@@ -2055,12 +1996,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip=(
-                        "Main text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2). "
-                        "Also supports visual math blending: |formula| to blend image inputs natively in conditioning space (embedding level). "
-                        "Example: |((image_input_1 * 1.075) + (image_input_2 * 1.025)) / 1.5| to blend styles/concepts. "
-                        "Supported math operations: +, -, *, /, clamp, min, max, abs, on variables image_input_1 to image_input_16."
-                    ),
+                    tooltip="Main text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
                 ),
                 io.Combo.Input(
                     "vlm_resolution",
@@ -2075,6 +2011,12 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                     default="zero-pad",
                     tooltip="Alignment method for images with different aspect ratios/resolutions. 'zero-pad' pads with zeros (matches ComfyUI core), 'interpolate' linearly resizes visual tokens to preserve attention alignment.",
                 ),
+                io.String.Input(
+                    "formula",
+                    default="a",
+                    multiline=False,
+                    tooltip="Mathematical formula to blend conditioning outputs. Use variables a, b, c, d... to reference active connected image inputs. Supports weight syntax inside the formula, e.g. (a:1.2) + (b:0.8)",
+                ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
@@ -2083,28 +2025,23 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, multiplier, padding_method, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
-        # Collect and parse all autogrow keys
-        raw_images = {}
+    def execute(cls, clip, prompt, vlm_resolution, multiplier, padding_method, formula, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        # Collect and parse all active (non-null) connected images sequentially
+        active_images = []
         if image_inputs is not None:
-            # image_inputs can be a dict, let's handle cases where it might be empty
             for k, v in image_inputs.items():
                 if v is not None:
-                    # Extract numeric suffix (e.g. "image1" -> 1)
-                    digits = re.findall(r'\d+', k)
-                    if digits:
-                        idx = int(digits[0])
-                    else:
-                        idx = 1
-                    raw_images[idx] = v
+                    active_images.append(v)
 
-        # Determine indexing: 0-indexed or 1-indexed.
-        is_zero_indexed = 0 in raw_images
+        if not active_images:
+            # Fallback if no images are connected: encode prompt as plain text
+            conditioning = encode_embedding_classical_scaled_bias(clip, prompt, multiplier=multiplier)
+            return io.NodeOutput(conditioning)
 
-        # Check if the prompt has any image_input_ keyword matches (case-insensitive)
-        pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
-
-        images_vl = []
+        # Map active images sequentially to letter variables (a, b, c, ...) and encode each pass
+        sequence_tensors = {}
+        pooled_tensors = {}
+        last_cond_dict = None
 
         def process_vlm_image(image, res):
             if image is None:
@@ -2127,126 +2064,161 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
                 return s_vlm.movedim(1, -1)
 
-        # Check if we should execute conditioning-space math blending
-        math_pattern = re.compile(r"\|([^|]+)\|")
-        math_match = math_pattern.search(prompt)
-        if math_match:
-            expression = math_match.group(1).strip()
+        for idx, img in enumerate(active_images):
+            letter = chr(97 + idx)  # 0 -> 'a', 1 -> 'b', 2 -> 'c', ...
+            processed_img = process_vlm_image(img, vlm_resolution)
 
-            # Find all referenced variables
-            var_pattern = re.compile(r"image_input_(\d+)")
-            referenced_vars = [int(v) for v in var_pattern.findall(expression)]
+            # Ensure prompt has image pad tokens so tokenizer knows where to inject the image
+            modified_prompt = prompt
+            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
+                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
-            if referenced_vars:
-                # 1. Internal single-image encoding passes
-                sequence_tensors = {}
-                pooled_tensors = {}
-                base_cond_dict = None
+            # Encode individual sequence pass
+            cond_X = encode_embedding_classical_scaled_bias(clip, modified_prompt, images=[processed_img])
+            C_X = cond_X[0][0]
+            P_X = cond_X[0][1].get("pooled_output", None)
 
-                for var_num in referenced_vars:
-                    dict_key = ImageInputMapping.get_dict_key(var_num, is_zero_indexed)
-                    if dict_key in raw_images:
-                        img = raw_images[dict_key]
-                        processed_img = process_vlm_image(img, vlm_resolution)
+            sequence_tensors[letter] = C_X
+            if P_X is not None:
+                pooled_tensors[letter] = P_X
+            last_cond_dict = cond_X[0][1]
 
-                        single_prompt = "<|vision_start|><|image_pad|><|vision_end|>"
+        # Evaluate mathematical formula on sequence and pooled tensors
+        C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
-                        # Encode standalone prompt using classical scaled bias to support scaling weights
-                        cond_X = encode_embedding_classical_scaled_bias(clip, single_prompt, images=[processed_img])
-                        C_X = cond_X[0][0]
-                        P_X = cond_X[0][1].get("pooled_output", None)
+        # Build final conditioning dictionary
+        final_cond_dict = last_cond_dict.copy()
+        if P_blended is not None:
+            final_cond_dict["pooled_output"] = P_blended
 
-                        sequence_tensors[f"image_input_{var_num}"] = C_X
-                        if P_X is not None:
-                            pooled_tensors[f"image_input_{var_num}"] = P_X
+        if multiplier != 1.0:
+            C_blended *= multiplier
+            if "pooled_output" in final_cond_dict and final_cond_dict["pooled_output"] is not None:
+                final_cond_dict["pooled_output"] *= multiplier
 
-                        if base_cond_dict is None:
-                            base_cond_dict = cond_X[0][1].copy()
+        return io.NodeOutput([[C_blended, final_cond_dict]])
 
-                if sequence_tensors:
-                    # 2. Evaluate conditioning-space formula
-                    C_blended, P_blended = evaluate_conditioning_formula(expression, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
-                    # 3. Final main encoding pass
-                    # Replace formula |...| in prompt with a single image pad token
-                    final_prompt_text = math_pattern.sub("<|vision_start|><|image_pad|><|vision_end|>", prompt)
+class UC_Krea2InputEmbeds(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_Krea2InputEmbeds",
+            display_name="Krea 2 Input Embeddings",
+            category="advanced/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.String.Input("prompt", multiline=True, default="", tooltip="Input text prompt. Important: skips any template wrapping."),
+                io.Image.Input("image", optional=True, tooltip="Optional image input to interleave."),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path).",
+                ),
+                io.String.Input("file_name", default="qwen3vl_4b_embed", tooltip="Specify the file name. The embedding will be saved as {file_name}.safetensors directly inside your ComfyUI embeddings directory."),
+            ],
+            outputs=[
+                io.AnyType.Output("state_dict", tooltip="Dictionary structure: {'qwen3vl_4b': tensor_2d} of shape [num_tokens, 2560]"),
+                io.AnyType.Output("tensor_2d", tooltip="Raw PyTorch 2D tensor of shape [num_tokens, 2560]"),
+            ]
+        )
 
-                    # Encode final prompt using largest referenced image as dummy
-                    largest_var_name = max(sequence_tensors, key=lambda k: sequence_tensors[k].shape[1])
-                    largest_num = int(re.findall(r'\d+', largest_var_name)[0])
-                    largest_dict_key = ImageInputMapping.get_dict_key(largest_num, is_zero_indexed)
-                    dummy_img = process_vlm_image(raw_images[largest_dict_key], vlm_resolution)
+    @classmethod
+    def execute(cls, clip, prompt, vlm_resolution, image=None, file_name="qwen3vl_4b_embed") -> io.NodeOutput:
+        # Preprocess image if present
+        processed_img = None
+        images_vl = []
+        if image is not None:
+            def process_vlm_image(img, res):
+                VLM_RESOLUTIONS = {
+                    "Fast (384)": 384,
+                    "Balanced (512)": 512,
+                    "Detailed (768)": 768
+                }
+                samples = img.movedim(-1, 1)
+                if res == "Original":
+                    return img
+                else:
+                    vlm_size = VLM_RESOLUTIONS[res]
+                    total_vlm = vlm_size * vlm_size
+                    scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                    width_vlm = round(samples.shape[3] * scale_by_vlm)
+                    height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                    tokens_final = clip.tokenize(final_prompt_text, images=[dummy_img])
-                    cond_final = encode_embedding_classical_scaled_bias(clip, final_prompt_text, images=[dummy_img])
+                    s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                    return s_vlm.movedim(1, -1)
+            processed_img = process_vlm_image(image, vlm_resolution)
+            images_vl.append(processed_img)
 
-                    C_final = cond_final[0][0].clone()
-                    final_cond_dict = cond_final[0][1].copy()
+        # Tokenize prompt using skip_template=True so no template wrapping is saved
+        modified_prompt = prompt
+        if image is not None:
+            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
+                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
-                    # Overwrite the visual block's sequence range inside C_final with C_blended
-                    final_start, final_end = find_visual_token_range(tokens_final, C_final)
+        tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
 
-                    single_tokens = clip.tokenize(single_prompt, images=[dummy_img])
-                    blend_start, blend_end = find_visual_token_range(single_tokens, C_blended)
+        # Retrieve the key name (typically "qwen3vl_4b")
+        key_name = next(iter(tokens.keys()))
+        token_list = tokens[key_name]
+        tokens_only = [[t[0] for t in b] for b in token_list]
 
-                    if final_start < final_end and blend_start < blend_end:
-                        C_final[:, final_start:final_end, :] = C_blended[:, blend_start:blend_end, :]
+        # Process the tokens into raw interleaved input embeddings
+        cond_stage = clip.cond_stage_model
+        clip_model = None
 
-                    if P_blended is not None:
-                        final_cond_dict["pooled_output"] = P_blended
-
-                    if multiplier != 1.0:
-                        C_final = C_final * multiplier
-                        if "pooled_output" in final_cond_dict and final_cond_dict["pooled_output"] is not None:
-                            final_cond_dict["pooled_output"] = final_cond_dict["pooled_output"] * multiplier
-
-                    return io.NodeOutput([[C_final, final_cond_dict]])
-
-        # Create dict of preprocessed VLM images for math evaluation
-        processed_images = {}
-        for num, img in raw_images.items():
-            name = ImageInputMapping.get_display_name(num, is_zero_indexed)
-            processed_images[name] = process_vlm_image(img, vlm_resolution)
-
-        # Parse and replace any math formulas enclosed in pipes |formula|
-        math_pattern = re.compile(r"\|([^|]+)\|")
-
-        def replace_formula(match):
-            expression = match.group(1).strip()
-            result_tensor = evaluate_formula(expression, processed_images)
-            images_vl.append(result_tensor)
-            return "<|vision_start|><|image_pad|><|vision_end|>"
-
-        modified_prompt = math_pattern.sub(replace_formula, prompt)
-
-        # Re-check for keywords in the modified prompt
-        has_keywords = bool(pattern.search(modified_prompt)) or len(images_vl) > 0
-
-        if has_keywords:
-            # Replace keywords dynamically and build images_vl in order of appearance
-            def replace_keyword(match):
-                num = int(match.group(1))
-                dict_key = ImageInputMapping.get_dict_key(num, is_zero_indexed)
-                if dict_key in raw_images:
-                    img = raw_images[dict_key]
-                    processed_img = processed_images.get(ImageInputMapping.get_display_name(dict_key, is_zero_indexed), process_vlm_image(img, vlm_resolution))
-                    images_vl.append(processed_img)
-                    return "<|vision_start|><|image_pad|><|vision_end|>"
-                return ""
-
-            modified_prompt = pattern.sub(replace_keyword, modified_prompt)
+        if hasattr(cond_stage, "clip") and isinstance(cond_stage.clip, str) and hasattr(cond_stage, cond_stage.clip):
+            clip_model = getattr(cond_stage, cond_stage.clip)
+        elif hasattr(cond_stage, "clip_model"):
+            clip_model = cond_stage.clip_model
+        elif hasattr(cond_stage, "clip_d"):
+            clip_model = cond_stage.clip_d
         else:
-            # Fallback: prepend all connected images in numerical order of their slots
-            image_prompt = ""
-            for num in sorted(raw_images.keys()):
-                name = ImageInputMapping.get_display_name(num, is_zero_indexed)
-                processed_img = processed_images[name]
-                images_vl.append(processed_img)
-                image_prompt += f"<|vision_start|><|image_pad|><|vision_end|>"
+            clip_model = cond_stage
 
-            modified_prompt = image_prompt + modified_prompt
+        if clip_model is None or not hasattr(clip_model, "process_tokens"):
+            raise AttributeError("Could not locate underlying model wrapper with 'process_tokens' method in cond_stage_model.")
 
-        # Pass standard tokens to tokenize (with images mapped to tags) and encode
-        conditioning = encode_embedding_classical_scaled_bias(clip, modified_prompt, images=images_vl, multiplier=multiplier)
-        return io.NodeOutput(conditioning)
+        embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, clip_model.execution_device)
+
+        # Locate and slice out any visual tokens to save ONLY the pure language/text tokens
+        vis_start, vis_end = find_visual_token_range(tokens, embeds)
+        if vis_start < vis_end:
+            prefix = embeds[:, :vis_start, :]
+            suffix = embeds[:, vis_end:, :]
+            embeds_sliced = torch.cat([prefix, suffix], dim=1)
+        else:
+            embeds_sliced = embeds
+
+        # Convert to 2D tensor [num_tokens, 2560]
+        # embeds_sliced is shape (1, num_tokens, 2560)
+        tensor_2d = embeds_sliced.squeeze(0).clone().cpu()
+
+        # Build state dict
+        state_dict = {"qwen3vl_4b": tensor_2d}
+
+        # If file_name is provided, save it as a .safetensors file in ComfyUI's embeddings directory
+        if file_name and file_name.strip():
+            import folder_paths
+            from safetensors.torch import save_file
+
+            # Locate ComfyUI embeddings directory
+            try:
+                embed_paths = folder_paths.get_folder_paths("embeddings")
+                if embed_paths:
+                    embeddings_dir = embed_paths[0]
+                else:
+                    embeddings_dir = os.path.join(os.path.dirname(folder_paths.__file__), "models", "embeddings")
+            except Exception:
+                embeddings_dir = "models/embeddings"
+
+            os.makedirs(embeddings_dir, exist_ok=True)
+            target_path = os.path.join(embeddings_dir, f"{file_name.strip()}.safetensors")
+
+            # Save the state dict using safetensors (tensors must be contiguous)
+            state_dict_safe = {k: v.contiguous() for k, v in state_dict.items()}
+            save_file(state_dict_safe, target_path)
+
+        return io.NodeOutput(state_dict, tensor_2d)
 

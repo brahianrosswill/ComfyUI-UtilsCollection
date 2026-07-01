@@ -69,6 +69,7 @@ class SamplingUtils(ComfyExtension):
             UC_ExtractBoundingBox,
             UC_Krea2LayerProbe,
             UC_Krea2LayerAblator,
+            UC_Krea2InputEmbeds,
             UC_EncoderNodesGuide,
             AdjustedResolutionParameters,
             ResolutionSelectorExtended,
