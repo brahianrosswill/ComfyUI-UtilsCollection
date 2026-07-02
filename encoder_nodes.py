@@ -2117,6 +2117,11 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                     tooltip="Resolution of the image passed to the VLM (semantic path).",
                 ),
                 io.String.Input("file_name", default="qwen3vl_4b_embed", tooltip="Specify the file name. The embedding will be saved as {file_name}.safetensors directly inside your ComfyUI embeddings directory."),
+                io.Boolean.Input(
+                    "slice_visual_tokens",
+                    default=False,
+                    tooltip="If True, performs perfect visual slicing (Method A) to cut out visual tokens, saving a pure language embedding. If False (default), preserves the full interleaved sequence including visual tokens.",
+                ),
             ],
             outputs=[
                 io.AnyType.Output("state_dict", tooltip="Dictionary structure: {'qwen3vl_4b': tensor_2d} of shape [num_tokens, 2560]"),
@@ -2125,7 +2130,7 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, image=None, file_name="qwen3vl_4b_embed") -> io.NodeOutput:
+    def execute(cls, clip, prompt, vlm_resolution, image=None, file_name="qwen3vl_4b_embed", slice_visual_tokens=False) -> io.NodeOutput:
         # Preprocess image if present
         processed_img = None
         images_vl = []
@@ -2183,11 +2188,14 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
         embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, clip_model.execution_device)
 
         # Locate and slice out any visual tokens to save ONLY the pure language/text tokens
-        vis_start, vis_end = find_visual_token_range(tokens, embeds)
-        if vis_start < vis_end:
-            prefix = embeds[:, :vis_start, :]
-            suffix = embeds[:, vis_end:, :]
-            embeds_sliced = torch.cat([prefix, suffix], dim=1)
+        if slice_visual_tokens:
+            vis_start, vis_end = find_visual_token_range(tokens, embeds)
+            if vis_start < vis_end:
+                prefix = embeds[:, :vis_start, :]
+                suffix = embeds[:, vis_end:, :]
+                embeds_sliced = torch.cat([prefix, suffix], dim=1)
+            else:
+                embeds_sliced = embeds
         else:
             embeds_sliced = embeds
 
@@ -2241,6 +2249,11 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                     tooltip="Resolution of the image passed to the VLM (semantic path).",
                 ),
                 io.String.Input("file_name", default="qwen3vl_embed", tooltip="Specify the file name. The embedding will be saved as {file_name}.safetensors directly inside your ComfyUI embeddings directory."),
+                io.Boolean.Input(
+                    "slice_visual_tokens",
+                    default=False,
+                    tooltip="If True, performs perfect visual slicing (Method A) to cut out visual tokens, saving a pure language embedding. If False (default), preserves the full interleaved sequence including visual tokens.",
+                ),
             ],
             outputs=[
                 io.AnyType.Output("state_dict", tooltip="Dictionary structure: {key_name: tensor_2d} of shape [num_tokens, hidden_size]"),
@@ -2249,7 +2262,7 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, image=None, file_name="qwen3vl_embed") -> io.NodeOutput:
+    def execute(cls, clip, prompt, vlm_resolution, image=None, file_name="qwen3vl_embed", slice_visual_tokens=False) -> io.NodeOutput:
         # Preprocess image if present
         processed_img = None
         images_vl = []
@@ -2309,11 +2322,14 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
         embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, clip_model.execution_device)
 
         # Locate and slice out any visual tokens to save ONLY the pure language/text tokens
-        vis_start, vis_end = find_visual_token_range(tokens, embeds)
-        if vis_start < vis_end:
-            prefix = embeds[:, :vis_start, :]
-            suffix = embeds[:, vis_end:, :]
-            embeds_sliced = torch.cat([prefix, suffix], dim=1)
+        if slice_visual_tokens:
+            vis_start, vis_end = find_visual_token_range(tokens, embeds)
+            if vis_start < vis_end:
+                prefix = embeds[:, :vis_start, :]
+                suffix = embeds[:, vis_end:, :]
+                embeds_sliced = torch.cat([prefix, suffix], dim=1)
+            else:
+                embeds_sliced = embeds
         else:
             embeds_sliced = embeds
 

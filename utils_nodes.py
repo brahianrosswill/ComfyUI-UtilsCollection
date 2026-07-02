@@ -741,7 +741,7 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "- The prompt text is tokenized with `skip_template=True` so that any model-specific chat/prompt wrappers are skipped, preserving raw text embeddings.\n"
                 "- If an image is connected, the image is tokenized and its visual token pad structures are interleaved within the language tokens.\n"
                 "- The model's `process_tokens` method extracts the high-dimensional continuous input embeddings.\n"
-                "- To isolate language-only features, the nodes automatically locate the visual token bounds and slice out the entire visual pad block, leaving pure language/text embedding tensors.\n"
+                "- Slicing can be toggled optionally via the `slice_visual_tokens` widget (Method A) to extract pure language/text embedding tensors. If disabled (default), the raw interleaved sequence is preserved.\n"
                 "- Tensors are written as a `.safetensors` file under your specified name in ComfyUI's `embeddings/` folder."
             )
         else:
