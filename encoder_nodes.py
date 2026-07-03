@@ -799,9 +799,9 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'Original' uses native resolution.",
                 ),
                 io.Combo.Input(
                     "vae_resolution",
@@ -829,7 +829,10 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
         VLM_RESOLUTIONS = {
             "Fast (384)": 384,
             "Balanced (512)": 512,
-            "Detailed (768)": 768
+            "Detailed (768)": 768,
+            "Large (1024)": 1024,
+            "X-Large (1280)": 1280,
+            "XX-Large (1536)": 1536
         }
 
         VAE_RESOLUTIONS = {
@@ -917,9 +920,9 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
                 ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
@@ -958,7 +961,10 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
             VLM_RESOLUTIONS = {
                 "Fast (384)": 384,
                 "Balanced (512)": 512,
-                "Detailed (768)": 768
+                "Detailed (768)": 768,
+                "Large (1024)": 1024,
+                "X-Large (1280)": 1280,
+                "XX-Large (1536)": 1536
             }
             samples = image.movedim(-1, 1)
             if res == "Original":
@@ -1067,9 +1073,9 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
                 ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
@@ -1108,7 +1114,10 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
             VLM_RESOLUTIONS = {
                 "Fast (384)": 384,
                 "Balanced (512)": 512,
-                "Detailed (768)": 768
+                "Detailed (768)": 768,
+                "Large (1024)": 1024,
+                "X-Large (1280)": 1280,
+                "XX-Large (1536)": 1536
             }
             samples = image.movedim(-1, 1)
             if res == "Original":
@@ -1216,9 +1225,9 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
                 ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
@@ -1257,7 +1266,10 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
             VLM_RESOLUTIONS = {
                 "Fast (384)": 384,
                 "Balanced (512)": 512,
-                "Detailed (768)": 768
+                "Detailed (768)": 768,
+                "Large (1024)": 1024,
+                "X-Large (1280)": 1280,
+                "XX-Large (1536)": 1536
             }
             samples = image.movedim(-1, 1)
             if res == "Original":
@@ -1341,9 +1353,9 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
                 ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
@@ -1418,21 +1430,24 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
         def process_vlm_image(image, res):
             if image is None:
                 return None
+            if res == "Original":
+                return image[:, :, :, :3]
             VLM_RESOLUTIONS = {
                 "Fast (384)": 384,
                 "Balanced (512)": 512,
                 "Detailed (768)": 768,
-                "Original": 896
+                "Large (1024)": 1024,
+                "X-Large (1280)": 1280,
+                "XX-Large (1536)": 1536
             }
             samples = image.movedim(-1, 1)
-            vlm_size = VLM_RESOLUTIONS.get(res, 896)
+            vlm_size = VLM_RESOLUTIONS[res]
             total_vlm = vlm_size * vlm_size
             scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
             width_vlm = round(samples.shape[3] * scale_by_vlm)
             height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-            # Use area interpolation for original/ltxv2 style, bicubic for others
-            s_vlm = common_upscale(samples, width_vlm, height_vlm, "area" if res == "Original" else "bicubic", "disabled")
+            s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
             return s_vlm.movedim(1, -1)[:, :, :, :3]
 
         # 3. Process the images and manually inject them sequentially into the 262144 tokens
@@ -1799,9 +1814,9 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
                 ),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
                 io.Combo.Input(
@@ -1849,7 +1864,10 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             VLM_RESOLUTIONS = {
                 "Fast (384)": 384,
                 "Balanced (512)": 512,
-                "Detailed (768)": 768
+                "Detailed (768)": 768,
+                "Large (1024)": 1024,
+                "X-Large (1280)": 1280,
+                "XX-Large (1536)": 1536
             }
             samples = image.movedim(-1, 1)
             if res == "Original":
@@ -2000,9 +2018,9 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Original' uses native resolution.",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
                 ),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
                 io.Combo.Input(
@@ -2049,7 +2067,10 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
             VLM_RESOLUTIONS = {
                 "Fast (384)": 384,
                 "Balanced (512)": 512,
-                "Detailed (768)": 768
+                "Detailed (768)": 768,
+                "Large (1024)": 1024,
+                "X-Large (1280)": 1280,
+                "XX-Large (1536)": 1536
             }
             samples = image.movedim(-1, 1)
             if res == "Original":
@@ -2112,7 +2133,7 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                 io.Image.Input("image", optional=True, tooltip="Optional image input to interleave."),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path).",
                 ),
@@ -2139,7 +2160,10 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                 VLM_RESOLUTIONS = {
                     "Fast (384)": 384,
                     "Balanced (512)": 512,
-                    "Detailed (768)": 768
+                    "Detailed (768)": 768,
+                    "Large (1024)": 1024,
+                    "X-Large (1280)": 1280,
+                    "XX-Large (1536)": 1536
                 }
                 samples = img.movedim(-1, 1)
                 if res == "Original":
@@ -2244,7 +2268,7 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                 io.Image.Input("image", optional=True, tooltip="Optional image input to interleave."),
                 io.Combo.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Original"],
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path).",
                 ),
@@ -2271,7 +2295,10 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                 VLM_RESOLUTIONS = {
                     "Fast (384)": 384,
                     "Balanced (512)": 512,
-                    "Detailed (768)": 768
+                    "Detailed (768)": 768,
+                    "Large (1024)": 1024,
+                    "X-Large (1280)": 1280,
+                    "XX-Large (1536)": 1536
                 }
                 samples = img.movedim(-1, 1)
                 if res == "Original":
