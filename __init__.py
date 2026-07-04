@@ -89,6 +89,7 @@ class SamplingUtils(ComfyExtension):
             TextEncodeKrea2SystemEditPlusAdvanced,
             TextEncodeEditPlusAdvanced,
             TextEncodeKrea2SystemEditScaledAdv,
+            TextEncodeKrea2SysEditScaledAdvAttn,
             TextEncodeEditScaledAdv,
             TextEncodeGemmaSystemEditPlusAdvanced,
             ScaledBiasTextEncodeLtxv2SystemPrompt,

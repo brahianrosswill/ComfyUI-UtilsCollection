@@ -2391,3 +2391,418 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
         return io.NodeOutput(state_dict, tensor_2d)
 
 
+_QWEN_IM_START, _QWEN_USER, _QWEN_NL, _QWEN_IM_END = 151644, 872, 198, 151645
+
+def _krea2_user_content_span(ids):
+    best_start, best_end = None, None
+    for i in range(len(ids) - 2):
+        if ids[i] == _QWEN_IM_START and ids[i + 1] == _QWEN_USER and ids[i + 2] == _QWEN_NL:
+            start = i + 3
+            end = start
+            while end < len(ids) and ids[end] != _QWEN_IM_END:
+                end += 1
+            if end > start:  # prioritize non-empty block
+                best_start, best_end = start, end
+    if best_start is not None:
+        return best_start, best_end
+    for i in range(len(ids) - 2):
+        if ids[i] == _QWEN_IM_START and ids[i + 1] == _QWEN_USER and ids[i + 2] == _QWEN_NL:
+            start = i + 3
+            end = start
+            while end < len(ids) and ids[end] != _QWEN_IM_END:
+                end += 1
+            return start, end
+    return None, None
+
+def _krea2_token_ids(clip, text):
+    tok = clip.tokenize(text)
+    key = next(iter(tok))
+    return [t[0] if isinstance(t, tuple) else t for t in tok[key][0]]
+
+def _find_subsequence(seq, sub, lo, hi):
+    out = []
+    n = len(sub)
+    if n == 0:
+        return out
+    for i in range(lo, hi - n + 1):
+        if seq[i:i + n] == sub:
+            out.append(i)
+    return out
+
+
+def krea2_attn_forward_weight(self, x, freqs=None, mask=None, transformer_options={}):
+    from einops import rearrange
+    from comfy.ldm.flux.math import apply_rope
+    from comfy.ldm.modules.attention import optimized_attention, attention_pytorch
+
+    q, k, v, gate = self.wq(x), self.wk(x), self.wv(x), self.gate(x)
+    q = rearrange(q, "B L (H D) -> B H L D", H=self.heads)
+    k = rearrange(k, "B L (H D) -> B H L D", H=self.kvheads)
+    v = rearrange(v, "B L (H D) -> B H L D", H=self.kvheads)
+
+    weights = transformer_options.get("krea2_token_weights")
+    if weights:
+        v = v.clone()
+        for pos, v_factor, _ in weights:
+            if v_factor != 1.0 and pos < v.shape[2]:
+                v[:, :, pos] = v[:, :, pos] * v_factor
+    q, k = self.qknorm(q, k)
+    if freqs is not None:
+        q, k = apply_rope(q, k, freqs)
+    if self.kvheads != self.heads:
+        rep = self.heads // self.kvheads
+        k = k.repeat_interleave(rep, dim=1)
+        v = v.repeat_interleave(rep, dim=1)
+    bias = None
+    if weights and any(kb != 0.0 for _, _, kb in weights):
+        bias = q.new_zeros(1, k.shape[2])
+        for pos, _, kb in weights:
+            if kb != 0.0 and pos < bias.shape[1]:
+                bias[:, pos] = kb
+    if bias is not None:
+        out = attention_pytorch(q, k, v, self.heads, mask=bias, skip_reshape=True)
+    else:
+        out = optimized_attention(q, k, v, self.heads, mask=mask, skip_reshape=True, transformer_options=transformer_options)
+    return self.wo(out * torch.sigmoid(gate))
+
+class Krea2WeightPatch:
+    def __get__(self, obj, objtype=None):
+        import types
+        return types.MethodType(krea2_attn_forward_weight, obj)
+
+
+class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("image", optional=True),
+            prefix="image",
+            min=1,
+            max=16
+        )
+        return io.Schema(
+            node_id="TextEncodeKrea2SysEditScaledAdvAttn",
+            display_name="TextEncodeKrea2SysEditScaledAdvAttn",
+            category="model/conditioning",
+            inputs=[
+                io.Model.Input("model"),
+                io.Clip.Input("clip"),
+                io.String.Input(
+                    "prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    tooltip="Main text prompt. Supports weight syntax: (prompt:weight), e.g. (sunset:1.5).",
+                ),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path).",
+                ),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
+                io.Float.Input("strength", default=1.0, min=0.0, max=4.0, step=0.05, tooltip="Global multiplier on the weighting effect. Effect compounds over all blocks."),
+                io.Combo.Input(
+                    "padding_method",
+                    options=["zero-pad", "interpolate"],
+                    default="zero-pad",
+                    tooltip="Alignment method for images with different aspect ratios/resolutions.",
+                ),
+                io.String.Input(
+                    "formula",
+                    default="a",
+                    multiline=False,
+                    tooltip="Mathematical formula to blend conditioning outputs. Use variables a, b, c, d...",
+                ),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
+            ],
+            outputs=[
+                io.Model.Output(),
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, model, clip, prompt, system_prompt, vlm_resolution, multiplier, strength, padding_method, formula, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        active_images = []
+        if image_inputs is not None:
+            for k, v in image_inputs.items():
+                if v is not None:
+                    active_images.append(v)
+
+        # 1. Parse prompt weights using regex
+        import re
+        pattern = re.compile(r"\(([^():]+):(-?\d*\.?\d+)\)")
+        terms = [(m.group(1).strip(), float(m.group(2))) for m in pattern.finditer(prompt)]
+        clean_prompt = pattern.sub(lambda m: m.group(1), prompt)
+
+        def process_vlm_image(image, res):
+            if image is None:
+                return None
+            VLM_RESOLUTIONS = {
+                "Fast (384)": 384,
+                "Balanced (512)": 512,
+                "Detailed (768)": 768,
+                "Large (1024)": 1024,
+                "X-Large (1280)": 1280,
+                "XX-Large (1536)": 1536
+            }
+            samples = image.movedim(-1, 1)
+            if res == "Original":
+                return image
+            else:
+                vlm_size = VLM_RESOLUTIONS[res]
+                total_vlm = vlm_size * vlm_size
+                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                width_vlm = round(samples.shape[3] * scale_by_vlm)
+                height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                return s_vlm.movedim(1, -1)
+
+        # 2. Get tokens mapping on clean prompt with representative (first) image or fallback
+        if active_images:
+            first_img = active_images[0]
+            processed_first_img = process_vlm_image(first_img, vlm_resolution)
+
+            modified_clean_prompt = clean_prompt
+            if not any(tag in clean_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
+                modified_clean_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_clean_prompt
+
+            if len(system_prompt) > 0:
+                clean_full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
+                    "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                    "<|im_start|>user\n" + modified_clean_prompt + "<|im_end|>\n" +
+                    "<|im_start|>assistant\n"
+                )
+            else:
+                clean_full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
+                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
+                    "<|im_start|>user\n" + modified_clean_prompt + "<|im_end|>\n" +
+                    "<|im_start|>assistant\n"
+                )
+            tok = clip.tokenize(clean_full_prompt, images=[processed_first_img], skip_template=True)
+        else:
+            if len(system_prompt) > 0:
+                clean_full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
+                    "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                    "<|im_start|>user\n" + clean_prompt + "<|im_end|>\n" +
+                    "<|im_start|>assistant\n"
+                )
+            else:
+                clean_full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
+                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
+                    "<|im_start|>user\n" + clean_prompt + "<|im_end|>\n" +
+                    "<|im_start|>assistant\n"
+                )
+            tok = clip.tokenize(clean_full_prompt, skip_template=True)
+
+        key = next(iter(tok))
+        token_list = tok[key][0]
+        ids = []
+        for t in token_list:
+            if isinstance(t, tuple) and len(t) > 0:
+                ids.append(t[0])
+            elif isinstance(t, dict):
+                ids.append(-1)
+            else:
+                ids.append(t)
+
+        cond = clip.encode_from_tokens_scheduled(tok)
+        cond_len = cond[0][0].shape[1]
+
+        # Count text vs image tokens for mapping
+        text_token_count = 0
+        image_token_count = 0
+        for t in token_list:
+            if is_image_token(t):
+                image_token_count += 1
+            else:
+                text_token_count += 1
+
+        if image_token_count > 0:
+            V = (cond_len - text_token_count) // image_token_count
+        else:
+            V = 1
+
+        mapping = []
+        current_idx = 0
+        for t in token_list:
+            is_img = is_image_token(t)
+            size = V if is_img else 1
+            start = current_idx
+            end = current_idx + size
+            mapping.append((start, end))
+            current_idx = end
+
+        start, end = _krea2_user_content_span(ids)
+        if start is None:
+            start, end = 0, len(ids)
+
+        weight_pairs = []
+        for phrase, w in terms:
+            if w > 1.0:
+                v_factor, k_bias = 1.0, strength * (w - 1.0) * 2.0
+            else:
+                v_factor, k_bias = 1.0 + strength * (w - 1.0), 0.0
+            positions = []
+            for variant in (" " + phrase, phrase):
+                sub = _krea2_token_ids(clip, variant)
+                ps, pe = _krea2_user_content_span(sub)
+                if ps is not None:
+                    sub = sub[ps:pe]
+                matches = _find_subsequence(ids, sub, start, end)
+                if matches:
+                    for mi in matches:
+                        for off in range(len(sub)):
+                            t_idx = mi + off
+                            if t_idx < len(mapping):
+                                positions.append(mapping[t_idx][0])
+                    break
+            if not positions:
+                import logging
+                logging.warning(f"Krea2PromptWeight: phrase '{phrase}' not found in prompt; skipped.")
+                continue
+            for cp in positions:
+                if 0 <= cp < cond_len:
+                    weight_pairs.append((cp, v_factor, k_bias))
+
+        # 3. Patch model
+        model_clone = model.clone()
+        if weight_pairs:
+            import logging
+            logging.info(f"Krea2PromptWeight (Attn): weighting {weight_pairs}")
+            diffusion_model = model_clone.get_model_object("diffusion_model")
+            transformer_options = model_clone.model_options.get("transformer_options", {}).copy()
+            transformer_options["krea2_token_weights"] = weight_pairs
+            model_clone.model_options["transformer_options"] = transformer_options
+
+            for idx, block in enumerate(diffusion_model.blocks):
+                if hasattr(block, "attn"):
+                    patched_attn = Krea2WeightPatch().__get__(block.attn, block.attn.__class__)
+                    model_clone.add_object_patch(f"diffusion_model.blocks.{idx}.attn.forward", patched_attn)
+
+        # 4. Multpass encoding and blending
+        if active_images:
+            sequence_tensors = {}
+            pooled_tensors = {}
+            deepstack_dict = {}
+            last_cond_dict = None
+
+            for idx, img in enumerate(active_images):
+                letter = chr(97 + idx)
+                processed_img = process_vlm_image(img, vlm_resolution)
+
+                modified_prompt = clean_prompt
+                if not any(tag in clean_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
+                    modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+
+                if len(system_prompt) > 0:
+                    full_prompt = (
+                        "<|im_start|>user\n" + "<|im_end|>\n" +
+                        "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                        "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                        "<|im_start|>assistant\n"
+                    )
+                else:
+                    full_prompt = (
+                        "<|im_start|>user\n" + "<|im_end|>\n" +
+                        "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
+                        "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                        "<|im_start|>assistant\n"
+                    )
+
+                cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
+                C_X = cond_X[0][0]
+                P_X = cond_X[0][1].get("pooled_output", None)
+
+                sequence_tensors[letter] = C_X
+                if P_X is not None:
+                    pooled_tensors[letter] = P_X
+
+                if "embeds_info" in cond_X[0][1] and len(cond_X[0][1]["embeds_info"]) > 0:
+                    extra = cond_X[0][1]["embeds_info"][0].get("extra", {})
+                    if "deepstack" in extra:
+                        deepstack_dict[letter] = extra["deepstack"]
+
+                last_cond_dict = cond_X[0][1]
+
+            C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
+
+            deepstack_blended = None
+            if deepstack_dict:
+                first_key = next(iter(sequence_tensors.keys()))
+                num_layers = len(deepstack_dict[first_key])
+                max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
+
+                deepstack_blended = []
+                import torch.nn.functional as F
+
+                for l in range(num_layers):
+                    layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
+
+                    aligned_layer_tensors = {}
+                    for name, tensor in layer_tensors.items():
+                        if tensor.shape[0] < max_vis_len:
+                            if padding_method == "interpolate":
+                                tensor_perm = tensor.permute(1, 0).unsqueeze(0)
+                                tensor_interp = F.interpolate(tensor_perm, size=max_vis_len, mode='linear', align_corners=False)
+                                tensor = tensor_interp.squeeze(0).permute(1, 0)
+                            else:
+                                pad_size = max_vis_len - tensor.shape[0]
+                                padding = torch.zeros((pad_size, tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
+                                tensor = torch.cat([tensor, padding], dim=0)
+                        aligned_layer_tensors[name] = tensor
+
+                    safe_dict_layer = {
+                        "__builtins__": {},
+                        "clamp": torch.clamp,
+                        "min": torch.minimum,
+                        "max": torch.maximum,
+                        "abs": torch.abs,
+                    }
+                    for name, t in aligned_layer_tensors.items():
+                        safe_dict_layer[name] = t
+
+                    layer_expression = re.sub(
+                        r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)",
+                        r"(\1 * \2)",
+                        formula
+                    )
+
+                    try:
+                        layer_blended = eval(layer_expression, safe_dict_layer, {})
+                        deepstack_blended.append(layer_blended)
+                    except Exception as e:
+                        raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
+
+            final_cond_dict = last_cond_dict.copy()
+            if P_blended is not None:
+                final_cond_dict["pooled_output"] = P_blended
+
+            if deepstack_blended is not None and "embeds_info" in final_cond_dict and len(final_cond_dict["embeds_info"]) > 0:
+                final_cond_dict["embeds_info"] = [final_cond_dict["embeds_info"][0].copy()]
+                final_cond_dict["embeds_info"][0]["extra"] = final_cond_dict["embeds_info"][0]["extra"].copy()
+                final_cond_dict["embeds_info"][0]["extra"]["deepstack"] = deepstack_blended
+
+            if multiplier != 1.0:
+                C_blended *= multiplier
+                if "pooled_output" in final_cond_dict and final_cond_dict["pooled_output"] is not None:
+                    final_cond_dict["pooled_output"] *= multiplier
+
+            conditioning = [[C_blended, final_cond_dict]]
+        else:
+            conditioning = encode_embedding_classical_scaled_bias(clip, clean_full_prompt)
+            if multiplier != 1.0:
+                for i in range(len(conditioning)):
+                    conditioning[i][0] *= multiplier
+                    if "pooled_output" in conditioning[i][1] and conditioning[i][1]["pooled_output"] is not None:
+                        conditioning[i][1]["pooled_output"] *= multiplier
+
+        return io.NodeOutput(model_clone, conditioning)
+
+
