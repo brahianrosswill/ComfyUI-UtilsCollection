@@ -1901,7 +1901,6 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 )
             else:
                 full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
                     "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
                     "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
                     "<|im_start|>assistant\n"
