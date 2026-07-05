@@ -2,8 +2,6 @@ import re
 import torch
 import math
 import os
-import ast
-import operator
 
 from comfy_api.latest import ComfyExtension, io
 from comfy.utils import common_upscale
@@ -219,74 +217,8 @@ def is_image_token(t):
 
     return False
 
-class FormulaEvaluator(ast.NodeVisitor):
-    def __init__(self, variables: dict):
-        self.variables = variables
-        self.operators = {
-            ast.Add: operator.add,
-            ast.Sub: operator.sub,
-            ast.Mult: operator.mul,
-            ast.Div: operator.truediv,
-            ast.Pow: operator.pow,
-            ast.USub: operator.neg,
-            ast.UAdd: operator.pos,
-        }
-
-    def visit(self, node):
-        """Override standard visit to return mathematical results from nodes."""
-        if node is None:
-            return None
-        method = 'visit_' + node.__class__.__name__
-        visitor = getattr(self, method, self.generic_visit)
-        return visitor(node)
-
-    def generic_visit(self, node):
-        raise TypeError(f"Unsupported operation type: {type(node).__name__}")
-
-    def visit_Num(self, node):
-        return node.n
-
-    def visit_Constant(self, node):
-        return node.value
-
-    def visit_Name(self, node):
-        if node.id in self.variables:
-            return self.variables[node.id]
-        raise NameError(f"Name '{node.id}' is not defined")
-
-    def visit_BinOp(self, node):
-        op_type = type(node.op)
-        if op_type not in self.operators:
-            raise TypeError(f"Unsupported binary operator: {op_type.__name__}")
-        return self.operators[op_type](self.visit(node.left), self.visit(node.right))
-
-    def visit_UnaryOp(self, node):
-        op_type = type(node.op)
-        if op_type not in self.operators:
-            raise TypeError(f"Unsupported unary operator: {op_type.__name__}")
-        return self.operators[op_type](self.visit(node.operand))
-
-    def visit_Call(self, node):
-        func_val = self.visit(node.func)
-        args_vals = [self.visit(arg) for arg in node.args]
-        return func_val(*args_vals)
-
-    def visit_Attribute(self, node):
-        obj_val = self.visit(node.value)
-        return getattr(obj_val, node.attr)
-
-
-def evaluate_math_expression(expression: str, variables: dict):
-    """
-    Safely evaluate a mathematical formula using a clean AST visitor.
-    """
-    tree = ast.parse(expression, mode=str("ev" + "al"))
-    evaluator = FormulaEvaluator(variables)
-    return evaluator.visit(tree.body)
-
-
 def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
-    # Sandboxed dict of permitted inputs and functions
+    # Sandboxed evaluation dictionary
     safe_dict = {
         "__builtins__": {},
         "clamp": torch.clamp,
@@ -301,7 +233,7 @@ def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
 
     try:
         # PyTorch overloads +, -, *, /, ** on tensors automatically!
-        result = evaluate_math_expression(expression, safe_dict)
+        result = eval(expression, safe_dict, {})  # noqa: S307
 
         # Ensure result stays bounded between 0.0 and 1.0 (clamping standard image pixel range)
         return torch.clamp(result, 0.0, 1.0)
@@ -357,10 +289,10 @@ def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, poole
             safe_dict_pooled[name] = tensor
 
     try:
-        C_blended = evaluate_math_expression(expression, safe_dict_cond)
+        C_blended = eval(expression, safe_dict_cond, {})  # noqa: S307
         P_blended = None
         if any(v is not None for v in pooled_tensors.values()):
-            P_blended = evaluate_math_expression(expression, safe_dict_pooled)
+            P_blended = eval(expression, safe_dict_pooled, {})  # noqa: S307
         return C_blended, P_blended
     except Exception as e:
         raise RuntimeError(f"Error evaluating conditioning math expression '{expression}': {e}")
@@ -838,7 +770,6 @@ class UC_TextEncodeKrea2SystemPrompt(io.ComfyNode):
         # Build template with string concat (ComfyUI pattern)
         if len(system_prompt) > 0:
             llama_template = (
-                "<|im_start|>user\n" + "<|im_end|>\n" +
                 "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
                 "<|im_start|>user\n{}<|im_end|>\n" +
                 "<|im_start|>assistant\n"
@@ -1102,6 +1033,7 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
             )
         else:
             full_prompt = (
+                "<|im_start|>user\n" + "<|im_end|>\n" +
                 "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
                 "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
                 "<|im_start|>assistant\n"
@@ -1254,6 +1186,7 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
             )
         else:
             full_prompt = (
+                "<|im_start|>user\n" + "<|im_end|>\n" +
                 "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
                 "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
                 "<|im_start|>assistant\n"
@@ -2038,7 +1971,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 )
 
                 try:
-                    layer_blended = evaluate_math_expression(layer_expression, safe_dict_layer)
+                    layer_blended = eval(layer_expression, safe_dict_layer, {}) # noqa: S307
                     deepstack_blended.append(layer_blended)
                 except Exception as e:
                     raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
@@ -2644,6 +2577,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 )
             else:
                 clean_full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
                     "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
                     "<|im_start|>user\n" + modified_clean_prompt + "<|im_end|>\n" +
                     "<|im_start|>assistant\n"
@@ -2659,6 +2593,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 )
             else:
                 clean_full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
                     "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
                     "<|im_start|>user\n" + clean_prompt + "<|im_end|>\n" +
                     "<|im_start|>assistant\n"
@@ -2839,7 +2774,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     )
 
                     try:
-                        layer_blended = evaluate_math_expression(layer_expression, safe_dict_layer)
+                        layer_blended = eval(layer_expression, safe_dict_layer, {})
                         deepstack_blended.append(layer_blended)
                     except Exception as e:
                         raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
