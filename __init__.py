@@ -8,6 +8,8 @@ from .parameter_nodes import *
 from .utils_nodes import *
 from .legacy_nodes import *
 from .scheduler_nodes import *
+from .loader_nodes import *
+from .text_nodes import *
 
 from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
@@ -72,6 +74,11 @@ class SamplingUtils(ComfyExtension):
             UC_Krea2InputEmbeds,
             UC_Qwen3VLInputEmbeds,
             UC_EncoderNodesGuide,
+            UC_LoraLoaderCLIPOnly,
+            UC_BoldFrakturTextStyle,
+            UC_UnBoldFrakturTextStyle,
+            UC_WordJoiner,
+            UC_UnWordJoiner,
             AdjustedResolutionParameters,
             ResolutionSelectorExtended,
             ImageScaleAndResolutionPicker,

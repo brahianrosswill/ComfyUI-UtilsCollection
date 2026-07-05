@@ -725,6 +725,71 @@ def to_video_prompt(text: str, is_system: bool = False) -> str:
 
     return result
 
+def join_words_in_text(text: str) -> str:
+    if not text:
+        return ""
+
+    joiner_char = "\u2060"
+
+    # Build the pattern using an f-string to correctly embed the unicode char.
+    pattern = f"([^{joiner_char}])(?=[^{joiner_char}])"
+    replacement = r"\1" + joiner_char
+
+    joined_text = re.sub(pattern, replacement, text)
+
+    return joiner_char + joined_text + joiner_char
+
+
+
+def to_bold_fraktur_style(text: str) -> str:
+    result = []
+
+    # Bold fraktur uppercase starts at U+1D56C (𝕬)
+    # Bold fraktur lowercase starts at U+1D586 (𝖆)
+    BOLD_FRAKTUR_UPPER_START = 0x1D56C
+    BOLD_FRAKTUR_LOWER_START = 0x1D586
+
+    for char in text:
+        if "A" <= char <= "Z":
+            offset = ord(char) - ord("A")
+            result.append(chr(BOLD_FRAKTUR_UPPER_START + offset))
+        elif "a" <= char <= "z":
+            offset = ord(char) - ord("a")
+            result.append(chr(BOLD_FRAKTUR_LOWER_START + offset))
+        else:
+            result.append(char)
+
+    return "".join(result)
+
+
+def from_bold_fraktur_style(text: str) -> str:
+    result = []
+
+    # Bold fraktur uppercase starts at U+1D56C (𝕬)
+    # Bold fraktur lowercase starts at U+1D586 (𝖆)
+    BOLD_FRAKTUR_UPPER_START = 0x1D56C
+    BOLD_FRAKTUR_UPPER_END = BOLD_FRAKTUR_UPPER_START + 25  # Z
+    BOLD_FRAKTUR_LOWER_START = 0x1D586
+    BOLD_FRAKTUR_LOWER_END = BOLD_FRAKTUR_LOWER_START + 25  # z
+
+    for char in text:
+        code_point = ord(char)
+        if BOLD_FRAKTUR_UPPER_START <= code_point <= BOLD_FRAKTUR_UPPER_END:
+            offset = code_point - BOLD_FRAKTUR_UPPER_START
+            result.append(chr(ord("A") + offset))
+        elif BOLD_FRAKTUR_LOWER_START <= code_point <= BOLD_FRAKTUR_LOWER_END:
+            offset = code_point - BOLD_FRAKTUR_LOWER_START
+            result.append(chr(ord("a") + offset))
+        else:
+            result.append(char)
+
+    return "".join(result)
+
+
+def remove_joiners(text: str) -> str:
+    joiner_char = "\u2060"
+    return text.replace(joiner_char, "")
+
 
 class AspectRatio(str, Enum):
     SQUARE = "1:1 (Square)"
@@ -761,3 +826,4 @@ FLOW_PRESETS = {
     "fast":      cv2.DISOPTICAL_FLOW_PRESET_FAST,
     "medium":    cv2.DISOPTICAL_FLOW_PRESET_MEDIUM,
 }
+
