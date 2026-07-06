@@ -1,0 +1,15 @@
+----
+
+I want to add another style to the  @/presets_collection.py .
+Specifically in the three categories starting with SYSTEM_MESSAGE_STYLE_, INSTRUCT_PROMPT_STYLE_, BONUS_PROMPT_STYLE_.
+The new style should be focused on REPLACE_WITH_STYLE like those in REPLACE_WITH_MEDIUM_OR_SPECIFICS.
+I include some example images so you understand what kind of modifications compared to the other ones are needed.
+All the three categories do follow a pattern though so do not deviate from that and do not introduce arbitrary specifics that hurts the flexibility.
+Do not reference specific elements from the example images as it is style we are focused on and not the specific subjects or objects in those images.
+Once you have plan drafted with complete presets you can request switching to REPLACE_WITH_MODE for implementation.
+Do not attempt excessive testing after edit as this task is too simple and that would be wasteful.
+
+----
+NOTES:
+Make sure example images show enough variation and preferably use at least three.
+Change the name of mode based on your coding assistant tool/platform.

@@ -2490,9 +2490,15 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main text prompt. Supports weight syntax: (prompt:weight), e.g. (sunset:1.5).",
+                    tooltip="Main text prompt.",
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.String.Input(
+                    "attention_weights",
+                    multiline=False,
+                    default="",
+                    tooltip="Space-separated list of weighted words/phrases. Example: (arms:1.5) (painting:-1) (photo:2)",
+                ),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
@@ -2522,18 +2528,21 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, clip, prompt, system_prompt, vlm_resolution, multiplier, strength, padding_method, formula, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+    def execute(cls, model, clip, prompt, system_prompt, attention_weights, vlm_resolution, multiplier, strength, padding_method, formula, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
         active_images = []
         if image_inputs is not None:
             for k, v in image_inputs.items():
                 if v is not None:
                     active_images.append(v)
 
-        # 1. Parse prompt weights using regex
+        # 1. Parse weights from the attention_weights widget using regex
         import re
         pattern = re.compile(r"\(([^():]+):(-?\d*\.?\d+)\)")
-        terms = [(m.group(1).strip(), float(m.group(2))) for m in pattern.finditer(prompt)]
-        clean_prompt = pattern.sub(lambda m: m.group(1), prompt)
+        terms = [(m.group(1).strip(), float(m.group(2))) for m in pattern.finditer(attention_weights)]
+
+        # Prompt inputs remain as untouched plain-text strings
+        clean_prompt = prompt
+        clean_system_prompt = system_prompt
 
         def process_vlm_image(image, res):
             if image is None:
@@ -2568,10 +2577,10 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             if not any(tag in clean_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
                 modified_clean_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_clean_prompt
 
-            if len(system_prompt) > 0:
+            if len(clean_system_prompt) > 0:
                 clean_full_prompt = (
                     "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                    "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
                     "<|im_start|>user\n" + modified_clean_prompt + "<|im_end|>\n" +
                     "<|im_start|>assistant\n"
                 )
@@ -2584,10 +2593,10 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 )
             tok = clip.tokenize(clean_full_prompt, images=[processed_first_img], skip_template=True)
         else:
-            if len(system_prompt) > 0:
+            if len(clean_system_prompt) > 0:
                 clean_full_prompt = (
                     "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                    "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
                     "<|im_start|>user\n" + clean_prompt + "<|im_end|>\n" +
                     "<|im_start|>assistant\n"
                 )
@@ -2638,10 +2647,6 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             mapping.append((start, end))
             current_idx = end
 
-        start, end = _krea2_user_content_span(ids)
-        if start is None:
-            start, end = 0, len(ids)
-
         weight_pairs = []
         for phrase, w in terms:
             if w > 1.0:
@@ -2654,7 +2659,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 ps, pe = _krea2_user_content_span(sub)
                 if ps is not None:
                     sub = sub[ps:pe]
-                matches = _find_subsequence(ids, sub, start, end)
+                matches = _find_subsequence(ids, sub, 0, len(ids))
                 if matches:
                     for mi in matches:
                         for off in range(len(sub)):
@@ -2664,7 +2669,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     break
             if not positions:
                 import logging
-                logging.warning(f"Krea2PromptWeight: phrase '{phrase}' not found in prompt; skipped.")
+                logging.warning(f"Krea2PromptWeight: phrase '{phrase}' not found in prompt or system prompt; skipped.")
                 continue
             for cp in positions:
                 if 0 <= cp < cond_len:
@@ -2700,10 +2705,10 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 if not any(tag in clean_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
                     modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
-                if len(system_prompt) > 0:
+                if len(clean_system_prompt) > 0:
                     full_prompt = (
                         "<|im_start|>user\n" + "<|im_end|>\n" +
-                        "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                        "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
                         "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
                         "<|im_start|>assistant\n"
                     )
