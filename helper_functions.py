@@ -6,6 +6,8 @@ import re
 import torch
 import cv2
 import math
+import json
+import codecs
 
 def round_to_nearest(n, m):
     return int((n + (m / 2)) // m) * m
@@ -826,4 +828,190 @@ FLOW_PRESETS = {
     "fast":      cv2.DISOPTICAL_FLOW_PRESET_FAST,
     "medium":    cv2.DISOPTICAL_FLOW_PRESET_MEDIUM,
 }
+
+def unescape_string(text: str) -> str:
+    if not text:
+        return ""
+    try:
+        return text.encode('latin1', 'backslashreplace').decode('unicode_escape')
+    except Exception:
+        try:
+            return codecs.decode(text, 'unicode_escape')
+        except Exception:
+            return text
+
+def repair_and_minify_json(text: str) -> str:
+    if not text:
+        return "{}"
+    text = text.strip()
+
+    # Try parsing right away as valid JSON
+    try:
+        parsed = json.loads(text)
+        return json.dumps(parsed, separators=(',', ':'))
+    except Exception:
+        pass
+
+    # Clean single-line and multi-line comments
+    text = re.sub(r'(?<!:)\/\/.*$', '', text, flags=re.M)
+    text = re.sub(r'\/\*[\s\S]*?\*\/', '', text)
+    text = text.strip()
+
+    if not text:
+        return "{}"
+
+    output = []
+    stack = [] # Tracks '{' or '['
+
+    i = 0
+    n = len(text)
+    last_was_value = False # To detect missing commas
+
+    while i < n:
+        c = text[i]
+
+        # Skip whitespace outside of strings
+        if c.isspace():
+            i += 1
+            continue
+
+        # Handle String literal (either single or double quoted)
+        if c in ('"', "'"):
+            delim = c
+            str_val = []
+            i += 1
+            escaped = False
+            while i < n:
+                sc = text[i]
+                if escaped:
+                    str_val.append('\\' + sc)
+                    escaped = False
+                elif sc == '\\':
+                    escaped = True
+                elif sc == delim:
+                    break
+                else:
+                    if sc == '"':
+                        str_val.append('\\"') # Escape double quotes if we had single quotes delim
+                    elif sc == '\n':
+                        str_val.append('\\n')
+                    elif sc == '\t':
+                        str_val.append('\\t')
+                    elif sc == '\r':
+                        str_val.append('\\r')
+                    else:
+                        str_val.append(sc)
+                i += 1
+
+            s_str = "".join(str_val)
+
+            # Check if we need to insert a comma
+            if last_was_value:
+                if output and output[-1] not in ('{', '[', ':', ','):
+                    output.append(',')
+
+            output.append(f'"{s_str}"')
+            last_was_value = True
+            i += 1
+            continue
+
+        # Handle object/array structural chars
+        if c == '{':
+            if last_was_value and output and output[-1] not in (':', ','):
+                output.append(',')
+            output.append('{')
+            stack.append('{')
+            last_was_value = False
+            i += 1
+            continue
+        elif c == '}':
+            if output and output[-1] == ',':
+                output.pop()
+            if stack and stack[-1] == '{':
+                stack.pop()
+            output.append('}')
+            last_was_value = True
+            i += 1
+            continue
+        elif c == '[':
+            if last_was_value and output and output[-1] not in (':', ','):
+                output.append(',')
+            output.append('[')
+            stack.append('[')
+            last_was_value = False
+            i += 1
+            continue
+        elif c == ']':
+            if output and output[-1] == ',':
+                output.pop()
+            if stack and stack[-1] == '[':
+                stack.pop()
+            output.append(']')
+            last_was_value = True
+            i += 1
+            continue
+        elif c == ':':
+            output.append(':')
+            last_was_value = False
+            i += 1
+            continue
+        elif c == ',':
+            if output and output[-1] in ('{', '[', ','):
+                pass
+            else:
+                output.append(',')
+            last_was_value = False
+            i += 1
+            continue
+
+        # Handle unquoted keys / words
+        start = i
+        while i < n and (text[i].isalnum() or text[i] in ('_', '-', '.', '+')):
+            i += 1
+        word = text[start:i]
+
+        if not word:
+            # Skip any unrecognized characters to prevent infinite loops
+            i += 1
+            continue
+
+        is_literal = False
+        if word in ('true', 'false', 'null'):
+            is_literal = True
+        else:
+            try:
+                float(word)
+                is_literal = True
+            except ValueError:
+                pass
+
+        if is_literal:
+            if last_was_value and output and output[-1] not in (':', ','):
+                output.append(',')
+            output.append(word)
+            last_was_value = True
+        else:
+            if last_was_value and output and output[-1] not in (':', ','):
+                output.append(',')
+            output.append(f'"{word}"')
+            last_was_value = True
+
+    if output and output[-1] == ',':
+        output.pop()
+
+    while stack:
+        item = stack.pop()
+        if item == '{':
+            output.append('}')
+        elif item == '[':
+            output.append(']')
+
+    repaired_str = "".join(output)
+
+    try:
+        parsed = json.loads(repaired_str)
+        return json.dumps(parsed, separators=(',', ':'))
+    except Exception:
+        return repaired_str
+
 
