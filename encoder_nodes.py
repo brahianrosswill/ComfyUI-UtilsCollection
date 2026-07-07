@@ -2119,6 +2119,30 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         return io.NodeOutput([[C_blended, final_cond_dict]])
 
 
+def load_vlm_image_tensor(path_str):
+    if not path_str:
+        return None
+    normalized_path = path_str.strip().replace('\\', '/')
+    normalized_path = os.path.normpath(normalized_path)
+    if not os.path.isabs(normalized_path):
+        normalized_path = os.path.abspath(normalized_path)
+
+    if not os.path.isfile(normalized_path):
+        raise FileNotFoundError(f"Invalid image path: {path_str} (resolved to: {normalized_path})")
+
+    from PIL import Image, ImageOps, ImageSequence
+    import numpy as np
+
+    img = node_helpers.pillow(Image.open, normalized_path)
+    for i in ImageSequence.Iterator(img):
+        i = node_helpers.pillow(ImageOps.exif_transpose, i)
+        if i.mode == 'I':
+            i = i.point(lambda x: x * (1 / 65535))
+        image = i.convert("RGB")
+        image_np = np.array(image).astype(np.float32) / 255.0
+        return torch.from_numpy(image_np)[None,]  # Returns [1, H, W, C]
+
+
 class UC_Krea2InputEmbeds(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -2129,14 +2153,14 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
             inputs=[
                 io.Clip.Input("clip"),
                 io.String.Input("prompt", multiline=True, default="", tooltip="Input text prompt. Important: skips any template wrapping."),
-                io.Image.Input("image", optional=True, tooltip="Optional image input to interleave."),
+                io.String.Input("image_paths", multiline=True, default="", placeholder="C:/paths/to/image1.png\nC:/paths/to/image2.png", tooltip="Line-separated list of paths to image files. Must map 1-to-1 with file_names."),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path).",
                 ),
-                io.String.Input("file_name", default="qwen3vl_4b_embed", tooltip="Specify the file name. The embedding will be saved as {file_name}.safetensors directly inside your ComfyUI embeddings directory."),
+                io.String.Input("file_names", multiline=True, default="", placeholder="bulbasaur\nivysaur", tooltip="Line-separated list of file names to save as (without .safetensors). Can include nested subfolders. Must map 1-to-1 with image_paths."),
                 io.Boolean.Input(
                     "slice_visual_tokens",
                     default=False,
@@ -2150,49 +2174,40 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, image=None, file_name="qwen3vl_4b_embed", slice_visual_tokens=False) -> io.NodeOutput:
-        # Preprocess image if present
-        processed_img = None
-        images_vl = []
-        if image is not None:
-            def process_vlm_image(img, res):
-                VLM_RESOLUTIONS = {
-                    "Fast (384)": 384,
-                    "Balanced (512)": 512,
-                    "Detailed (768)": 768,
-                    "Large (1024)": 1024,
-                    "X-Large (1280)": 1280,
-                    "XX-Large (1536)": 1536
-                }
-                samples = img.movedim(-1, 1)
-                if res == "Original":
-                    return img
-                else:
-                    vlm_size = VLM_RESOLUTIONS[res]
-                    total_vlm = vlm_size * vlm_size
-                    scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
-                    width_vlm = round(samples.shape[3] * scale_by_vlm)
-                    height_vlm = round(samples.shape[2] * scale_by_vlm)
+    def execute(cls, clip, prompt, image_paths, vlm_resolution, file_names, slice_visual_tokens=False) -> io.NodeOutput:
+        # 1. Parse image paths and file names
+        img_paths_list = [p.strip() for p in image_paths.split("\n") if p.strip()]
+        file_names_list = [n.strip() for n in file_names.split("\n") if n.strip()]
 
-                    s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
-                    return s_vlm.movedim(1, -1)
-            processed_img = process_vlm_image(image, vlm_resolution)
-            images_vl.append(processed_img)
+        if not img_paths_list and not file_names_list:
+            raise ValueError("Both image_paths and file_names are empty.")
 
-        # Tokenize prompt using skip_template=True so no template wrapping is saved
-        modified_prompt = prompt
-        if image is not None:
-            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
-                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+        # If only text prompt encoding is desired (no images)
+        if not img_paths_list:
+            if not file_names_list:
+                raise ValueError("No file_names specified to save the text embedding.")
+            img_paths_list = [None] * len(file_names_list)
+        elif not file_names_list:
+            raise ValueError("No file_names specified for the provided image paths.")
 
-        tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
+        if len(img_paths_list) != len(file_names_list):
+            raise ValueError(f"Count mismatch: Got {len(img_paths_list)} image paths and {len(file_names_list)} file names.")
 
-        # Retrieve the key name (typically "qwen3vl_4b")
-        key_name = next(iter(tokens.keys()))
-        token_list = tokens[key_name]
-        tokens_only = [[t[0] for t in b] for b in token_list]
+        # 2. Pre-Execution Path Validation
+        for path in img_paths_list:
+            if path is not None:
+                normalized_path = path.strip().replace('\\', '/')
+                normalized_path = os.path.normpath(normalized_path)
+                if not os.path.isabs(normalized_path):
+                    normalized_path = os.path.abspath(normalized_path)
+                if not os.path.isfile(normalized_path):
+                    raise FileNotFoundError(
+                        f"Validation aborted: Image file does not exist: '{path}' (resolved to: '{normalized_path}'). "
+                        "No processing has started, ensuring safe memory state."
+                    )
 
-        # Process the tokens into raw interleaved input embeddings
+        # 3. Call clip.load_model() once to register the model as active for comfy-aimdo
+        clip.load_model()
         cond_stage = clip.cond_stage_model
         clip_model = None
 
@@ -2208,50 +2223,111 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
         if clip_model is None or not hasattr(clip_model, "process_tokens"):
             raise AttributeError("Could not locate underlying model wrapper with 'process_tokens' method in cond_stage_model.")
 
-        embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, clip_model.execution_device)
+        import folder_paths
+        from safetensors.torch import save_file
 
-        # Locate and slice out any visual tokens to save ONLY the pure language/text tokens
-        if slice_visual_tokens:
-            vis_start, vis_end = find_visual_token_range(tokens, embeds)
-            if vis_start < vis_end:
-                prefix = embeds[:, :vis_start, :]
-                suffix = embeds[:, vis_end:, :]
-                embeds_sliced = torch.cat([prefix, suffix], dim=1)
+        # Locate ComfyUI embeddings directory
+        try:
+            embed_paths = folder_paths.get_folder_paths("embeddings")
+            if embed_paths:
+                embeddings_dir = embed_paths[0]
             else:
-                embeds_sliced = embeds
-        else:
-            embeds_sliced = embeds
+                embeddings_dir = os.path.join(os.path.dirname(folder_paths.__file__), "models", "embeddings")
+        except Exception:
+            embeddings_dir = "models/embeddings"
 
-        # Convert to 2D tensor [num_tokens, 2560]
-        # embeds_sliced is shape (1, num_tokens, 2560)
-        tensor_2d = embeds_sliced.squeeze(0).clone().cpu()
+        os.makedirs(embeddings_dir, exist_ok=True)
 
-        # Build state dict
-        state_dict = {"qwen3vl_4b": tensor_2d}
+        last_state_dict = None
+        last_tensor_2d = None
 
-        # If file_name is provided, save it as a .safetensors file in ComfyUI's embeddings directory
-        if file_name and file_name.strip():
-            import folder_paths
-            from safetensors.torch import save_file
+        # 4. Process loop under inference_mode
+        for img_path, f_name in zip(img_paths_list, file_names_list):
+            # Load and preprocess image if present
+            images_vl = []
+            if img_path is not None:
+                image_tensor = load_vlm_image_tensor(img_path)
 
-            # Locate ComfyUI embeddings directory
-            try:
-                embed_paths = folder_paths.get_folder_paths("embeddings")
-                if embed_paths:
-                    embeddings_dir = embed_paths[0]
+                # Image resolution downscaling helper
+                def process_vlm_image(img, res):
+                    VLM_RESOLUTIONS = {
+                        "Fast (384)": 384,
+                        "Balanced (512)": 512,
+                        "Detailed (768)": 768,
+                        "Large (1024)": 1024,
+                        "X-Large (1280)": 1280,
+                        "XX-Large (1536)": 1536
+                    }
+                    samples = img.movedim(-1, 1)
+                    if res == "Original":
+                        return img
+                    else:
+                        vlm_size = VLM_RESOLUTIONS[res]
+                        total_vlm = vlm_size * vlm_size
+                        scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                        width_vlm = round(samples.shape[3] * scale_by_vlm)
+                        height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                        s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                        return s_vlm.movedim(1, -1)
+
+                processed_img = process_vlm_image(image_tensor, vlm_resolution)
+                images_vl.append(processed_img)
+
+            # Tokenize prompt using skip_template=True so no template wrapping is saved
+            modified_prompt = prompt
+            if img_path is not None:
+                if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
+                    modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+
+            tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
+
+            key_name = next(iter(tokens.keys()))
+            token_list = tokens[key_name]
+            tokens_only = [[t[0] for t in b] for b in token_list]
+
+            import comfy
+            device = comfy.model_management.get_torch_device()
+
+            with torch.inference_mode():
+                embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, device)
+
+                if slice_visual_tokens:
+                    vis_start, vis_end = find_visual_token_range(tokens, embeds)
+                    if vis_start < vis_end:
+                        prefix = embeds[:, :vis_start, :]
+                        suffix = embeds[:, vis_end:, :]
+                        embeds_sliced = torch.cat([prefix, suffix], dim=1)
+                    else:
+                        embeds_sliced = embeds
                 else:
-                    embeddings_dir = os.path.join(os.path.dirname(folder_paths.__file__), "models", "embeddings")
-            except Exception:
-                embeddings_dir = "models/embeddings"
+                    embeds_sliced = embeds
 
-            os.makedirs(embeddings_dir, exist_ok=True)
-            target_path = os.path.join(embeddings_dir, f"{file_name.strip()}.safetensors")
+                tensor_2d = embeds_sliced.squeeze(0).clone().cpu()
 
-            # Save the state dict using safetensors (tensors must be contiguous)
+            state_dict = {key_name: tensor_2d}
+
+            # Save the safetensors file (ensure nested directories exist)
+            target_path = os.path.join(embeddings_dir, f"{f_name}.safetensors")
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
             state_dict_safe = {k: v.contiguous() for k, v in state_dict.items()}
             save_file(state_dict_safe, target_path)
 
-        return io.NodeOutput(state_dict, tensor_2d)
+            last_state_dict = state_dict
+            last_tensor_2d = tensor_2d
+
+            # Clean VRAM loop references
+            del embeds, embeds_sliced, tokens, tokens_only
+            if img_path is not None:
+                del image_tensor, processed_img
+
+        # 5. Final VRAM release and soft_empty_cache
+        import gc
+        gc.collect()
+        comfy.model_management.soft_empty_cache()
+
+        return io.NodeOutput(last_state_dict, last_tensor_2d)
 
 
 class UC_Qwen3VLInputEmbeds(io.ComfyNode):
@@ -2264,14 +2340,14 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
             inputs=[
                 io.Clip.Input("clip"),
                 io.String.Input("prompt", multiline=True, default="", tooltip="Input text prompt. Important: skips any template wrapping."),
-                io.Image.Input("image", optional=True, tooltip="Optional image input to interleave."),
+                io.String.Input("image_paths", multiline=True, default="", placeholder="C:/paths/to/image1.png\nC:/paths/to/image2.png", tooltip="Line-separated list of paths to image files. Must map 1-to-1 with file_names."),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path).",
                 ),
-                io.String.Input("file_name", default="qwen3vl_embed", tooltip="Specify the file name. The embedding will be saved as {file_name}.safetensors directly inside your ComfyUI embeddings directory."),
+                io.String.Input("file_names", multiline=True, default="", placeholder="bulbasaur\nivysaur", tooltip="Line-separated list of file names to save as (without .safetensors). Can include nested subfolders. Must map 1-to-1 with image_paths."),
                 io.Boolean.Input(
                     "slice_visual_tokens",
                     default=False,
@@ -2285,51 +2361,40 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, image=None, file_name="qwen3vl_embed", slice_visual_tokens=False) -> io.NodeOutput:
-        # Preprocess image if present
-        processed_img = None
-        images_vl = []
-        if image is not None:
-            def process_vlm_image(img, res):
-                VLM_RESOLUTIONS = {
-                    "Fast (384)": 384,
-                    "Balanced (512)": 512,
-                    "Detailed (768)": 768,
-                    "Large (1024)": 1024,
-                    "X-Large (1280)": 1280,
-                    "XX-Large (1536)": 1536
-                }
-                samples = img.movedim(-1, 1)
-                if res == "Original":
-                    return img
-                else:
-                    vlm_size = VLM_RESOLUTIONS[res]
-                    total_vlm = vlm_size * vlm_size
-                    scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
-                    width_vlm = round(samples.shape[3] * scale_by_vlm)
-                    height_vlm = round(samples.shape[2] * scale_by_vlm)
+    def execute(cls, clip, prompt, image_paths, vlm_resolution, file_names, slice_visual_tokens=False) -> io.NodeOutput:
+        # 1. Parse image paths and file names
+        img_paths_list = [p.strip() for p in image_paths.split("\n") if p.strip()]
+        file_names_list = [n.strip() for n in file_names.split("\n") if n.strip()]
 
-                    s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
-                    return s_vlm.movedim(1, -1)
-            processed_img = process_vlm_image(image, vlm_resolution)
-            images_vl.append(processed_img)
+        if not img_paths_list and not file_names_list:
+            raise ValueError("Both image_paths and file_names are empty.")
 
-        # Tokenize prompt using skip_template=True so no template wrapping is saved
-        modified_prompt = prompt
-        if image is not None:
-            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
-                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+        # If only text prompt encoding is desired (no images)
+        if not img_paths_list:
+            if not file_names_list:
+                raise ValueError("No file_names specified to save the text embedding.")
+            img_paths_list = [None] * len(file_names_list)
+        elif not file_names_list:
+            raise ValueError("No file_names specified for the provided image paths.")
 
-        tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
+        if len(img_paths_list) != len(file_names_list):
+            raise ValueError(f"Count mismatch: Got {len(img_paths_list)} image paths and {len(file_names_list)} file names.")
 
-        # Retrieve the key name dynamically (typically "qwen3vl_4b" or "qwen3vl_8b")
-        key_name = "qwen3vl_8b"
-        if tokens:
-            key_name = next(iter(tokens.keys()))
-        token_list = tokens.get(key_name, [])
-        tokens_only = [[t[0] for t in b] for b in token_list]
+        # 2. Pre-Execution Path Validation
+        for path in img_paths_list:
+            if path is not None:
+                normalized_path = path.strip().replace('\\', '/')
+                normalized_path = os.path.normpath(normalized_path)
+                if not os.path.isabs(normalized_path):
+                    normalized_path = os.path.abspath(normalized_path)
+                if not os.path.isfile(normalized_path):
+                    raise FileNotFoundError(
+                        f"Validation aborted: Image file does not exist: '{path}' (resolved to: '{normalized_path}'). "
+                        "No processing has started, ensuring safe memory state."
+                    )
 
-        # Process the tokens into raw interleaved input embeddings
+        # 3. Call clip.load_model() once to register the model as active for comfy-aimdo
+        clip.load_model()
         cond_stage = clip.cond_stage_model
         clip_model = None
 
@@ -2345,47 +2410,112 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
         if clip_model is None or not hasattr(clip_model, "process_tokens"):
             raise AttributeError("Could not locate underlying model wrapper with 'process_tokens' method in cond_stage_model.")
 
-        embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, clip_model.execution_device)
+        import folder_paths
+        from safetensors.torch import save_file
 
-        # Locate and slice out any visual tokens to save ONLY the pure language/text tokens
-        if slice_visual_tokens:
-            vis_start, vis_end = find_visual_token_range(tokens, embeds)
-            if vis_start < vis_end:
-                prefix = embeds[:, :vis_start, :]
-                suffix = embeds[:, vis_end:, :]
-                embeds_sliced = torch.cat([prefix, suffix], dim=1)
+        # Locate ComfyUI embeddings directory
+        try:
+            embed_paths = folder_paths.get_folder_paths("embeddings")
+            if embed_paths:
+                embeddings_dir = embed_paths[0]
             else:
-                embeds_sliced = embeds
-        else:
-            embeds_sliced = embeds
+                embeddings_dir = os.path.join(os.path.dirname(folder_paths.__file__), "models", "embeddings")
+        except Exception:
+            embeddings_dir = "models/embeddings"
 
-        # Convert to 2D tensor [num_tokens, hidden_size]
-        tensor_2d = embeds_sliced.squeeze(0).clone().cpu()
+        os.makedirs(embeddings_dir, exist_ok=True)
 
-        # Build state dict
-        state_dict = {key_name: tensor_2d}
+        last_state_dict = None
+        last_tensor_2d = None
 
-        # If file_name is provided, save it as a .safetensors file in ComfyUI's embeddings directory
-        if file_name and file_name.strip():
-            import folder_paths
-            from safetensors.torch import save_file
+        # 4. Process loop under inference_mode
+        for img_path, f_name in zip(img_paths_list, file_names_list):
+            # Load and preprocess image if present
+            images_vl = []
+            if img_path is not None:
+                image_tensor = load_vlm_image_tensor(img_path)
 
-            # Locate ComfyUI embeddings directory
-            try:
-                embed_paths = folder_paths.get_folder_paths("embeddings")
-                if embed_paths:
-                    embeddings_dir = embed_paths[0]
+                # Image resolution downscaling helper
+                def process_vlm_image(img, res):
+                    VLM_RESOLUTIONS = {
+                        "Fast (384)": 384,
+                        "Balanced (512)": 512,
+                        "Detailed (768)": 768,
+                        "Large (1024)": 1024,
+                        "X-Large (1280)": 1280,
+                        "XX-Large (1536)": 1536
+                    }
+                    samples = img.movedim(-1, 1)
+                    if res == "Original":
+                        return img
+                    else:
+                        vlm_size = VLM_RESOLUTIONS[res]
+                        total_vlm = vlm_size * vlm_size
+                        scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                        width_vlm = round(samples.shape[3] * scale_by_vlm)
+                        height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                        s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                        return s_vlm.movedim(1, -1)
+
+                processed_img = process_vlm_image(image_tensor, vlm_resolution)
+                images_vl.append(processed_img)
+
+            # Tokenize prompt using skip_template=True so no template wrapping is saved
+            modified_prompt = prompt
+            if img_path is not None:
+                if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
+                    modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+
+            tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
+
+            # Retrieve the key name dynamically (typically "qwen3vl_4b" or "qwen3vl_8b")
+            key_name = "qwen3vl_8b"
+            if tokens:
+                key_name = next(iter(tokens.keys()))
+            token_list = tokens.get(key_name, [])
+            tokens_only = [[t[0] for t in b] for b in token_list]
+
+            import comfy
+            device = comfy.model_management.get_torch_device()
+
+            with torch.inference_mode():
+                embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, device)
+
+                if slice_visual_tokens:
+                    vis_start, vis_end = find_visual_token_range(tokens, embeds)
+                    if vis_start < vis_end:
+                        prefix = embeds[:, :vis_start, :]
+                        suffix = embeds[:, vis_end:, :]
+                        embeds_sliced = torch.cat([prefix, suffix], dim=1)
+                    else:
+                        embeds_sliced = embeds
                 else:
-                    embeddings_dir = os.path.join(os.path.dirname(folder_paths.__file__), "models", "embeddings")
-            except Exception:
-                embeddings_dir = "models/embeddings"
+                    embeds_sliced = embeds
 
-            os.makedirs(embeddings_dir, exist_ok=True)
-            target_path = os.path.join(embeddings_dir, f"{file_name.strip()}.safetensors")
+                tensor_2d = embeds_sliced.squeeze(0).clone().cpu()
 
-            # Save the state dict using safetensors (tensors must be contiguous)
+            state_dict = {key_name: tensor_2d}
+
+            # Save the safetensors file (ensure nested directories exist)
+            target_path = os.path.join(embeddings_dir, f"{f_name}.safetensors")
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
             state_dict_safe = {k: v.contiguous() for k, v in state_dict.items()}
             save_file(state_dict_safe, target_path)
+
+            last_state_dict = state_dict
+            last_tensor_2d = tensor_2d
+
+            # Clean VRAM loop references
+            del embeds, embeds_sliced, tokens, tokens_only
+            if img_path is not None:
+                del image_tensor, processed_img
+
+        # 5. Final VRAM release and soft_empty_cache
+        import gc
+        gc.collect()
+        comfy.model_management.soft_empty_cache()
 
         return io.NodeOutput(state_dict, tensor_2d)
 
