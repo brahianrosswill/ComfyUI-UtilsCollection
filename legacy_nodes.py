@@ -7,6 +7,7 @@ from .preset_nodes import *
 from .vlm_nodes import *
 from .parameter_nodes import *
 from .utils_nodes import *
+from .textgen_nodes import *
 
 
 class AdjustedResolutionParameters(UC_AdjustedResolutionParameters):

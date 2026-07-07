@@ -10,6 +10,7 @@ from .legacy_nodes import *
 from .scheduler_nodes import *
 from .loader_nodes import *
 from .text_nodes import *
+from .textgen_nodes import *
 
 from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
@@ -66,6 +67,7 @@ class SamplingUtils(ComfyExtension):
             UC_RandInt,
             UC_StaticInt,
             UC_RandIntRange,
+            UC_TextGenerate,
             UC_TextGenerateQwen35SystemPrompt,
             UC_ColorConvertNode,
             UC_ExtractBoundingBox,
