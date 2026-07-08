@@ -67,6 +67,7 @@ class SamplingUtils(ComfyExtension):
             UC_RandInt,
             UC_StaticInt,
             UC_RandIntRange,
+            UC_ConsensusBlendConfig,
             UC_TextGenerate,
             UC_TextGenerateQwen35SystemPrompt,
             UC_ColorConvertNode,

@@ -51,6 +51,110 @@ def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
     except Exception as e:
         raise RuntimeError(f"Error evaluating textgen visual math expression '|{expression}|': {e}")
 
+BlendConfig = io.Custom("BLEND_CONFIG")
+
+def evaluate_image_consensus_blend(
+    processed_images: dict,
+    blend_config: dict = None,
+    device: str = "cpu"
+) -> torch.Tensor:
+    if blend_config is None:
+        blend_config = {"blend_preset": "off"}
+
+    blend_preset = blend_config.get("blend_preset", "off")
+    blend_method = blend_config.get("blend_method", "consensus")
+    consensus_type = blend_config.get("consensus_type", "median")
+    similarity_threshold = blend_config.get("similarity_threshold", 0.0)
+    power_alpha = blend_config.get("power_alpha", 2.0)
+    diversity_beta = blend_config.get("diversity_beta", 0.0)
+    rescale_norm = blend_config.get("rescale_norm", False)
+    global_scale = blend_config.get("global_scale", 1.0)
+
+    presets = {
+        "baseline": {"method": "consensus", "type": "median", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False},
+        "high_clarity": {"method": "consensus", "type": "median", "alpha": 3.0, "thresh": 0.3, "beta": 0.0, "scale": 1.0, "norm": False},
+        "smooth": {"method": "consensus", "type": "mean", "alpha": 1.5, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False},
+        "varied_merge": {"method": "consensus", "type": "median", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 0.7, "norm": True},
+        "diverse_concept": {"method": "consensus", "type": "median", "alpha": 2.0, "thresh": 0.0, "beta": 1.0, "scale": 0.7, "norm": True},
+        "high_diversity_concept": {"method": "consensus", "type": "median", "alpha": 2.0, "thresh": 0.0, "beta": 2.0, "scale": 0.7, "norm": True}
+    }
+
+    if blend_preset != "off" and blend_preset in presets:
+        p = presets[blend_preset]
+        blend_method = p["method"]
+        consensus_type = p["type"]
+        power_alpha = p["alpha"]
+        similarity_threshold = p["thresh"]
+        diversity_beta = p["beta"]
+        rescale_norm = p["norm"]
+        user_global_scale = blend_config.get("global_scale", 1.0)
+        if user_global_scale != 1.0:
+            global_scale = user_global_scale
+        else:
+            global_scale = p["scale"]
+
+    active_keys = sorted([k for k in processed_images.keys() if len(k) == 1 and k.islower()])
+    tensors = [processed_images[k].to(device=device, dtype=torch.float32) for k in active_keys]
+
+    if not tensors:
+        return None
+
+    stacked_images = torch.stack(tensors, dim=1) # [B, K, H, W, C]
+    B, K, H, W, C = stacked_images.shape
+
+    flattened = stacked_images.view(B, K, H*W, C)
+    blended_flat_list = []
+
+    for b in range(B):
+        img_seq = flattened[b]
+
+        if blend_method == "linear":
+            merged = img_seq.mean(dim=0)
+            if global_scale != 1.0:
+                merged *= global_scale
+            blended_flat_list.append(merged)
+            continue
+
+        if consensus_type == "median":
+            consensus = torch.median(img_seq, dim=0).values
+        else:
+            consensus = img_seq.mean(dim=0)
+
+        img_seq_norm = torch.nn.functional.normalize(img_seq, p=2, dim=2)
+        consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=1)
+
+        similarities = (img_seq_norm * consensus_norm.unsqueeze(0)).sum(dim=2) # [K, HW]
+
+        weights = torch.zeros_like(similarities)
+        mask = similarities >= similarity_threshold
+
+        if diversity_beta > 0.0:
+            weights_val = torch.pow(similarities, power_alpha) * torch.pow(1.001 - similarities, diversity_beta)
+        else:
+            weights_val = torch.pow(similarities, power_alpha)
+
+        weights = torch.where(mask, weights_val, torch.zeros_like(weights_val))
+        w_sum = weights.sum(dim=0, keepdim=True)
+        weights = torch.where(w_sum > 0, weights / w_sum, torch.ones_like(weights) / K)
+
+        merged_pixels = (img_seq * weights.unsqueeze(2)).sum(dim=0)
+
+        if rescale_norm:
+            avg_norm = torch.norm(img_seq, p=2, dim=2).mean(dim=0, keepdim=True).squeeze(0) # [HW]
+            merged_norm = torch.norm(merged_pixels, p=2, dim=1) # [HW]
+            scale_factor = torch.where(merged_norm > 0, avg_norm / merged_norm, torch.ones_like(merged_norm))
+            merged_pixels *= scale_factor.unsqueeze(1)
+
+        if global_scale != 1.0:
+            merged_pixels *= global_scale
+
+        blended_flat_list.append(merged_pixels)
+
+    blended_flat = torch.stack(blended_flat_list, dim=0) # [B, HW, C]
+    blended_image = blended_flat.view(B, H, W, C).to(dtype=tensors[0].dtype, device=tensors[0].device)
+
+    return torch.clamp(blended_image, 0.0, 1.0)
+
 def process_vlm_image(image, res):
     if image is None:
         return None
@@ -196,6 +300,7 @@ class UC_TextGenerate(io.ComfyNode):
                     tooltip="Optional mathematical formula to blend image inputs at pixel-tensor level before encoding. Use variables a, b, c, d... to reference active connected image inputs. If empty, connected images are treated as separate inputs."
                 ),
                 io.Boolean.Input("thinking", optional=True, default=False, tooltip="Preserves chain-of-thought blocks if the model supports reasoning."),
+                BlendConfig.Input("blend_config", optional=True, tooltip="Optional Consensus Blend Configuration input."),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
@@ -204,7 +309,7 @@ class UC_TextGenerate(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, model_type, vlm_resolution, max_length, sampling_mode, formula="", thinking=False, image_inputs=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, model_type, vlm_resolution, max_length, sampling_mode, formula="", thinking=False, blend_config: dict = None, image_inputs=None) -> io.NodeOutput:
         if clip is None:
             raise RuntimeError("ERROR: CLIP/TextEncoder input is invalid: None")
 
@@ -245,8 +350,28 @@ class UC_TextGenerate(io.ComfyNode):
                     # Move back to [B, H, W, C]
                     processed_images[key] = rescaled.movedim(1, -1)
 
-        # Determine if we should globally blend images using the dedicated formula widget
-        if formula and formula.strip():
+        if blend_config is None:
+            blend_config = {"blend_preset": "off"}
+        blend_preset = blend_config.get("blend_preset", "off")
+
+        # Determine if we should globally blend images
+        if blend_preset != "off":
+            try:
+                import comfy
+                device = comfy.model_management.get_torch_device()
+                blended_image = evaluate_image_consensus_blend(
+                    processed_images, blend_config=blend_config, device=device
+                )
+                # Override raw_images and processed_images to contain only this single blended image
+                raw_images = {1: blended_image}
+                processed_images = {
+                    "image_input_1": blended_image,
+                    "a": blended_image
+                }
+                is_zero_indexed = False
+            except Exception as e:
+                raise RuntimeError(f"Error evaluating image consensus blending: {e}")
+        elif formula and formula.strip():
             try:
                 blended_image = evaluate_formula(formula.strip(), processed_images)
                 # Override raw_images and processed_images to contain only this single blended image
