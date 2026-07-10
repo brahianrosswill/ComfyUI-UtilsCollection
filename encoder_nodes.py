@@ -314,46 +314,46 @@ class UC_ConsensusBlendConfig(io.ComfyNode):
                         "dsc_baseline", "dsc_high_clarity", "dsc_smooth", "dsc_varied_merge", "dsc_diverse_concept", "dsc_high_diversity_concept"
                     ],
                     default="baseline",
-                    tooltip="Preset configuration for Consensus-Weighted Blending. Set to 'off' to use normal formula blending, or 'custom' to use the manual parameter overrides below."
+                    tooltip="Preset configuration for Consensus-Weighted Blending. Set to 'off' to use normal formula blending, or 'custom' to use the manual parameter overrides below. Other presets WILL ignore and override the manual sliders below."
                 ),
                 io.Combo.Input(
                     "blend_method",
                     options=["linear", "consensus"],
                     default="consensus",
-                    tooltip="Consensus aligns inputs dynamically and filters noise; linear performs simple averaging."
+                    tooltip="Only active when blend_preset is 'custom'. 'consensus' aligns inputs dynamically and filters noise; 'linear' performs simple averaging."
                 ),
                 io.Combo.Input(
                     "consensus_type",
                     options=["mean", "median"],
                     default="median",
-                    tooltip="Median completely rejects up to 50% outlier passes. Mean provides smooth blending."
+                    tooltip="Only active when blend_preset is 'custom'. 'median' completely rejects up to 50% outlying features; 'mean' provides smooth averaging."
                 ),
                 io.Combo.Input(
                     "alignment_method",
                     options=["index", "similarity"],
                     default="similarity",
-                    tooltip="Similarity matches tokens in the embedding space via cosine similarity. Index aligns strict dimensions sequentially."
+                    tooltip="Only active when blend_preset is 'custom'. 'similarity' matches tokens in the embedding space via cosine similarity; 'index' aligns dimensions sequentially."
                 ),
-                io.Float.Input("alignment_threshold", default=0.4, min=0.0, max=1.0, step=0.01, tooltip="Minimum similarity required to match two tokens under similarity alignment."),
-                io.Float.Input("similarity_threshold", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Prunes tokens from individual passes if similarity to the consensus representation falls below this limit."),
-                io.Float.Input("power_alpha", default=2.0, min=0.0, max=10.0, step=0.1, tooltip="Soft-masking exponent. Higher values penalize outlying elements heavily."),
-                io.Float.Input("diversity_beta", default=0.0, min=0.0, max=10.0, step=0.1, tooltip="Diversity exponent. Values > 0.0 damp overfitted features and boost unique details."),
-                io.Boolean.Input("rescale_norm", default=True, tooltip="Rescales vector magnitudes to maintain prompt activation and prevent energy collapse."),
-                io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Scaling factor applied to the final merged outputs."),
-                io.Boolean.Input("dynamic_similarity_contrast", default=False, tooltip="Enables dynamic similarity contrast stretching to soft [0.7, 1.0] band to prevent Winner-Takes-All collapse."),
-                io.Boolean.Input("soft_comfort_bandpass", default=False, tooltip="Enables a safe, soft-comfort distance bandpass filter to prevent outliers from overshooting."),
-                io.Boolean.Input("isolate_visual_tokens", default=True, tooltip="Isolates visual embeddings and blends them geometrically to prevent the Zero-Blending Gap on disparate concepts."),
+                io.Float.Input("alignment_threshold", default=0.4, min=0.0, max=1.0, step=0.01, tooltip="Only active when blend_preset is 'custom' and alignment_method is 'similarity'. Minimum similarity required to match two tokens."),
+                io.Float.Input("similarity_threshold", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Only active when blend_preset is 'custom'. Prunes tokens from individual passes if similarity to the consensus falls below this limit."),
+                io.Float.Input("power_alpha", default=2.0, min=0.0, max=10.0, step=0.1, tooltip="Only active when blend_preset is 'custom'. Soft-masking exponent. Higher values penalize outlying elements heavily (e.g., 2.0)."),
+                io.Float.Input("diversity_beta", default=0.0, min=0.0, max=10.0, step=0.1, tooltip="Only active when blend_preset is 'custom'. Diversity exponent. Values > 0.0 damp overfitted features and boost unique details (e.g., 1.5)."),
+                io.Boolean.Input("rescale_norm", default=True, tooltip="Only active when blend_preset is 'custom'. Rescales vector magnitudes to maintain prompt activation energy and prevent desaturation collapse."),
+                io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Always active (works for custom and presets). Scaling factor applied to the final merged outputs. Set to 1.25+ to force single-subject convergence."),
+                io.Boolean.Input("dynamic_similarity_contrast", default=False, tooltip="Only active when blend_preset is 'custom'. Maps similarities to a soft [0.7, 1.0] band to prevent WTA collapse while boosting blending contrast."),
+                io.Boolean.Input("soft_comfort_bandpass", default=False, tooltip="Only active when blend_preset is 'custom'. Relocates the bandpass penalty ceiling to a soft 1.5 coordinate to prevent outlier overshoots."),
+                io.Boolean.Input("isolate_visual_tokens", default=True, tooltip="Always active (works for custom and presets). Isolates visual embeddings and blends them spatially to prevent the Zero-Blending Gap on disparate concepts."),
                 io.Combo.Input(
                     "visual_blend_method",
                     options=["index-consensus", "similarity-consensus", "linear", "off"],
                     default="index-consensus",
-                    tooltip="Method used to blend isolated visual tokens. 'index-consensus' is highly recommended as it blends them spatially."
+                    tooltip="Always active (works for custom and presets). Method used to blend isolated visual tokens. 'index-consensus' is highly recommended as it blends them spatially."
                 ),
                 io.Combo.Input(
                     "preserve_text_pass",
                     options=["reference", "blend"],
                     default="reference",
-                    tooltip="Specifies how to handle textual prompt tokens. 'reference' keeps the first pass prompt 100% sharp to avoid text dilution."
+                    tooltip="Always active (works for custom and presets). 'reference' keeps the first pass prompt 100% sharp to avoid text dilution; 'blend' aligns and averages them."
                 )
             ],
             outputs=[
