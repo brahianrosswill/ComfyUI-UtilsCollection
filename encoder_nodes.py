@@ -253,6 +253,7 @@ def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, poole
     max_len = max(tensor.shape[1] for tensor in sequence_tensors.values())
 
     # Pad/interpolate all tensors to match max length exactly
+    import comfy
     aligned_sequence_tensors = {}
     for name, tensor in sequence_tensors.items():
         if tensor.shape[1] < max_len:
@@ -265,7 +266,8 @@ def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, poole
                 pad_size = max_len - tensor.shape[1]
                 padding = torch.zeros((tensor.shape[0], pad_size, tensor.shape[2]), device=tensor.device, dtype=tensor.dtype)
                 tensor = torch.cat([tensor, padding], dim=1)
-        aligned_sequence_tensors[name] = tensor
+        # Cast the padded tensor to the target device via Comfy's non-blocking, aimdo-aware pipeline
+        aligned_sequence_tensors[name] = comfy.model_management.cast_to_device(tensor, tensor.device, tensor.dtype)
 
     safe_dict_cond = {
         "__builtins__": {},
@@ -297,14 +299,16 @@ def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, poole
     except Exception as e:
         raise RuntimeError(f"Error evaluating conditioning math expression '{expression}': {e}")
 
-BlendConfig = io.Custom("BLEND_CONFIG")
+# --- Type Definitions for Modular Configurations ---
+TextBlendConfig = io.Custom("TEXT_BLEND_CONFIG")
+VisualFusionConfig = io.Custom("VISUAL_FUSION_CONFIG")
 
-class UC_ConsensusBlendConfig(io.ComfyNode):
+class UC_TextConsensusBlendConfig(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
-            node_id="UC_ConsensusBlendConfig",
-            display_name="Consensus Blend Configurator",
+            node_id="UC_TextConsensusBlendConfig",
+            display_name="Text Consensus Blend Configurator",
             category="advanced/conditioning",
             inputs=[
                 io.Combo.Input(
@@ -314,50 +318,37 @@ class UC_ConsensusBlendConfig(io.ComfyNode):
                         "dsc_baseline", "dsc_high_clarity", "dsc_smooth", "dsc_varied_merge", "dsc_diverse_concept", "dsc_high_diversity_concept"
                     ],
                     default="baseline",
-                    tooltip="Preset configuration for Consensus-Weighted Blending. Set to 'off' to use normal formula blending, or 'custom' to use the manual parameter overrides below. Other presets WILL ignore and override the manual sliders below."
+                    tooltip="Preset configuration for Text Consensus-Weighted Blending. Set to 'off' to bypass CWB, or 'custom' to use the manual parameters below."
                 ),
                 io.Combo.Input(
                     "blend_method",
                     options=["linear", "consensus"],
                     default="consensus",
-                    tooltip="Only active when blend_preset is 'custom'. 'consensus' aligns inputs dynamically and filters noise; 'linear' performs simple averaging."
+                    tooltip="Active only in 'custom' preset. 'consensus' aligns prompts and filters noise; 'linear' averages them."
                 ),
                 io.Combo.Input(
                     "consensus_type",
                     options=["mean", "median"],
                     default="median",
-                    tooltip="Only active when blend_preset is 'custom'. 'median' completely rejects up to 50% outlying features; 'mean' provides smooth averaging."
+                    tooltip="Active only in 'custom' preset. 'median' rejects up to 50% outlying noise; 'mean' is smooth averaging."
                 ),
                 io.Combo.Input(
                     "alignment_method",
                     options=["index", "similarity"],
                     default="similarity",
-                    tooltip="Only active when blend_preset is 'custom'. 'similarity' matches tokens in the embedding space via cosine similarity; 'index' aligns dimensions sequentially."
+                    tooltip="Active only in 'custom' preset. 'similarity' aligns shifted prompt concepts; 'index' aligns them sequentially."
                 ),
-                io.Float.Input("alignment_threshold", default=0.4, min=0.0, max=1.0, step=0.01, tooltip="Only active when blend_preset is 'custom' and alignment_method is 'similarity'. Minimum similarity required to match two tokens."),
-                io.Float.Input("similarity_threshold", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Only active when blend_preset is 'custom'. Prunes tokens from individual passes if similarity to the consensus falls below this limit."),
-                io.Float.Input("power_alpha", default=2.0, min=0.0, max=10.0, step=0.1, tooltip="Only active when blend_preset is 'custom'. Soft-masking exponent. Higher values penalize outlying elements heavily (e.g., 2.0)."),
-                io.Float.Input("diversity_beta", default=0.0, min=0.0, max=10.0, step=0.1, tooltip="Only active when blend_preset is 'custom'. Diversity exponent. Values > 0.0 damp overfitted features and boost unique details (e.g., 1.5)."),
-                io.Boolean.Input("rescale_norm", default=True, tooltip="Only active when blend_preset is 'custom'. Rescales vector magnitudes to maintain prompt activation energy and prevent desaturation collapse."),
-                io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Always active (works for custom and presets). Scaling factor applied to the final merged outputs. Set to 1.25+ to force single-subject convergence."),
-                io.Boolean.Input("dynamic_similarity_contrast", default=False, tooltip="Only active when blend_preset is 'custom'. Maps similarities to a soft [0.7, 1.0] band to prevent WTA collapse while boosting blending contrast."),
-                io.Boolean.Input("soft_comfort_bandpass", default=False, tooltip="Only active when blend_preset is 'custom'. Relocates the bandpass penalty ceiling to a soft 1.5 coordinate to prevent outlier overshoots."),
-                io.Boolean.Input("isolate_visual_tokens", default=True, tooltip="Always active (works for custom and presets). Isolates visual embeddings and blends them spatially to prevent the Zero-Blending Gap on disparate concepts."),
-                io.Combo.Input(
-                    "visual_blend_method",
-                    options=["index-consensus", "similarity-consensus", "linear", "off"],
-                    default="index-consensus",
-                    tooltip="Always active (works for custom and presets). Method used to blend isolated visual tokens. 'index-consensus' is highly recommended as it blends them spatially."
-                ),
-                io.Combo.Input(
-                    "preserve_text_pass",
-                    options=["reference", "blend"],
-                    default="reference",
-                    tooltip="Always active (works for custom and presets). 'reference' keeps the first pass prompt 100% sharp to avoid text dilution; 'blend' aligns and averages them."
-                )
+                io.Float.Input("alignment_threshold", default=0.4, min=0.0, max=1.0, step=0.01, tooltip="Active only in similarity alignment. Minimum similarity to match words."),
+                io.Float.Input("similarity_threshold", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Prunes passing words if similarity to consensus falls below this."),
+                io.Float.Input("power_alpha", default=2.0, min=0.0, max=10.0, step=0.1, tooltip="Soft-masking exponent. Higher values penalize outliers (e.g. 2.0)."),
+                io.Float.Input("diversity_beta", default=0.0, min=0.0, max=10.0, step=0.1, tooltip="Diversity exponent. Dampens hyper-frequent details to boost variety (e.g. 1.5)."),
+                io.Boolean.Input("rescale_norm", default=True, tooltip="Norm Rescaling. Keeps activation energy high to prevent washed-out colors."),
+                io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Global scale multiplier applied to the blended outputs."),
+                io.Boolean.Input("dynamic_similarity_contrast", default=False, tooltip="Stretches similarities to soft [0.7, 1.0] band to boost contrast."),
+                io.Boolean.Input("soft_comfort_bandpass", default=False, tooltip="Softens the diversity bandpass ceiling to prevent clipping.")
             ],
             outputs=[
-                BlendConfig.Output("config")
+                TextBlendConfig.Output("text_blend_config")
             ]
         )
 
@@ -375,10 +366,7 @@ class UC_ConsensusBlendConfig(io.ComfyNode):
         rescale_norm: bool,
         global_scale: float,
         dynamic_similarity_contrast: bool = False,
-        soft_comfort_bandpass: bool = False,
-        isolate_visual_tokens: bool = True,
-        visual_blend_method: str = "index-consensus",
-        preserve_text_pass: str = "reference"
+        soft_comfort_bandpass: bool = False
     ) -> io.NodeOutput:
         config = {
             "blend_preset": blend_preset,
@@ -392,24 +380,217 @@ class UC_ConsensusBlendConfig(io.ComfyNode):
             "rescale_norm": rescale_norm,
             "global_scale": global_scale,
             "dynamic_similarity_contrast": dynamic_similarity_contrast,
-            "soft_comfort_bandpass": soft_comfort_bandpass,
-            "isolate_visual_tokens": isolate_visual_tokens,
-            "visual_blend_method": visual_blend_method,
-            "preserve_text_pass": preserve_text_pass
+            "soft_comfort_bandpass": soft_comfort_bandpass
         }
         return io.NodeOutput(config)
+
+
+class UC_VisualFusionConfig(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_VisualFusionConfig",
+            display_name="Visual Component Fusion Configurator",
+            category="advanced/conditioning",
+            inputs=[
+                io.Combo.Input(
+                    "visual_fusion_method",
+                    options=["off", "linear", "index-consensus", "similarity-consensus", "spatial-checkerboard", "spatial-block-interleave", "spatial-dither-random"],
+                    default="spatial-checkerboard",
+                    tooltip="Method to combine isolated visual tokens. Methods starting with 'spatial-' interleave pure token vectors to keep details perfectly sharp and achieve true fusion instead of filter-like blurring."
+                ),
+                io.Int.Input("visual_block_size", default=2, min=1, max=8, step=1, tooltip="Active for spatial-block-interleave. Size of the spatial token patches to group and switch together."),
+                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Active for spatial-dither-random. Probability of selecting a token from the first image vs subsequent images.")
+            ],
+            outputs=[
+                VisualFusionConfig.Output("visual_fusion_config")
+            ]
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        visual_fusion_method: str,
+        visual_block_size: int,
+        dither_ratio: float
+    ) -> io.NodeOutput:
+        config = {
+            "visual_fusion_method": visual_fusion_method,
+            "visual_block_size": visual_block_size,
+            "dither_ratio": dither_ratio
+        }
+        return io.NodeOutput(config)
+
+def reconstruct_2d_grid(N: int) -> tuple:
+    """
+    Determines the closest 2D grid dimensions (H, W) for N tokens.
+    """
+    import math
+    root = int(math.sqrt(N))
+    if root * root == N:
+        return root, root
+    for w in range(root, 0, -1):
+        if N % w == 0:
+            return N // w, w
+    return N, 1
+
+def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_size: int = 2, dither_ratio: float = 0.5, device: str = "cpu") -> torch.Tensor:
+    """
+    Generates a deterministic 1D token index mapping array corresponding to a source image index.
+    """
+    import torch
+    if num_sources <= 1:
+        return torch.zeros(N, dtype=torch.long, device=device)
+
+    h, w = reconstruct_2d_grid(N)
+
+    if method == "spatial-checkerboard":
+        mask = torch.zeros(N, dtype=torch.long, device=device)
+        for i in range(N):
+            r = i // w
+            c = i % w
+            mask[i] = (r + c) % num_sources
+        return mask
+
+    elif method == "spatial-block-interleave":
+        mask = torch.zeros(N, dtype=torch.long, device=device)
+        for i in range(N):
+            r = i // w
+            c = i % w
+            block_r = r // block_size
+            block_c = c // block_size
+            mask[i] = (block_r + block_c) % num_sources
+        return mask
+
+    elif method == "spatial-dither-random":
+        g = torch.Generator(device=device)
+        g.manual_seed(42)  # Deterministic seed to prevent shifting patterns on every generation run
+        rands = torch.rand(N, generator=g, device=device)
+        if num_sources == 2:
+            return torch.where(rands < dither_ratio, 0, 1)
+        else:
+            return (rands * num_sources).long()
+
+    else:
+        return torch.zeros(N, dtype=torch.long, device=device)
+
 
 def evaluate_conditioning_consensus_blend(
     sequence_tensors: dict,
     pooled_tensors: dict,
-    blend_config: dict = None,
+    visual_fusion_config: dict = None,
     device: str = "cpu",
     visual_ranges: dict = None
 ) -> tuple:
-    if blend_config is None:
-        blend_config = {"blend_preset": "off"}
+    """
+    Decoupled blending engine focused entirely on isolated visual token spatial fusion.
+    """
+    import torch
 
-    blend_preset = blend_config.get("blend_preset", "off")
+    if visual_fusion_config is None:
+        visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+
+    visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
+
+    active_keys = sorted(list(sequence_tensors.keys()))
+    tensors_list = [sequence_tensors[k] for k in active_keys]
+    if not tensors_list:
+        return None, None
+
+    B = tensors_list[0].shape[0]
+    D = tensors_list[0].shape[2]
+
+    C_blended_list = []
+    for b in range(B):
+        batch_tensors_dict = {k: sequence_tensors[k][b].to(device=device, dtype=torch.float32) for k in active_keys}
+        ref_key = active_keys[0]
+
+        prefixes = {}
+        visuals = {}
+        suffixes = {}
+
+        for k in active_keys:
+            t = batch_tensors_dict[k]
+            vr = visual_ranges.get(k, (0, 0))
+            if vr is None or vr == (0, 0):
+                prefixes[k] = t
+                visuals[k] = torch.zeros((0, D), device=device, dtype=t.dtype)
+                suffixes[k] = torch.zeros((0, D), device=device, dtype=t.dtype)
+            else:
+                v_start, v_end = vr
+                prefixes[k] = t[:v_start, :]
+                visuals[k] = t[v_start:v_end, :]
+                suffixes[k] = t[v_end:, :]
+
+        # Splicing of isolated visual blocks
+        active_visuals = {k: v for k, v in visuals.items() if v.shape[0] > 0}
+        if active_visuals and visual_method != "off":
+            max_vis_len = max(v.shape[0] for v in active_visuals.values())
+            aligned_visuals = {}
+            for k, v in active_visuals.items():
+                if v.shape[0] != max_vis_len:
+                    v_perm = v.permute(1, 0).unsqueeze(0)
+                    v_interp = torch.nn.functional.interpolate(v_perm, size=max_vis_len, mode='linear', align_corners=False)
+                    v = v_interp.squeeze(0).permute(1, 0)
+                aligned_visuals[k] = v
+
+            if visual_method.startswith("spatial-"):
+                blended_vis_2d = torch.zeros((max_vis_len, D), device=device, dtype=torch.float32)
+                sources_list = [aligned_visuals[k] for k in active_keys if k in aligned_visuals]
+
+                fusion_mask = generate_spatial_fusion_mask(
+                    N=max_vis_len,
+                    num_sources=len(sources_list),
+                    method=visual_method,
+                    block_size=visual_fusion_config.get("visual_block_size", 2),
+                    dither_ratio=visual_fusion_config.get("dither_ratio", 0.5),
+                    device=device
+                )
+
+                for i in range(max_vis_len):
+                    src_idx = fusion_mask[i].item()
+                    blended_vis_2d[i] = sources_list[src_idx][i]
+
+            elif visual_method == "linear":
+                # Fallback linear average
+                sources_list = [aligned_visuals[k] for k in active_keys if k in aligned_visuals]
+                stacked = torch.stack(sources_list, dim=0)
+                blended_vis_2d = torch.mean(stacked, dim=0)
+            else:
+                # Default fallback to reference image
+                blended_vis_2d = aligned_visuals[ref_key]
+        else:
+            blended_vis_2d = aligned_visuals[ref_key] if active_visuals else torch.zeros((0, D), device=device)
+
+        # Surrounding text (prefixes & suffixes) are kept 100% pure from the reference pass
+        blended_prefix = prefixes[ref_key]
+        blended_suffix = suffixes[ref_key]
+
+        # Stitch segments back together
+        C_blended_list.append(torch.cat([blended_prefix, blended_vis_2d, blended_suffix], dim=0))
+
+    C_blended = torch.stack(C_blended_list, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
+
+    # Pooled output is kept pure from reference pass since text is identical
+    ref_key = active_keys[0]
+    P_blended = pooled_tensors.get(ref_key, None)
+
+    return C_blended, P_blended
+
+
+def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensors: dict = None, device: str = "cpu") -> tuple:
+    """
+    Consensus-Weighted Blending math engine for language space sequences and pooled embeddings.
+    Used ONLY post-encoder inside UC_ConditioningConsensusBlend.
+    """
+    import torch
+    active_keys = sorted(list(sequence_tensors.keys()))
+    tensors_list = [sequence_tensors[k] for k in active_keys]
+
+    B = tensors_list[0].shape[0]
+    D = tensors_list[0].shape[2]
+
+    blend_preset = blend_config.get("blend_preset", "baseline")
     blend_method = blend_config.get("blend_method", "consensus")
     consensus_type = blend_config.get("consensus_type", "median")
     alignment_method = blend_config.get("alignment_method", "similarity")
@@ -421,15 +602,12 @@ def evaluate_conditioning_consensus_blend(
     global_scale = blend_config.get("global_scale", 1.0)
 
     presets = {
-        # Absolute Spec Presets (Original)
         "baseline": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
         "high_clarity": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 3.0, "thresh": 0.3, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
         "smooth": {"method": "consensus", "type": "mean", "align": "similarity", "alpha": 1.5, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
         "varied_merge": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
         "diverse_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 1.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
         "high_diversity_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 2.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
-
-        # Dynamic Contrast Presets (New)
         "dsc_baseline": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
         "dsc_high_clarity": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 4.0, "thresh": 0.3, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
         "dsc_smooth": {"method": "consensus", "type": "mean", "align": "similarity", "alpha": 1.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
@@ -461,317 +639,182 @@ def evaluate_conditioning_consensus_blend(
         dsc_enabled = blend_config.get("dynamic_similarity_contrast", False)
         soft_comfort_enabled = blend_config.get("soft_comfort_bandpass", False)
 
-    active_keys = sorted(list(sequence_tensors.keys()))
-    tensors_list = [sequence_tensors[k] for k in active_keys]
+    C_blended_list = []
+    for b in range(B):
+        batch_tensors = [t[b].to(device=device, dtype=torch.float32) for t in tensors_list]
 
-    if not tensors_list:
-        return None, None
+        if blend_method == "linear":
+            max_len = max(t.shape[0] for t in batch_tensors)
+            padded = []
+            for t in batch_tensors:
+                if t.shape[0] < max_len:
+                    padding = torch.zeros((max_len - t.shape[0], D), device=device, dtype=t.dtype)
+                    t = torch.cat([t, padding], dim=0)
+                padded.append(t)
+            stacked = torch.stack(padded, dim=0)
+            merged_seq = torch.mean(stacked, dim=0)
+            if global_scale != 1.0:
+                merged_seq *= global_scale
+            C_blended_list.append(merged_seq)
+            continue
 
-    B = tensors_list[0].shape[0]
-    D = tensors_list[0].shape[2]
+        if alignment_method == "similarity":
+            ref_idx = max(range(len(batch_tensors)), key=lambda idx: batch_tensors[idx].shape[0])
+            ref_tensor = batch_tensors[ref_idx]
+            N_ref = ref_tensor.shape[0]
 
-    import logging
-    logging.info(f"--- CWB START: keys={active_keys}, B={B}, D={D} ---")
-    for k in active_keys:
-        logging.info(f"  Input '{k}' shape={sequence_tensors[k].shape}")
+            ref_norm = torch.nn.functional.normalize(ref_tensor, p=2, dim=1)
+            aligned_groups = [[] for _ in range(N_ref)]
 
-    isolate_visual_tokens = blend_config.get("isolate_visual_tokens", True)
-    visual_blend_method = blend_config.get("visual_blend_method", "index-consensus")
-    preserve_text_pass = blend_config.get("preserve_text_pass", "reference")
+            for idx, t in enumerate(batch_tensors):
+                N_k = t.shape[0]
+                if idx == ref_idx:
+                    for i in range(N_ref):
+                        aligned_groups[i].append(t[i])
+                    continue
 
-    if isolate_visual_tokens and visual_ranges and any(r is not None and r != (0, 0) for r in visual_ranges.values()):
-        C_blended_list = []
-        for b in range(B):
-            batch_tensors_dict = {k: sequence_tensors[k][b].to(device=device, dtype=torch.float32) for k in active_keys}
+                t_norm = torch.nn.functional.normalize(t, p=2, dim=1)
+                sim_matrix = torch.mm(ref_norm, t_norm.t())
 
-            ref_key = active_keys[0]
-            ref_range = visual_ranges.get(ref_key, (0, 0))
-            if ref_range is None:
-                ref_range = (0, 0)
+                matched_tk_idx = [-1] * N_ref
+                sim_matrix_tmp = sim_matrix.clone()
 
-            prefixes = {}
-            visuals = {}
-            suffixes = {}
+                for _ in range(min(N_ref, N_k)):
+                    flat_idx = torch.argmax(sim_matrix_tmp)
+                    max_val = sim_matrix_tmp.flatten()[flat_idx].item()
 
-            for k in active_keys:
-                t = batch_tensors_dict[k]
-                vr = visual_ranges.get(k, (0, 0))
-                if vr is None or vr == (0, 0):
-                    prefixes[k] = t
-                    visuals[k] = torch.zeros((0, D), device=device, dtype=t.dtype)
-                    suffixes[k] = torch.zeros((0, D), device=device, dtype=t.dtype)
-                else:
-                    v_start, v_end = vr
-                    prefixes[k] = t[:v_start, :]
-                    visuals[k] = t[v_start:v_end, :]
-                    suffixes[k] = t[v_end:, :]
+                    if max_val < alignment_threshold:
+                        break
 
-            # --- 1. Blend Visuals ---
-            active_visuals = {k: v for k, v in visuals.items() if v.shape[0] > 0}
-            if active_visuals:
-                max_vis_len = max(v.shape[0] for v in active_visuals.values())
-                aligned_visuals = {}
-                for k, v in active_visuals.items():
-                    if v.shape[0] != max_vis_len:
-                        v_perm = v.permute(1, 0).unsqueeze(0) # [1, D, N]
-                        v_interp = torch.nn.functional.interpolate(v_perm, size=max_vis_len, mode='linear', align_corners=False)
-                        v = v_interp.squeeze(0).permute(1, 0) # [max_vis_len, D]
-                    aligned_visuals[k] = v
+                    r_idx = flat_idx // N_k
+                    c_idx = flat_idx % N_k
 
-                wrapped_visuals = {k: v.unsqueeze(0) for k, v in aligned_visuals.items()}
+                    matched_tk_idx[r_idx.item()] = c_idx.item()
 
-                vis_blend_config = blend_config.copy()
-                if visual_blend_method == "index-consensus":
-                    vis_blend_config["blend_method"] = "consensus"
-                    vis_blend_config["alignment_method"] = "index"
-                elif visual_blend_method == "similarity-consensus":
-                    vis_blend_config["blend_method"] = "consensus"
-                    vis_blend_config["alignment_method"] = "similarity"
-                elif visual_blend_method == "linear":
-                    vis_blend_config["blend_method"] = "linear"
-                elif visual_blend_method == "off":
-                    vis_blend_config = None
+                    sim_matrix_tmp[r_idx, :] = -100.0
+                    sim_matrix_tmp[:, c_idx] = -100.0
 
-                if vis_blend_config is not None:
-                    vis_blend_config["isolate_visual_tokens"] = False
-                    blended_vis_seq, _ = evaluate_conditioning_consensus_blend(
-                        wrapped_visuals, {}, blend_config=vis_blend_config, device=device
-                    )
-                    blended_vis_2d = blended_vis_seq.squeeze(0)
-                else:
-                    blended_vis_2d = aligned_visuals[ref_key]
-            else:
-                blended_vis_2d = torch.zeros((0, D), device=device)
-
-            # --- 2. Blend Prefixes and Suffixes ---
-            if preserve_text_pass == "reference":
-                blended_prefix = prefixes[ref_key]
-                blended_suffix = suffixes[ref_key]
-            else:
-                wrapped_prefixes = {k: v.unsqueeze(0) for k, v in prefixes.items() if v.shape[0] > 0}
-                if wrapped_prefixes:
-                    prefix_blend_config = blend_config.copy()
-                    prefix_blend_config["alignment_method"] = "similarity"
-                    prefix_blend_config["isolate_visual_tokens"] = False
-                    blended_pref_seq, _ = evaluate_conditioning_consensus_blend(
-                        wrapped_prefixes, {}, blend_config=prefix_blend_config, device=device
-                    )
-                    blended_prefix = blended_pref_seq.squeeze(0)
-                else:
-                    blended_prefix = torch.zeros((0, D), device=device)
-
-                wrapped_suffixes = {k: v.unsqueeze(0) for k, v in suffixes.items() if v.shape[0] > 0}
-                if wrapped_suffixes:
-                    suffix_blend_config = blend_config.copy()
-                    suffix_blend_config["alignment_method"] = "similarity"
-                    suffix_blend_config["isolate_visual_tokens"] = False
-                    blended_suff_seq, _ = evaluate_conditioning_consensus_blend(
-                        wrapped_suffixes, {}, blend_config=suffix_blend_config, device=device
-                    )
-                    blended_suffix = blended_suff_seq.squeeze(0)
-                else:
-                    blended_suffix = torch.zeros((0, D), device=device)
-
-            # --- 3. Stitch them back together ---
-            final_seq = torch.cat([blended_prefix, blended_vis_2d, blended_suffix], dim=0)
-            C_blended_list.append(final_seq)
-
-        C_blended = torch.stack(C_blended_list, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
-    else:
-        C_blended_list = []
-
-        for b in range(B):
-            batch_tensors = [t[b].to(device=device, dtype=torch.float32) for t in tensors_list]
-
-            if blend_method == "linear":
-                max_len = max(t.shape[0] for t in batch_tensors)
-                padded = []
-                for t in batch_tensors:
-                    if t.shape[0] < max_len:
-                        padding = torch.zeros((max_len - t.shape[0], D), device=device, dtype=t.dtype)
-                        t = torch.cat([t, padding], dim=0)
-                    padded.append(t)
-                stacked = torch.stack(padded, dim=0)
-                merged_seq = torch.mean(stacked, dim=0)
-                if global_scale != 1.0:
-                    merged_seq *= global_scale
-                C_blended_list.append(merged_seq)
-                continue
-
-            if alignment_method == "similarity":
-                ref_idx = max(range(len(batch_tensors)), key=lambda idx: batch_tensors[idx].shape[0])
-                ref_tensor = batch_tensors[ref_idx]
-                N_ref = ref_tensor.shape[0]
-
-                ref_norm = torch.nn.functional.normalize(ref_tensor, p=2, dim=1)
-                aligned_groups = [[] for _ in range(N_ref)]
-
-                for idx, t in enumerate(batch_tensors):
-                    N_k = t.shape[0]
-                    if idx == ref_idx:
-                        for i in range(N_ref):
-                            aligned_groups[i].append(t[i])
-                        continue
-
-                    t_norm = torch.nn.functional.normalize(t, p=2, dim=1)
-                    sim_matrix = torch.mm(ref_norm, t_norm.t())
-
-                    matched_tk_idx = [-1] * N_ref
-                    sim_matrix_tmp = sim_matrix.clone()
-
-                    for _ in range(min(N_ref, N_k)):
-                        flat_idx = torch.argmax(sim_matrix_tmp)
-                        max_val = sim_matrix_tmp.flatten()[flat_idx].item()
-
-                        if max_val < alignment_threshold:
-                            break
-
-                        r_idx = flat_idx // N_k
-                        c_idx = flat_idx % N_k
-
-                        matched_tk_idx[r_idx.item()] = c_idx.item()
-
-                        sim_matrix_tmp[r_idx, :] = -100.0
-                        sim_matrix_tmp[:, c_idx] = -100.0
-
-                    for r_idx in range(N_ref):
-                        matched_c = matched_tk_idx[r_idx]
-                        if matched_c != -1:
-                            aligned_groups[r_idx].append(t[matched_c])
-
-                merged_seq = torch.zeros((N_ref, D), dtype=torch.float32, device=device)
                 for r_idx in range(N_ref):
-                    row_tensors = aligned_groups[r_idx]
-                    if not row_tensors:
-                        continue
-                    stacked = torch.stack(row_tensors, dim=0)
+                    matched_c = matched_tk_idx[r_idx]
+                    if matched_c != -1:
+                        aligned_groups[r_idx].append(t[matched_c])
 
-                    if consensus_type == "median":
-                        consensus = torch.median(stacked, dim=0).values
-                    else:
-                        consensus = torch.mean(stacked, dim=0)
+            merged_seq = torch.zeros((N_ref, D), dtype=torch.float32, device=device)
+            for r_idx in range(N_ref):
+                row_tensors = aligned_groups[r_idx]
+                if not row_tensors:
+                    continue
+                stacked = torch.stack(row_tensors, dim=0)
 
-                    stacked_norm = torch.nn.functional.normalize(stacked, p=2, dim=1)
-                    consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=0)
-                    similarities = torch.mv(stacked_norm, consensus_norm)
+                if consensus_type == "median":
+                    consensus = torch.median(stacked, dim=0).values
+                else:
+                    consensus = torch.mean(stacked, dim=0)
 
-                    # Dynamic similarity contrast stretching (boosts distinction among high-similarity tokens)
-                    if dsc_enabled:
-                        min_sim = similarities.min()
-                        max_sim = similarities.max()
-                        if max_sim > min_sim:
-                            # Map range [min_sim, max_sim] to a soft, healthy [0.7, 1.0] band
-                            # This prevents "Winner-Takes-All" collapse while still providing pronounced, beautiful blending.
-                            stretched_sims = 0.7 + 0.3 * (similarities - min_sim) / (max_sim - min_sim + 1e-8)
-                        else:
-                            stretched_sims = similarities
-                    else:
-                        stretched_sims = similarities
+                stacked_norm = torch.nn.functional.normalize(stacked, p=2, dim=1)
+                consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=0)
+                similarities = torch.mv(stacked_norm, consensus_norm)
 
-                    row_weights = torch.zeros_like(similarities)
-                    mask = similarities >= similarity_threshold
-
-                    if mask.any():
-                        if diversity_beta > 0.0:
-                            distance_base = 1.5 if soft_comfort_enabled else 1.001
-                            row_weights[mask] = torch.pow(stretched_sims[mask], power_alpha) * torch.pow(distance_base - stretched_sims[mask], diversity_beta)
-                        else:
-                            row_weights[mask] = torch.pow(stretched_sims[mask], power_alpha)
-                        w_sum = row_weights.sum()
-                        if w_sum > 0:
-                            row_weights /= w_sum
-                        else:
-                            row_weights = torch.ones_like(similarities) / len(similarities)
-                    else:
-                        row_weights = torch.ones_like(similarities) / len(similarities)
-
-                    merged_vec = (stacked * row_weights.unsqueeze(1)).sum(dim=0)
-
-                    if rescale_norm:
-                        avg_norm = torch.norm(stacked, p=2, dim=1).mean()
-                        merged_norm = torch.norm(merged_vec, p=2)
-                        if merged_norm > 0:
-                            merged_vec = (merged_vec / merged_norm) * avg_norm
-
-                    if global_scale != 1.0:
-                        merged_vec *= global_scale
-                    merged_seq[r_idx] = merged_vec
-                C_blended_list.append(merged_seq)
-            else:
-                # Index-based matching
-                max_len = max(t.shape[0] for t in batch_tensors)
-                merged_seq = torch.zeros((max_len, D), dtype=torch.float32, device=device)
-                for i in range(max_len):
-                    row_tensors = []
-                    for t in batch_tensors:
-                        if t.shape[0] > i:
-                            row_tensors.append(t[i])
-                    if not row_tensors:
-                        continue
-                    stacked = torch.stack(row_tensors, dim=0)
-
-                    if consensus_type == "median":
-                        consensus = torch.median(stacked, dim=0).values
-                    else:
-                        consensus = torch.mean(stacked, dim=0)
-
-                    stacked_norm = torch.nn.functional.normalize(stacked, p=2, dim=1)
-                    consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=0)
-                    similarities = torch.mv(stacked_norm, consensus_norm)
-
-                    # Dynamic similarity contrast stretching (boosts distinction among high-similarity tokens)
-                    if dsc_enabled:
-                        min_sim = similarities.min()
-                        max_sim = similarities.max()
-                        if max_sim > min_sim:
-                            # Map range [min_sim, max_sim] to a soft, healthy [0.7, 1.0] band
-                            # This prevents "Winner-Takes-All" collapse while still providing pronounced, beautiful blending.
-                            stretched_sims = 0.7 + 0.3 * (similarities - min_sim) / (max_sim - min_sim + 1e-8)
-                        else:
-                            stretched_sims = similarities
+                if dsc_enabled:
+                    min_sim = similarities.min()
+                    max_sim = similarities.max()
+                    if max_sim > min_sim:
+                        stretched_sims = 0.7 + 0.3 * (similarities - min_sim) / (max_sim - min_sim + 1e-8)
                     else:
                         stretched_sims = similarities
+                else:
+                    stretched_sims = similarities
 
-                    row_weights = torch.zeros_like(similarities)
-                    mask = similarities >= similarity_threshold
+                row_weights = torch.zeros_like(similarities)
+                mask = similarities >= similarity_threshold
 
-                    if mask.any():
-                        if diversity_beta > 0.0:
-                            distance_base = 1.5 if soft_comfort_enabled else 1.001
-                            row_weights[mask] = torch.pow(stretched_sims[mask], power_alpha) * torch.pow(distance_base - stretched_sims[mask], diversity_beta)
-                        else:
-                            row_weights[mask] = torch.pow(stretched_sims[mask], power_alpha)
-                        w_sum = row_weights.sum()
-                        if w_sum > 0:
-                            row_weights /= w_sum
-                        else:
-                            row_weights = torch.ones_like(similarities) / len(similarities)
+                if mask.any():
+                    if diversity_beta > 0.0:
+                        distance_base = 1.5 if soft_comfort_enabled else 1.001
+                        row_weights[mask] = torch.pow(stretched_sims[mask], power_alpha) * torch.pow(distance_base - stretched_sims[mask], diversity_beta)
+                    else:
+                        row_weights[mask] = torch.pow(stretched_sims[mask], power_alpha)
+                    w_sum = row_weights.sum()
+                    if w_sum > 0:
+                        row_weights /= w_sum
                     else:
                         row_weights = torch.ones_like(similarities) / len(similarities)
+                else:
+                    row_weights = torch.ones_like(similarities) / len(similarities)
 
-                    merged_vec = (stacked * row_weights.unsqueeze(1)).sum(dim=0)
+                merged_vec = (stacked * row_weights.unsqueeze(1)).sum(dim=0)
 
-                    if rescale_norm:
-                        avg_norm = torch.norm(stacked, p=2, dim=1).mean()
-                        merged_norm = torch.norm(merged_vec, p=2)
-                        if merged_norm > 0:
-                            merged_vec = (merged_vec / merged_norm) * avg_norm
+                if rescale_norm:
+                    avg_norm = torch.norm(stacked, p=2, dim=1).mean()
+                    merged_norm = torch.norm(merged_vec, p=2)
+                    if merged_norm > 0:
+                        merged_vec = (merged_vec / merged_norm) * avg_norm
 
-                    if global_scale != 1.0:
-                        merged_vec *= global_scale
-                    merged_seq[i] = merged_vec
-                C_blended_list.append(merged_seq)
+                if global_scale != 1.0:
+                    merged_vec *= global_scale
+                merged_seq[r_idx] = merged_vec
+            C_blended_list.append(merged_seq)
+        else:
+            # Index-Based Sequential Matching
+            max_len = max(t.shape[0] for t in batch_tensors)
+            merged_seq = torch.zeros((max_len, D), dtype=torch.float32, device=device)
+            for i in range(max_len):
+                row_tensors = []
+                for t in batch_tensors:
+                    if t.shape[0] > i:
+                        row_tensors.append(t[i])
+                if not row_tensors:
+                    continue
+                stacked = torch.stack(row_tensors, dim=0)
 
-        C_blended = torch.stack(C_blended_list, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
+                if consensus_type == "median":
+                    consensus = torch.median(stacked, dim=0).values
+                else:
+                    consensus = torch.mean(stacked, dim=0)
 
-    # 3. Blend pooled tensors (alignment is index-based as length is always 1)
+                stacked_norm = torch.nn.functional.normalize(stacked, p=2, dim=1)
+                consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=0)
+                similarities = torch.mv(stacked_norm, consensus_norm)
+
+                row_weights = torch.zeros_like(similarities)
+                mask = similarities >= similarity_threshold
+
+                if mask.any():
+                    if diversity_beta > 0.0:
+                        row_weights[mask] = torch.pow(similarities[mask], power_alpha) * torch.pow(similarities[mask], diversity_beta)
+                    else:
+                        row_weights[mask] = torch.pow(similarities[mask], power_alpha)
+                    w_sum = row_weights.sum()
+                    if w_sum > 0:
+                        row_weights /= w_sum
+                    else:
+                        row_weights = torch.ones_like(similarities) / len(similarities)
+                else:
+                    row_weights = torch.ones_like(similarities) / len(similarities)
+
+                merged_vec = (stacked * row_weights.unsqueeze(1)).sum(dim=0)
+
+                if rescale_norm:
+                    avg_norm = torch.norm(stacked, p=2, dim=1).mean()
+                    merged_norm = torch.norm(merged_vec, p=2)
+                    if merged_norm > 0:
+                        merged_vec = (merged_vec / merged_norm) * avg_norm
+
+                if global_scale != 1.0:
+                    merged_vec *= global_scale
+                merged_seq[i] = merged_vec
+            C_blended_list.append(merged_seq)
+
+    C_blended = torch.stack(C_blended_list, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
+
+    # Blend metadata pooled outputs
     P_blended = None
-    if any(p is not None for p in pooled_tensors.values()):
+    if pooled_tensors and any(p is not None for p in pooled_tensors.values()):
         pooled_list_active = [pooled_tensors[k] for k in active_keys if pooled_tensors.get(k) is not None]
-        stacked_pooled = torch.stack(pooled_list_active, dim=1) # [B, K, D]
+        stacked_pooled = torch.stack(pooled_list_active, dim=1)
         P_blended_batches = []
         for b in range(B):
-            stacked_p = stacked_pooled[b] # [K, D]
+            stacked_p = stacked_pooled[b]
             if consensus_type == "median":
                 consensus_p = torch.median(stacked_p, dim=0).values
             else:
@@ -781,28 +824,14 @@ def evaluate_conditioning_consensus_blend(
             consensus_p_norm = torch.nn.functional.normalize(consensus_p, p=2, dim=0)
             similarities_p = torch.mv(stacked_p_norm, consensus_p_norm)
 
-            # Dynamic similarity contrast stretching (boosts distinction among high-similarity tokens)
-            if dsc_enabled:
-                min_sim_p = similarities_p.min()
-                max_sim_p = similarities_p.max()
-                if max_sim_p > min_sim_p:
-                    # Map range [min_sim_p, max_sim_p] to a soft, healthy [0.7, 1.0] band
-                    # This prevents "Winner-Takes-All" collapse while still providing pronounced, beautiful blending.
-                    stretched_sims_p = 0.7 + 0.3 * (similarities_p - min_sim_p) / (max_sim_p - min_sim_p + 1e-8)
-                else:
-                    stretched_sims_p = similarities_p
-            else:
-                stretched_sims_p = similarities_p
-
             weights_p = torch.zeros_like(similarities_p)
             mask_p = similarities_p >= similarity_threshold
 
             if mask_p.any():
                 if diversity_beta > 0.0:
-                    distance_base = 1.5 if soft_comfort_enabled else 1.001
-                    weights_p[mask_p] = torch.pow(stretched_sims_p[mask_p], power_alpha) * torch.pow(distance_base - stretched_sims_p[mask_p], diversity_beta)
+                    weights_p[mask_p] = torch.pow(similarities_p[mask_p], power_alpha) * torch.pow(1.001 - similarities_p[mask_p], diversity_beta)
                 else:
-                    weights_p[mask_p] = torch.pow(stretched_sims_p[mask_p], power_alpha)
+                    weights_p[mask_p] = torch.pow(similarities_p[mask_p], power_alpha)
                 w_sum_p = weights_p.sum()
                 if w_sum_p > 0:
                     weights_p /= w_sum_p
@@ -812,18 +841,118 @@ def evaluate_conditioning_consensus_blend(
                 weights_p = torch.ones_like(similarities_p) / len(similarities_p)
 
             merged_p = (stacked_p * weights_p.unsqueeze(1)).sum(dim=0)
+
             if rescale_norm:
                 avg_norm_p = torch.norm(stacked_p, p=2, dim=1).mean()
                 merged_p_norm = torch.norm(merged_p, p=2)
                 if merged_p_norm > 0:
                     merged_p = (merged_p / merged_p_norm) * avg_norm_p
+
             if global_scale != 1.0:
                 merged_p *= global_scale
             P_blended_batches.append(merged_p)
         P_blended = torch.stack(P_blended_batches, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
 
-    logging.info(f"--- CWB END: C_blended shape={C_blended.shape}, P_blended shape={P_blended.shape if P_blended is not None else None} ---")
     return C_blended, P_blended
+
+
+class UC_ConditioningConsensusBlend(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Conditioning.Input("conditioning", optional=True),
+            prefix="conditioning_"
+        )
+        return io.Schema(
+            node_id="UC_ConditioningConsensusBlend",
+            display_name="Conditioning Consensus Blender (Post-Encoder)",
+            category="advanced/conditioning",
+            inputs=[
+                io.Autogrow.Input("conditioning_inputs", template=autogrow_template),
+                TextBlendConfig.Input("text_blend_config", optional=True, tooltip="Optional configuration from UC_TextConsensusBlendConfig. Defaults to baseline CWB if disconnected.")
+            ],
+            outputs=[
+                io.Conditioning.Output("conditioning")
+            ]
+        )
+
+    @classmethod
+    def execute(cls, conditioning_inputs: io.Autogrow.Type, text_blend_config: dict = None) -> io.NodeOutput:
+        """
+        Blends stock or custom ComfyUI conditioning outputs post-encoder using CWB math.
+        """
+        import torch
+        if not conditioning_inputs:
+            raise ValueError("At least one conditioning input must be connected to UC_ConditioningConsensusBlend.")
+
+        active_conds = []
+        if conditioning_inputs is not None:
+            for k in sorted(conditioning_inputs.keys(), key=lambda x: int(''.join(filter(str.isdigit, x)) or 0)):
+                v = conditioning_inputs[k]
+                if v is not None:
+                    active_conds.append(v)
+
+        if not active_conds:
+            raise ValueError("All connected conditioning inputs to UC_ConditioningConsensusBlend are empty or None.")
+
+        if len(active_conds) == 1:
+            return io.NodeOutput(active_conds[0])
+
+        if text_blend_config is None:
+            text_blend_config = {"blend_preset": "baseline"}
+
+        # Extract sequence and pooled tensors across conditionings
+        sequence_tensors = {}
+        pooled_tensors = {}
+
+        # ComfyUI conditioning data structure is a list of lists of dictionaries:
+        # [ [ [conditioning_tensor, { "pooled_output": pooled_tensor, ... }] ] ]
+        for idx, cond_list in enumerate(active_conds):
+            key = chr(97 + idx) # 'a', 'b', 'c', ...
+            # Extract first element's tensor
+            main_tensor = cond_list[0][0]
+            sequence_tensors[key] = main_tensor
+
+            meta_dict = cond_list[0][1]
+            if meta_dict and "pooled_output" in meta_dict:
+                pooled_tensors[key] = meta_dict["pooled_output"]
+            else:
+                pooled_tensors[key] = None
+
+        # Execute CWB blending
+        import comfy
+        device = comfy.model_management.get_torch_device()
+        dtype = sequence_tensors['a'].dtype
+
+        # Cast all sequence and pooled tensors safely using Comfy's non-blocking, aimdo-aware pipeline
+        safe_sequence_tensors = {}
+        for k, t in sequence_tensors.items():
+            safe_sequence_tensors[k] = comfy.model_management.cast_to_device(t, device, dtype)
+
+        safe_pooled_tensors = {}
+        for k, p in pooled_tensors.items():
+            if p is not None:
+                safe_pooled_tensors[k] = comfy.model_management.cast_to_device(p, device, dtype)
+            else:
+                safe_pooled_tensors[k] = None
+
+        C_blended, P_blended = blend_text_vectors(
+            safe_sequence_tensors,
+            text_blend_config,
+            pooled_tensors=safe_pooled_tensors,
+            device=str(device)
+        )
+
+        # Reconstruct ComfyUI conditioning list structure
+        # Clone reference meta dict to preserve auxiliary items (like guidance, controls, etc.)
+        ref_meta = active_conds[0][0][1].copy()
+        if P_blended is not None:
+            ref_meta["pooled_output"] = P_blended
+        elif "pooled_output" in ref_meta:
+            del ref_meta["pooled_output"]
+
+        blended_conditioning = [[C_blended, ref_meta]]
+        return io.NodeOutput(blended_conditioning)
 
 def find_visual_token_range(tokens, cond_tensor) -> tuple:
     # Build dynamic mapping from tokens to embeddings
@@ -2201,38 +2330,43 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         )
         return io.Schema(
             node_id="TextEncodeKrea2SystemEditScaledAdv",
-            display_name="TextEncodeKrea2SystemEditScaledAdv",
-            category="model/conditioning",
+            display_name="Krea2 System Prompt Scaled Encoder (Advanced)",
+            category="advanced/conditioning",
             inputs=[
-                io.Clip.Input("clip"),
+                # --- Primary Inputs ---
+                io.Clip.Input("clip", tooltip="CLIP/T5 dual text encoder reference."),
                 io.String.Input(
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
+                    tooltip="Main user text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
                 ),
-                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
                 ),
-                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
-                io.Combo.Input(
-                    "padding_method",
-                    options=["zero-pad", "interpolate"],
-                    default="zero-pad",
-                    tooltip="Alignment method for images with different aspect ratios/resolutions. 'zero-pad' pads with zeros (matches ComfyUI core), 'interpolate' linearly resizes visual tokens to preserve attention alignment.",
-                ),
+
+                # --- Modular Configurations ---
+                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
+
+                # --- Fallback Controls ---
                 io.String.Input(
                     "formula",
                     default="a",
                     multiline=False,
-                    tooltip="Mathematical formula to blend conditioning outputs. Use variables a, b, c, d... to reference active connected image inputs. Supports weight syntax inside the formula, e.g. (a:1.2) + (b:0.8)",
+                    tooltip="Mathematical formula to blend conditioning outputs. Active ONLY if visual_fusion_config is disconnected or set to 'off'. Use variables a, b, c, d... to reference active connected image inputs.",
                 ),
-                BlendConfig.Input("blend_config", optional=True, tooltip="Optional Consensus Blend Configuration input."),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
+                io.Combo.Input(
+                    "padding_method",
+                    options=["zero-pad", "interpolate"],
+                    default="zero-pad",
+                    tooltip="Alignment method for images with different aspect ratios/resolutions. Active ONLY if visual_fusion_config is disconnected or set to 'off'.",
+                ),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -2240,7 +2374,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, multiplier, padding_method, formula, image_inputs: io.Autogrow.Type, blend_config: dict = None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", multiplier: float = 1.0) -> io.NodeOutput:
         # Collect and parse all active (non-null) connected images sequentially
         active_images = []
         if image_inputs is not None:
@@ -2261,9 +2395,9 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         ref_cond_dict = None
         last_cond_dict = None
 
-        if blend_config is None:
-            blend_config = {"blend_preset": "off"}
-        blend_preset = blend_config.get("blend_preset", "off")
+        if visual_fusion_config is None:
+            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+        visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
 
         def process_vlm_image(image, res):
             if image is None:
@@ -2341,11 +2475,11 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             last_cond_dict = cond_X[0][1]
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
-        if blend_preset != "off":
+        if visual_method != "off":
             import comfy
             device = comfy.model_management.get_torch_device()
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, blend_config=blend_config, device=device, visual_ranges=visual_ranges
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -2363,18 +2497,13 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             for l in range(num_layers):
                 layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
 
-                if blend_preset != "off":
+                if visual_method != "off":
                     wrapped_layer_tensors = {let: t.unsqueeze(0) for let, t in layer_tensors.items()}
                     import comfy
                     device = comfy.model_management.get_torch_device()
-                    # DeepStack intermediate layers must be blended purely using similarity weights
-                    # and must NEVER carry global scales or vector magnitude norm rescalings which distort inner residuals.
-                    ds_blend_config = blend_config.copy()
-                    ds_blend_config["global_scale"] = 1.0
-                    ds_blend_config["rescale_norm"] = False
-                    ds_blend_config["alignment_method"] = "index"
+                    # DeepStack intermediate layers must be blended recursively. We use linear blending fallback.
                     C_l_blended, _ = evaluate_conditioning_consensus_blend(
-                        wrapped_layer_tensors, {}, blend_config=ds_blend_config, device=device
+                        wrapped_layer_tensors, {}, visual_fusion_config={"visual_fusion_method": "linear"}, device=device
                     )
                     deepstack_blended.append(C_l_blended.squeeze(0))
                 else:
@@ -2444,37 +2573,42 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         )
         return io.Schema(
             node_id="TextEncodeEditScaledAdv",
-            display_name="TextEncodeEditScaledAdv",
-            category="model/conditioning",
+            display_name="Text Scaled Encoder (Advanced)",
+            category="advanced/conditioning",
             inputs=[
-                io.Clip.Input("clip"),
+                # --- Primary Inputs ---
+                io.Clip.Input("clip", tooltip="CLIP/T5 dual text encoder reference."),
                 io.String.Input(
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
+                    tooltip="Main user text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
                 ),
+                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
                 ),
-                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
-                io.Combo.Input(
-                    "padding_method",
-                    options=["zero-pad", "interpolate"],
-                    default="zero-pad",
-                    tooltip="Alignment method for images with different aspect ratios/resolutions. 'zero-pad' pads with zeros (matches ComfyUI core), 'interpolate' linearly resizes visual tokens to preserve attention alignment.",
-                ),
+
+                # --- Modular Configurations ---
+                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
+
+                # --- Fallback Controls ---
                 io.String.Input(
                     "formula",
                     default="a",
                     multiline=False,
-                    tooltip="Mathematical formula to blend conditioning outputs. Use variables a, b, c, d... to reference active connected image inputs. Supports weight syntax inside the formula, e.g. (a:1.2) + (b:0.8)",
+                    tooltip="Mathematical formula to blend conditioning outputs. Active ONLY if visual_fusion_config is disconnected or set to 'off'. Use variables a, b, c, d... to reference active connected image inputs.",
                 ),
-                BlendConfig.Input("blend_config", optional=True, tooltip="Optional Consensus Blend Configuration input."),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
+                io.Combo.Input(
+                    "padding_method",
+                    options=["zero-pad", "interpolate"],
+                    default="zero-pad",
+                    tooltip="Alignment method for images with different aspect ratios/resolutions. Active ONLY if visual_fusion_config is disconnected or set to 'off'.",
+                ),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -2482,7 +2616,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, multiplier, padding_method, formula, image_inputs: io.Autogrow.Type, blend_config: dict = None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", multiplier: float = 1.0) -> io.NodeOutput:
         # Collect and parse all active (non-null) connected images sequentially
         active_images = []
         if image_inputs is not None:
@@ -2502,9 +2636,9 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         ref_cond_dict = None
         last_cond_dict = None
 
-        if blend_config is None:
-            blend_config = {"blend_preset": "off"}
-        blend_preset = blend_config.get("blend_preset", "off")
+        if visual_fusion_config is None:
+            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+        visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
 
         def process_vlm_image(image, res):
             if image is None:
@@ -2561,11 +2695,11 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
             last_cond_dict = cond_X[0][1]
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
-        if blend_preset != "off":
+        if visual_method != "off":
             import comfy
             device = comfy.model_management.get_torch_device()
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, blend_config=blend_config, device=device, visual_ranges=visual_ranges
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -3075,46 +3209,51 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         )
         return io.Schema(
             node_id="TextEncodeKrea2SysEditScaledAdvAttn",
-            display_name="TextEncodeKrea2SysEditScaledAdvAttn",
-            category="model/conditioning",
+            display_name="Krea2 System Prompt Scaled Attention Encoder (Advanced)",
+            category="advanced/conditioning",
             inputs=[
-                io.Model.Input("model"),
-                io.Clip.Input("clip"),
+                # --- Primary Inputs ---
+                io.Model.Input("model", tooltip="Diffusion model to apply the attention monkeypatch to."),
+                io.Clip.Input("clip", tooltip="CLIP/T5 dual text encoder reference."),
                 io.String.Input(
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main text prompt.",
+                    tooltip="Main user text prompt.",
                 ),
-                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
                 io.String.Input(
                     "attention_weights",
                     multiline=False,
                     default="",
                     tooltip="Space-separated list of weighted words/phrases. Example: (arms:1.5) (painting:-1) (photo:2)",
                 ),
+                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path).",
                 ),
-                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
                 io.Float.Input("strength", default=1.0, min=0.0, max=4.0, step=0.05, tooltip="Global multiplier on the weighting effect. Effect compounds over all blocks."),
-                io.Combo.Input(
-                    "padding_method",
-                    options=["zero-pad", "interpolate"],
-                    default="zero-pad",
-                    tooltip="Alignment method for images with different aspect ratios/resolutions.",
-                ),
+
+                # --- Modular Configurations ---
+                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
+
+                # --- Fallback Controls ---
                 io.String.Input(
                     "formula",
                     default="a",
                     multiline=False,
-                    tooltip="Mathematical formula to blend conditioning outputs. Use variables a, b, c, d...",
+                    tooltip="Mathematical formula to blend conditioning outputs. Active ONLY if visual_fusion_config is disconnected or set to 'off'. Use variables a, b, c, d... to reference active connected image inputs.",
                 ),
-                BlendConfig.Input("blend_config", optional=True, tooltip="Optional Consensus Blend Configuration input."),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
+                io.Combo.Input(
+                    "padding_method",
+                    options=["zero-pad", "interpolate"],
+                    default="zero-pad",
+                    tooltip="Alignment method for images with different aspect ratios/resolutions. Active ONLY if visual_fusion_config is disconnected or set to 'off'.",
+                ),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
             ],
             outputs=[
                 io.Model.Output(),
@@ -3123,7 +3262,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, clip, prompt, system_prompt, attention_weights, vlm_resolution, multiplier, strength, padding_method, formula, image_inputs: io.Autogrow.Type, blend_config: dict = None) -> io.NodeOutput:
+    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: str, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", multiplier: float = 1.0, strength: float = 1.0) -> io.NodeOutput:
         active_images = []
         if image_inputs is not None:
             for k, v in image_inputs.items():
@@ -3139,9 +3278,9 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         clean_prompt = prompt
         clean_system_prompt = system_prompt
 
-        if blend_config is None:
-            blend_config = {"blend_preset": "off"}
-        blend_preset = blend_config.get("blend_preset", "off")
+        if visual_fusion_config is None:
+            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+        visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
 
         def process_vlm_image(image, res):
             if image is None:
@@ -3346,11 +3485,11 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     ref_cond_dict = cond_X[0][1]
                 last_cond_dict = cond_X[0][1]
 
-            if blend_preset != "off":
+            if visual_method != "off":
                 import comfy
                 device = comfy.model_management.get_torch_device()
                 C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                    sequence_tensors, pooled_tensors, blend_config=blend_config, device=device, visual_ranges=visual_ranges
+                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges
                 )
             else:
                 C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -3367,18 +3506,13 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 for l in range(num_layers):
                     layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
 
-                    if blend_preset != "off":
+                    if visual_method != "off":
                         wrapped_layer_tensors = {let: t.unsqueeze(0) for let, t in layer_tensors.items()}
                         import comfy
                         device = comfy.model_management.get_torch_device()
-                        # DeepStack intermediate layers must be blended purely using similarity weights
-                        # and must NEVER carry global scales or vector magnitude norm rescalings which distort inner residuals.
-                        ds_blend_config = blend_config.copy()
-                        ds_blend_config["global_scale"] = 1.0
-                        ds_blend_config["rescale_norm"] = False
-                        ds_blend_config["alignment_method"] = "index"
+                        # DeepStack intermediate layers are blended linearly for spatial stability
                         C_l_blended, _ = evaluate_conditioning_consensus_blend(
-                            wrapped_layer_tensors, {}, blend_config=ds_blend_config, device=device
+                            wrapped_layer_tensors, {}, visual_fusion_config={"visual_fusion_method": "linear"}, device=device
                         )
                         deepstack_blended.append(C_l_blended.squeeze(0))
                     else:
