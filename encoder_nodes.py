@@ -25,6 +25,37 @@ from .encoder_helpers import(
     find_subsequence,
     krea2_attn_forward_weight,
 )
+
+def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
+    if not ref_latents:
+        return conditioning
+
+    if "parallel" in ref_latent_mode:
+        import comfy
+        # Encode empty prompt as neutral base
+        tokens_neutral = clip.tokenize("")
+        conditioning_neutral = clip.encode_from_tokens_scheduled(tokens_neutral)
+
+        out = []
+        for i in range(len(conditioning)):
+            c_vlm, meta_vlm = conditioning[i]
+            c_neutral, meta_neutral = conditioning_neutral[i] if i < len(conditioning_neutral) else conditioning_neutral[-1]
+
+            c_neutral_cast = comfy.model_management.cast_to_device(c_neutral, c_vlm.device, c_vlm.dtype)
+            c_combined = torch.cat([c_vlm, c_neutral_cast], dim=1)
+
+            meta_combined = meta_vlm.copy()
+            meta_combined["reference_latents"] = ref_latents
+            if "attention_mask" in meta_combined:
+                del meta_combined["attention_mask"]
+
+            out.append([c_combined, meta_combined])
+        return out
+    else:
+        # Standard append mode
+        return node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+
+
 class UC_AttentionBiasTextEncode(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -443,9 +474,9 @@ class UC_ScaledBiasTextEncodeLtxv2SystemPrompt(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' and 'multi' are equivalent for this single-image node; 'off' disables reference latents.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Image.Input("image", optional=True),
@@ -500,8 +531,7 @@ class UC_ScaledBiasTextEncodeLtxv2SystemPrompt(io.ComfyNode):
                 s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                 ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
 
         return io.NodeOutput(conditioning)
 
@@ -764,9 +794,9 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' encodes only the first connected image; 'multi' encodes all connected images; 'off' disables reference latents even if VAE is connected.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Image.Input("image1", optional=True),
@@ -821,7 +851,7 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
 
                 # 2. Structural Path Scaling (VAE)
                 if vae is not None and ref_latent_mode != "off":
-                    if ref_latent_mode == "multi" or len(ref_latents) == 0:
+                    if "multi" in ref_latent_mode or len(ref_latents) == 0:
                         if vae_resolution == "Original":
                             width_vae = round(samples.shape[3] / 8.0) * 8
                             height_vae = round(samples.shape[2] / 8.0) * 8
@@ -856,8 +886,7 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
         # Pass skip_template=True so the tokenizer doesn't try to wrap or append extra blocks
         tokens = clip.tokenize(full_prompt, images=images_vl, skip_template=True)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
 
 
@@ -892,9 +921,9 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' encodes only the first connected image; 'multi' encodes all connected images; 'off' disables reference latents even if VAE is connected.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
@@ -1027,7 +1056,7 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
             }
             # Process in sorted order of raw_images keys
             for num in sorted(raw_images.keys()):
-                if ref_latent_mode == "single" and len(ref_latents) > 0:
+                if "single" in ref_latent_mode and len(ref_latents) > 0:
                     break
                 image = raw_images[num]
                 if image is not None:
@@ -1047,8 +1076,7 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                         s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                         ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
 
 
@@ -1092,9 +1120,9 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' encodes only the first connected image; 'multi' encodes all connected images; 'off' disables reference latents even if VAE is connected.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
@@ -1227,7 +1255,7 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
             }
             # Process in sorted order of raw_images keys
             for num in sorted(raw_images.keys()):
-                if ref_latent_mode == "single" and len(ref_latents) > 0:
+                if "single" in ref_latent_mode and len(ref_latents) > 0:
                     break
                 image = raw_images[num]
                 if image is not None:
@@ -1247,8 +1275,7 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                         s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                         ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
 
 
@@ -1291,9 +1318,9 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' encodes only the first connected image; 'multi' encodes all connected images; 'off' disables reference latents even if VAE is connected.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
@@ -1410,7 +1437,7 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
             }
             # Process in sorted order of raw_images keys
             for num in sorted(raw_images.keys()):
-                if ref_latent_mode == "single" and len(ref_latents) > 0:
+                if "single" in ref_latent_mode and len(ref_latents) > 0:
                     break
                 image = raw_images[num]
                 if image is not None:
@@ -1430,8 +1457,7 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                         s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                         ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
 
 
@@ -1466,9 +1492,9 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' encodes only the first connected image; 'multi' encodes all connected images; 'off' disables reference latents even if VAE is connected.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
@@ -1595,7 +1621,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
             }
             # Process in order of images_vl_raw
             for i, image in enumerate(images_vl_raw):
-                if ref_latent_mode == "single" and len(ref_latents) > 0:
+                if "single" in ref_latent_mode and len(ref_latents) > 0:
                     break
                 if image is not None:
                     samples = image.movedim(-1, 1)
@@ -1614,8 +1640,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                         s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                         ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
 
 
@@ -1638,9 +1663,9 @@ class UC_TextEncodeLtxv2SystemPrompt(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' and 'multi' are equivalent for this single-image node; 'off' disables reference latents.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Image.Input("image", optional=True),
@@ -1699,8 +1724,7 @@ class UC_TextEncodeLtxv2SystemPrompt(io.ComfyNode):
                 s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                 ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
 
         return io.NodeOutput(conditioning)
 
@@ -1903,9 +1927,9 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' encodes only the first connected image; 'multi' encodes all connected images; 'off' disables reference latents even if VAE is connected.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
@@ -2121,7 +2145,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             }
             # Process sequentially from active_images
             for i, image in enumerate(active_images):
-                if ref_latent_mode == "single" and len(ref_latents) > 0:
+                if "single" in ref_latent_mode and len(ref_latents) > 0:
                     break
                 if image is not None:
                     samples = image.movedim(-1, 1)
@@ -2140,9 +2164,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                         s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                         ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
-
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
 
 
@@ -2200,9 +2222,9 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' encodes only the first connected image; 'multi' encodes all connected images; 'off' disables reference latents even if VAE is connected.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
@@ -2331,7 +2353,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
             }
             # Process sequentially from active_images
             for i, image in enumerate(active_images):
-                if ref_latent_mode == "single" and len(ref_latents) > 0:
+                if "single" in ref_latent_mode and len(ref_latents) > 0:
                     break
                 if image is not None:
                     samples = image.movedim(-1, 1)
@@ -2350,9 +2372,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                         s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                         ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
-
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
 
 
@@ -2803,9 +2823,9 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_latent_mode",
-                    options=["off", "single", "multi"],
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single' encodes only the first connected image; 'multi' encodes all connected images; 'off' disables reference latents even if VAE is connected.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
@@ -3148,7 +3168,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             }
             # Process sequentially from active_images
             for i, image in enumerate(active_images):
-                if ref_latent_mode == "single" and len(ref_latents) > 0:
+                if "single" in ref_latent_mode and len(ref_latents) > 0:
                     break
                 if image is not None:
                     samples = image.movedim(-1, 1)
@@ -3167,8 +3187,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                         s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
                         ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
-        if len(ref_latents) > 0:
-            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
 
         return io.NodeOutput(model_clone, conditioning)
 
