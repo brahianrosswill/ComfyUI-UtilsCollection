@@ -82,6 +82,54 @@ def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     fx, fy, fz = f(xyz[..., 0]), f(xyz[..., 1]), f(xyz[..., 2])
     return np.stack([116*fy - 16, 500*(fx - fy), 200*(fy - fz)], axis=-1).astype(np.float32)
 
+def string_to_color(color_string: str) -> List[int]:
+    color_list = [0, 0, 0]  # Default fallback (black)
+
+    if ',' in color_string:
+        # Handle CSV format (e.g., "255, 0, 0" or "255, 0, 0, 128" or "1.0, 0.5, 0.0")
+        try:
+            values = [float(channel.strip()) for channel in color_string.split(',')]
+            # Convert to 0-255 range if values are in 0-1 range
+            if all(0 <= v <= 1 for v in values):
+                color_list = [int(v * 255) for v in values]
+            else:
+                color_list = [int(v) for v in values]
+        except ValueError:
+            logging.warning(f"Invalid color format: {color_string}. Using default black.")
+    elif color_string.startswith('#') or (color_string.lstrip('#').isalnum() and not color_string.lstrip('#').replace('.', '', 1).isdigit()):
+        # Could be Hex format or color name
+        color_string_stripped = color_string.lstrip('#')
+        # Try hex first
+        if len(color_string_stripped) in [6, 8] and all(c in '0123456789ABCDEFabcdef' for c in color_string_stripped):
+            if len(color_string_stripped) == 6:  # #RRGGBB
+                color_list = [int(color_string_stripped[i:i+2], 16) for i in (0, 2, 4)]
+            elif len(color_string_stripped) == 8:  # #RRGGBBAA
+                color_list = [int(color_string_stripped[i:i+2], 16) for i in (0, 2, 4, 6)]
+        else:
+            # Try color name (e.g., "red", "blue", "cyan")
+            try:
+                rgb = ImageColor.getrgb(color_string)
+                color_list = list(rgb)
+            except ValueError:
+                logging.warning(f"Invalid color name or hex format: {color_string}. Using default black.")
+    else:
+        # Handle single value (grayscale) - can be int or float
+        try:
+            value = float(color_string.strip())
+            # Convert to 0-255 range if it's a float between 0-1
+            if 0 <= value <= 1:
+                value = int(value * 255)
+            else:
+                value = int(value)
+            color_list = [value, value, value]
+        except ValueError:
+            logging.warning(f"Invalid color format: {color_string}. Using default black.")
+
+    # Clip values to valid range
+    color_list = np.clip(color_list, 0, 255).tolist()
+
+    return color_list
+
 def dis_flow(gray_a: np.ndarray, gray_b: np.ndarray, preset: int) -> np.ndarray:
     return cv2.DISOpticalFlow_create(preset).calc(gray_a, gray_b, None)
 
@@ -590,6 +638,25 @@ def iterative_directional_stretch_fill(
         out_tensors.append(out_tensor)
 
     return torch.cat(out_tensors, dim=0)
+
+def gaussian_blur_nchw(img_nchw, sigma_px):
+    if sigma_px <= 0:
+        return img_nchw
+    radius = max(1, int(3.0 * float(sigma_px)))
+    k = 2 * radius + 1
+    x = torch.arange(-radius, radius + 1, device=img_nchw.device, dtype=img_nchw.dtype)
+    k1 = torch.exp(-(x * x) / (2.0 * float(sigma_px) * float(sigma_px)))
+    k1 = k1 / k1.sum()
+    kx = k1.view(1, 1, 1, k)
+    ky = k1.view(1, 1, k, 1)
+    c = img_nchw.shape[1]
+    kx = kx.repeat(c, 1, 1, 1)
+    ky = ky.repeat(c, 1, 1, 1)
+    img_nchw = F.conv2d(img_nchw, kx, padding=(0, radius), groups=c)
+    img_nchw = F.conv2d(img_nchw, ky, padding=(radius, 0), groups=c)
+    return img_nchw
+
+
 
 
 def get_token_count(clip, text):
