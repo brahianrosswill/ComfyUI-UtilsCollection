@@ -386,6 +386,11 @@ class UC_TextConsensusBlendConfig(io.ComfyNode):
 
 
 class UC_VisualFusionConfig(io.ComfyNode):
+    """
+    Configuration node for visual component fusion.
+    Specifies methods for blending or spatially interleaving isolated visual token vectors,
+    and provides controls to save dynamically blended visual embeddings directly to disk.
+    """
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
@@ -400,7 +405,9 @@ class UC_VisualFusionConfig(io.ComfyNode):
                     tooltip="Method to combine isolated visual tokens. Methods starting with 'spatial-' interleave pure token vectors to keep details perfectly sharp and achieve true fusion instead of filter-like blurring."
                 ),
                 io.Int.Input("visual_block_size", default=2, min=1, max=8, step=1, tooltip="Active for spatial-block-interleave. Size of the spatial token patches to group and switch together."),
-                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Active for spatial-dither-random. Probability of selecting a token from the first image vs subsequent images.")
+                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Active for spatial-dither-random. Probability of selecting a token from the first image vs subsequent images."),
+                io.Boolean.Input("save_blended_embeds", default=False, tooltip="Enable to save the blended visual tokens as a standalone .safetensors embedding."),
+                io.String.Input("save_path", default="blended_visual_embeds.safetensors", tooltip="Target filename/path under models/embeddings to save the .safetensors file.")
             ],
             outputs=[
                 VisualFusionConfig.Output("visual_fusion_config")
@@ -412,12 +419,16 @@ class UC_VisualFusionConfig(io.ComfyNode):
         cls,
         visual_fusion_method: str,
         visual_block_size: int,
-        dither_ratio: float
+        dither_ratio: float,
+        save_blended_embeds: bool = False,
+        save_path: str = "blended_visual_embeds.safetensors"
     ) -> io.NodeOutput:
         config = {
             "visual_fusion_method": visual_fusion_method,
             "visual_block_size": visual_block_size,
-            "dither_ratio": dither_ratio
+            "dither_ratio": dither_ratio,
+            "save_blended_embeds": save_blended_embeds,
+            "save_path": save_path
         }
         return io.NodeOutput(config)
 
@@ -475,15 +486,84 @@ def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_si
         return torch.zeros(N, dtype=torch.long, device=device)
 
 
+# =====================================================================
+# SYSTEM WARNING FOR FUTURE AGENTS / DEVELOPERS:
+# This helper function `save_blended_visual_embeddings` is EXCLUSIVELY
+# for saving isolated, spatially-fused visual token embeddings
+# generated during VLM image component blending.
+# It contains ZERO text prompt tokens, prefixes, or suffixes.
+# It MUST serialize the tensor under the model's active embedding_key
+# (e.g. 'qwen3vl_8b') in pure torch.float32 on the CPU.
+# =====================================================================
+def save_blended_visual_embeddings(
+    blended_vis_all_batches: list,
+    visual_fusion_config: dict,
+    embedding_key: str = "qwen3vl_8b"
+) -> None:
+    """
+    Saves isolated, mathematically-fused visual token embeddings as a
+    standalone .safetensors file under ComfyUI's models/embeddings directory.
+
+    Warning: This function does NOT save any surrounding prompt or text tokens.
+    It expects a list of 2D visual token tensors, stacks them into a batch
+    dimension, squeezes it if there is only one batch slice, and writes the
+    contiguous tensor under the active VLM tokenizer's embedding_key.
+
+    Parameters:
+        blended_vis_all_batches: List of 2D torch.Tensor representing the
+                                 visual tokens across the execution batches.
+        visual_fusion_config: Dictionary containing target path options.
+        embedding_key: The string identifier (e.g., 'qwen3vl_8b' or 'krea2_vlm')
+                       required by the model checkpoint reader.
+    """
+    import torch
+    import os
+    import folder_paths
+    from safetensors.torch import save_file
+    import logging
+
+    if not blended_vis_all_batches:
+        raise ValueError("[save_blended_visual_embeddings] Cannot save empty visual token list.")
+
+    # Stack batches into [B, max_vis_len, D] and move to CPU in float32 precision
+    stacked_vis = torch.stack(blended_vis_all_batches, dim=0).to(device="cpu", dtype=torch.float32)
+
+    # Squeeze batch dimension if B == 1 to keep it as a standard 2D embedding tensor
+    if stacked_vis.shape[0] == 1:
+        stacked_vis = stacked_vis.squeeze(0)
+
+    save_name = visual_fusion_config.get("save_path", "blended_visual_embeds").strip()
+    if not save_name.endswith(".safetensors"):
+        save_name += ".safetensors"
+
+    try:
+        embed_paths = folder_paths.get_folder_paths("embeddings")
+        embeddings_dir = embed_paths[0] if embed_paths else "models/embeddings"
+    except Exception:
+        embeddings_dir = "models/embeddings"
+
+    os.makedirs(embeddings_dir, exist_ok=True)
+    full_save_path = os.path.join(embeddings_dir, save_name)
+
+    # State dict must contain exactly one layer matching the VLM's dynamic embedding_key
+    state_dict = {embedding_key: stacked_vis.contiguous()}
+    save_file(state_dict, full_save_path)
+    logging.info(f"[UC_VisualFusionConfig] Saved blended visual tokens as {embedding_key} embedding to: {full_save_path}")
+
+
 def evaluate_conditioning_consensus_blend(
     sequence_tensors: dict,
     pooled_tensors: dict,
     visual_fusion_config: dict = None,
     device: str = "cpu",
-    visual_ranges: dict = None
+    visual_ranges: dict = None,
+    embedding_key: str = "qwen3vl_8b",
+    clip = None,
+    tokens_dict: dict = None
 ) -> tuple:
     """
     Decoupled blending engine focused entirely on isolated visual token spatial fusion.
+    Saves isolated blended raw visual embeddings if save_blended_embeds is configured.
     """
     import torch
 
@@ -499,6 +579,76 @@ def evaluate_conditioning_consensus_blend(
 
     B = tensors_list[0].shape[0]
     D = tensors_list[0].shape[2]
+
+    # --- Independent Standalone RAW Visual Embeddings Extraction & Saving ---
+    if visual_fusion_config.get("save_blended_embeds", False) and clip is not None and tokens_dict:
+        try:
+            cond_stage = clip.cond_stage_model
+            clip_model = None
+            if hasattr(cond_stage, "clip") and isinstance(cond_stage.clip, str) and hasattr(cond_stage, cond_stage.clip):
+                clip_model = getattr(cond_stage, cond_stage.clip)
+            elif hasattr(cond_stage, "clip_model"):
+                clip_model = cond_stage.clip_model
+            elif hasattr(cond_stage, "clip_d"):
+                clip_model = cond_stage.clip_d
+            else:
+                clip_model = cond_stage
+
+            raw_visuals = {}
+            for k in active_keys:
+                if k in tokens_dict:
+                    tok = tokens_dict[k]
+                    key_name = next(iter(tok.keys()))
+                    token_list = tok[key_name]
+                    tokens_only = [[t[0] for t in b] for b in token_list]
+                    with torch.inference_mode():
+                        embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, device)
+
+                    vr = visual_ranges.get(k, (0, 0))
+                    if vr and vr != (0, 0):
+                        v_start, v_end = vr
+                        raw_visuals[k] = embeds[0, v_start:v_end, :].clone().cpu()
+
+            if raw_visuals:
+                max_vis_len_raw = max(v.shape[0] for v in raw_visuals.values())
+                D_raw = next(iter(raw_visuals.values())).shape[1]
+
+                aligned_raw = {}
+                for k, v in raw_visuals.items():
+                    if v.shape[0] != max_vis_len_raw:
+                        v_perm = v.permute(1, 0).unsqueeze(0)
+                        v_interp = torch.nn.functional.interpolate(v_perm, size=max_vis_len_raw, mode='linear', align_corners=False)
+                        v = v_interp.squeeze(0).permute(1, 0)
+                    aligned_raw[k] = v
+
+                if visual_method.startswith("spatial-"):
+                    blended_raw_2d = torch.zeros((max_vis_len_raw, D_raw), device="cpu", dtype=torch.float32)
+                    sources_list = [aligned_raw[k] for k in active_keys if k in aligned_raw]
+
+                    fusion_mask = generate_spatial_fusion_mask(
+                        N=max_vis_len_raw,
+                        num_sources=len(sources_list),
+                        method=visual_method,
+                        block_size=visual_fusion_config.get("visual_block_size", 2),
+                        dither_ratio=visual_fusion_config.get("dither_ratio", 0.5),
+                        device="cpu"
+                    )
+
+                    for i in range(max_vis_len_raw):
+                        src_idx = fusion_mask[i].item()
+                        blended_raw_2d[i] = sources_list[src_idx][i]
+                elif visual_method == "linear":
+                    sources_list = [aligned_raw[k] for k in active_keys if k in aligned_raw]
+                    stacked = torch.stack(sources_list, dim=0)
+                    blended_raw_2d = torch.mean(stacked, dim=0)
+                else:
+                    blended_raw_2d = aligned_raw[active_keys[0]]
+
+                # Save correct raw visual input embeddings [N, D_raw] (e.g. 2560) directly
+                save_blended_visual_embeddings([blended_raw_2d], visual_fusion_config, embedding_key)
+        except Exception as e:
+            import logging
+            logging.error(f"[evaluate_conditioning_consensus_blend] Failed to process and save raw embeddings: {e}", exc_info=True)
 
     C_blended_list = []
     for b in range(B):
@@ -2392,6 +2542,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         pooled_tensors = {}
         deepstack_dict = {}
         visual_ranges = {}
+        tokens_dict = {}
         ref_cond_dict = None
         last_cond_dict = None
 
@@ -2459,6 +2610,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             # Tokenize and find visual token range for isolation blending
             try:
                 tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
+                tokens_dict[letter] = tokens
                 vis_start, vis_end = find_visual_token_range(tokens, C_X)
                 visual_ranges[letter] = (vis_start, vis_end)
             except Exception:
@@ -2478,8 +2630,13 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         if visual_method != "off":
             import comfy
             device = comfy.model_management.get_torch_device()
+
+            key_name = "qwen3vl_8b"
+            if "tokens" in locals() and tokens:
+                key_name = next(iter(tokens.keys()))
+
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -2633,6 +2790,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         sequence_tensors = {}
         pooled_tensors = {}
         visual_ranges = {}
+        tokens_dict = {}
         ref_cond_dict = None
         last_cond_dict = None
 
@@ -2685,6 +2843,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
             # Tokenize and find visual token range for isolation blending
             try:
                 tokens = clip.tokenize(modified_prompt, images=[processed_img], skip_template=True)
+                tokens_dict[letter] = tokens
                 vis_start, vis_end = find_visual_token_range(tokens, C_X)
                 visual_ranges[letter] = (vis_start, vis_end)
             except Exception:
@@ -2698,8 +2857,13 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         if visual_method != "off":
             import comfy
             device = comfy.model_management.get_torch_device()
+
+            key_name = "qwen3vl_8b"
+            if "tokens" in locals() and tokens:
+                key_name = next(iter(tokens.keys()))
+
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -3428,12 +3592,13 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     patched_attn = Krea2WeightPatch().__get__(block.attn, block.attn.__class__)
                     model_clone.add_object_patch(f"diffusion_model.blocks.{idx}.attn.forward", patched_attn)
 
-        # 4. Multpass encoding and blending
+        # 4. Multipass encoding and blending
         if active_images:
             sequence_tensors = {}
             pooled_tensors = {}
             deepstack_dict = {}
             visual_ranges = {}
+            tokens_dict = {}
             ref_cond_dict = None
             last_cond_dict = None
 
@@ -3471,6 +3636,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 # Tokenize and find visual token range for isolation blending
                 try:
                     tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
+                    tokens_dict[letter] = tokens
                     vis_start, vis_end = find_visual_token_range(tokens, C_X)
                     visual_ranges[letter] = (vis_start, vis_end)
                 except Exception:
@@ -3488,8 +3654,13 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             if visual_method != "off":
                 import comfy
                 device = comfy.model_management.get_torch_device()
+
+                key_name = "qwen3vl_8b"
+                if "tokens" in locals() and tokens:
+                    key_name = next(iter(tokens.keys()))
+
                 C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges
+                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict
                 )
             else:
                 C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
