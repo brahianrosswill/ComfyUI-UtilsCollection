@@ -11,6 +11,7 @@ from PIL import Image, ImageOps, ImageSequence
 import numpy as np
 
 import folder_paths
+import node_helpers
 import comfy
 
 from comfy.ldm.flux.math import apply_rope
