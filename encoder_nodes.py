@@ -3349,3 +3349,337 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         return io.NodeOutput(model_clone, conditioning)
 
 
+class UC_TextEncodeKrea2SysEditScaledPaths(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_TextEncodeKrea2SysEditScaledPaths",
+            display_name="Krea2 System Prompt Scaled Encoder from Paths (Advanced)",
+            category="advanced/conditioning",
+            inputs=[
+                # --- Primary Inputs ---
+                io.Clip.Input("clip", tooltip="CLIP/T5 dual text encoder reference."),
+                io.String.Input(
+                    "prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    tooltip="Main user text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
+                ),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
+                io.Image.Input("first_image", optional=False, tooltip="The first image input. All other images loaded from paths will be rescaled to match its resolution."),
+                io.String.Input(
+                    "image_paths",
+                    multiline=True,
+                    default="",
+                    placeholder="C:/paths/to/image1.png\nC:/paths/to/image2.png",
+                    tooltip="Line-separated list of paths to subsequent image files."
+                ),
+                io.Combo.Input(
+                    "upscale_method",
+                    options=["nearest-exact", "bilinear", "area", "bicubic", "lanczos"],
+                    default="bicubic",
+                    tooltip="Method used to upscale/downscale subsequent images to match first_image resolution."
+                ),
+                io.Combo.Input(
+                    "vlm_resolution",
+                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
+                    default="Fast (384)",
+                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
+                ),
+
+                # --- Modular Configurations ---
+                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
+
+                # --- Fallback Controls ---
+                io.String.Input(
+                    "formula",
+                    default="a",
+                    multiline=False,
+                    tooltip="Mathematical formula to blend conditioning outputs. Active ONLY if visual_fusion_config is disconnected or set to 'off'. Use variables a, b, c, d... to reference active connected image inputs.",
+                ),
+                io.Combo.Input(
+                    "padding_method",
+                    options=["zero-pad", "interpolate"],
+                    default="zero-pad",
+                    tooltip="Alignment method for images with different aspect ratios/resolutions. Active ONLY if visual_fusion_config is disconnected or set to 'off'.",
+                ),
+                io.Combo.Input(
+                    "vae_resolution",
+                    options=["Ultra (512)", "Turbo (768)", "Fast (1024)", "Balanced (1280)", "Detailed (1536)", "Original"],
+                    default="Fast (1024)",
+                    tooltip="Resolution of the reference latent encoded by the VAE (structural path).",
+                ),
+                io.Combo.Input(
+                    "ref_latent_mode",
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
+                    default="off",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
+                ),
+                io.Vae.Input("vae", optional=True),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
+            ],
+            outputs=[
+                io.Conditioning.Output(),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, clip, prompt, system_prompt, first_image, image_paths, upscale_method, vlm_resolution, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0) -> io.NodeOutput:
+        # 1. Parse image paths
+        img_paths_list = [p.strip() for p in image_paths.split("\n") if p.strip()]
+
+        # 2. Pre-Execution Path Validation
+        for path in img_paths_list:
+            normalized_path = path.strip().replace('\\', '/')
+            normalized_path = os.path.normpath(normalized_path)
+            if not os.path.isabs(normalized_path):
+                normalized_path = os.path.abspath(normalized_path)
+            if not os.path.isfile(normalized_path):
+                raise FileNotFoundError(
+                    f"Validation aborted: Image file does not exist: '{path}' (resolved to: '{normalized_path}'). "
+                    "No processing has started, ensuring safe memory state."
+                )
+
+        # 3. Get dimensions of first_image and round to multiple of 16
+        if len(first_image.shape) == 3:
+            first_image = first_image.unsqueeze(0)
+        B_first, H_first, W_first, C_first = first_image.shape
+
+        W_target = max(16, round(W_first / 16.0) * 16)
+        H_target = max(16, round(H_first / 16.0) * 16)
+
+        if W_first != W_target or H_first != H_target:
+            samples_first = first_image.movedim(-1, 1)
+            s_first = comfy.utils.common_upscale(samples_first, W_target, H_target, upscale_method, "center")
+            first_image = s_first.movedim(1, -1)
+
+        # 4. Load other images and upscale/downscale them using center crop
+        rescaled_images = []
+        for path in img_paths_list:
+            img_tensor = load_vlm_image_tensor(path)
+            if len(img_tensor.shape) == 3:
+                img_tensor = img_tensor.unsqueeze(0)
+
+            # Re-scale to match target multiple-of-16 width and height
+            samples = img_tensor.movedim(-1, 1)
+            s = comfy.utils.common_upscale(samples, W_target, H_target, upscale_method, "center")
+            rescaled_img = s.movedim(1, -1)
+            rescaled_images.append(rescaled_img)
+
+        # 5. Assemble active_images list
+        active_images = [first_image] + rescaled_images
+
+        # 6. Map active images sequentially to letter variables (a, b, c, ...) and encode each pass
+        sequence_tensors = {}
+        pooled_tensors = {}
+        deepstack_dict = {}
+        visual_ranges = {}
+        tokens_dict = {}
+        ref_cond_dict = None
+        last_cond_dict = None
+
+        if visual_fusion_config is None:
+            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+        visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
+
+        def process_vlm_image(image, res):
+            if image is None:
+                return None
+            VLM_RESOLUTIONS = {
+                "Fast (384)": 384,
+                "Balanced (512)": 512,
+                "Detailed (768)": 768,
+                "Large (1024)": 1024,
+                "X-Large (1280)": 1280,
+                "XX-Large (1536)": 1536
+            }
+            samples = image.movedim(-1, 1)
+            if res == "Original":
+                return image
+            else:
+                vlm_size = VLM_RESOLUTIONS[res]
+                total_vlm = vlm_size * vlm_size
+                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
+                width_vlm = round(samples.shape[3] * scale_by_vlm)
+                height_vlm = round(samples.shape[2] * scale_by_vlm)
+
+                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                return s_vlm.movedim(1, -1)
+
+        # Execute exactly as TextEncodeKrea2SystemEditScaledAdv does
+        for idx, img in enumerate(active_images):
+            letter = chr(97 + idx)  # 0 -> 'a', 1 -> 'b', 2 -> 'c', ...
+            processed_img = process_vlm_image(img, vlm_resolution)
+
+            # Ensure prompt has image pad tokens so tokenizer knows where to inject the image
+            modified_prompt = prompt
+            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
+                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+
+            # Wrap in Llama/Krea2 system prompt template format
+            if len(system_prompt) > 0:
+                full_prompt = (
+                    "<|im_start|>user\n" + "<|im_end|>\n" +
+                    "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
+                    "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                    "<|im_start|>assistant\n"
+                )
+            else:
+                full_prompt = (
+                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
+                    "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
+                    "<|im_start|>assistant\n"
+                )
+
+            # Encode individual sequence pass
+            cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
+            C_X = cond_X[0][0]
+            P_X = cond_X[0][1].get("pooled_output", None)
+
+            sequence_tensors[letter] = C_X
+            if P_X is not None:
+                pooled_tensors[letter] = P_X
+
+            # Tokenize and find visual token range for isolation blending
+            try:
+                tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
+                tokens_dict[letter] = tokens
+                vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                visual_ranges[letter] = (vis_start, vis_end)
+            except Exception:
+                visual_ranges[letter] = (0, 0)
+
+            # Extract DeepStack per-layer tensors if present
+            if "embeds_info" in cond_X[0][1] and len(cond_X[0][1]["embeds_info"]) > 0:
+                extra = cond_X[0][1]["embeds_info"][0].get("extra", {})
+                if "deepstack" in extra:
+                    deepstack_dict[letter] = extra["deepstack"]
+
+            if idx == 0:
+                ref_cond_dict = cond_X[0][1]
+            last_cond_dict = cond_X[0][1]
+
+        # Evaluate mathematical formula or consensus on sequence and pooled tensors
+        if visual_method != "off":
+            device = comfy.model_management.get_torch_device()
+
+            key_name = "qwen3vl_8b"
+            if "tokens" in locals() and tokens:
+                key_name = next(iter(tokens.keys()))
+
+            C_blended, P_blended = evaluate_conditioning_consensus_blend(
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict
+            )
+        else:
+            C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
+
+        # Evaluate mathematical formula on DeepStack layers
+        deepstack_blended = None
+        if deepstack_dict:
+            first_key = next(iter(sequence_tensors.keys()))
+            num_layers = len(deepstack_dict[first_key])
+            max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
+
+            deepstack_blended = []
+
+            for l in range(num_layers):
+                layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
+
+                if visual_method != "off":
+                    wrapped_layer_tensors = {let: t.unsqueeze(0) for let, t in layer_tensors.items()}
+                    device = comfy.model_management.get_torch_device()
+                    # DeepStack intermediate layers are blended linearly for spatial stability
+                    C_l_blended, _ = evaluate_conditioning_consensus_blend(
+                        wrapped_layer_tensors, {}, visual_fusion_config={"visual_fusion_method": "linear"}, device=device
+                    )
+                    deepstack_blended.append(C_l_blended.squeeze(0))
+                else:
+                    # Align layer tensors to maximum length
+                    aligned_layer_tensors = {}
+                    for name, tensor in layer_tensors.items():
+                        if tensor.shape[0] < max_vis_len:
+                            if padding_method == "interpolate":
+                                tensor_perm = tensor.permute(1, 0).unsqueeze(0)
+                                tensor_interp = F.interpolate(tensor_perm, size=max_vis_len, mode='linear', align_corners=False)
+                                tensor = tensor_interp.squeeze(0).permute(1, 0)
+                            else:
+                                pad_size = max_vis_len - tensor.shape[0]
+                                padding = torch.zeros((pad_size, tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
+                                tensor = torch.cat([tensor, padding], dim=0)
+                        aligned_layer_tensors[name] = tensor
+
+                    safe_dict_layer = {
+                        "__builtins__": {},
+                        "clamp": torch.clamp,
+                        "min": torch.minimum,
+                        "max": torch.maximum,
+                        "abs": torch.abs,
+                    }
+                    for name, t in aligned_layer_tensors.items():
+                        safe_dict_layer[name] = t
+
+                    # Handle classical weighting conversions inside math formula
+                    layer_expression = re.sub(
+                        r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)",
+                        r"(\1 * \2)",
+                        formula
+                    )
+
+                    try:
+                        layer_blended = eval(layer_expression, safe_dict_layer, {})
+                        deepstack_blended.append(layer_blended)
+                    except Exception as e:
+                        raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
+
+        # Build final conditioning dictionary
+        final_cond_dict = last_cond_dict.copy()
+        if P_blended is not None:
+            final_cond_dict["pooled_output"] = P_blended
+
+        if deepstack_blended is not None and "embeds_info" in final_cond_dict and len(final_cond_dict["embeds_info"]) > 0:
+            final_cond_dict["embeds_info"] = [final_cond_dict["embeds_info"][0].copy()]
+            final_cond_dict["embeds_info"][0]["extra"] = final_cond_dict["embeds_info"][0]["extra"].copy()
+            final_cond_dict["embeds_info"][0]["extra"]["deepstack"] = deepstack_blended
+
+        if multiplier != 1.0:
+            C_blended *= multiplier
+            if "pooled_output" in final_cond_dict and final_cond_dict["pooled_output"] is not None:
+                final_cond_dict["pooled_output"] *= multiplier
+
+        conditioning = [[C_blended, final_cond_dict]]
+
+        ref_latents = []
+        if vae is not None and ref_latent_mode != "off":
+            VAE_RESOLUTIONS = {
+                "Ultra (512)": 512,
+                "Turbo (768)": 768,
+                "Fast (1024)": 1024,
+                "Balanced (1280)": 1280,
+                "Detailed (1536)": 1536
+            }
+            # Process sequentially from active_images
+            for i, image in enumerate(active_images):
+                if "single" in ref_latent_mode and len(ref_latents) > 0:
+                    break
+                if image is not None:
+                    samples = image.movedim(-1, 1)
+                    if vae_resolution == "Original":
+                        width_vae = round(samples.shape[3] / 8.0) * 8
+                        height_vae = round(samples.shape[2] / 8.0) * 8
+                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
+                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    else:
+                        vae_size = VAE_RESOLUTIONS[vae_resolution]
+                        total_vae = vae_size * vae_size
+                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
+                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
+                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
+
+                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
+                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+
+        conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
+
+        return io.NodeOutput(conditioning)
+
+
