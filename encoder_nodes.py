@@ -2514,7 +2514,7 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
 
             # Prepend <|im_start|> to trigger skip_template internally
             modified_prompt = "<|im_start|>" + modified_prompt
-            tokens = clip.tokenize(modified_prompt, images=images_vl)
+            tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
 
             key_name = next(iter(tokens.keys()))
             token_list = tokens[key_name]
@@ -2701,7 +2701,7 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
 
             # Prepend <|im_start|> to trigger skip_template internally
             modified_prompt = "<|im_start|>" + modified_prompt
-            tokens = clip.tokenize(modified_prompt, images=images_vl)
+            tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
 
             # Retrieve the key name dynamically (typically "qwen3vl_4b" or "qwen3vl_8b")
             key_name = "qwen3vl_8b"
@@ -2861,8 +2861,8 @@ class UC_SaveFusedEmbeddings(io.ComfyNode):
             images_vl = [processed_img]
 
             # Standard isolated template tokenization
-            prompt = "<|im_start|><|vision_start|><|image_pad|><|vision_end|>"
-            tokens = clip.tokenize(prompt, images=images_vl)
+            prompt = "<|vision_start|><|image_pad|><|vision_end|>"
+            tokens = clip.tokenize(prompt, images=images_vl, skip_template=True)
 
             if tokens:
                 key_name = next(iter(tokens.keys()))
