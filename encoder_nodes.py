@@ -19,10 +19,8 @@ from .encoder_helpers import(
     is_image_token,
     evaluate_formula,
     evaluate_conditioning_formula,
-    reconstruct_2d_grid,
-    generate_spatial_fusion_mask,
-    save_blended_visual_embeddings,
     evaluate_conditioning_consensus_blend,
+    fuse_deepstack_layers,
     blend_text_vectors,
     find_visual_token_range,
     encode_embedding_classical_scaled_bias,
@@ -260,14 +258,15 @@ class UC_VisualFusionConfig(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "visual_fusion_method",
-                    options=["off", "linear", "index-consensus", "similarity-consensus", "spatial-checkerboard", "spatial-block-interleave", "spatial-dither-random"],
+                    options=["off", "linear", "spatial-checkerboard", "spatial-block-interleave", "spatial-dither-random"],
                     default="spatial-checkerboard",
                     tooltip="Method to combine isolated visual tokens. Methods starting with 'spatial-' interleave pure token vectors to keep details perfectly sharp and achieve true fusion instead of filter-like blurring."
                 ),
                 io.Int.Input("visual_block_size", default=2, min=1, max=8, step=1, tooltip="Active for spatial-block-interleave. Size of the spatial token patches to group and switch together."),
-                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Active for spatial-dither-random. Probability of selecting a token from the first image vs subsequent images."),
+                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Active for spatial-dither-random. Probability of selecting the first image. Remaining images are selected with a checkerboard pattern."),
                 io.Boolean.Input("save_blended_embeds", default=False, tooltip="Enable to save the blended visual tokens as a standalone .safetensors embedding."),
-                io.String.Input("save_path", default="blended_visual_embeds.safetensors", tooltip="Target filename/path under models/embeddings to save the .safetensors file.")
+                io.String.Input("save_path", default="blended_visual_embeds.safetensors", tooltip="Target filename/path under models/embeddings to save the .safetensors file."),
+                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Seed for the spatial-dither-random pattern.")
             ],
             outputs=[
                 VisualFusionConfig.Output("visual_fusion_config")
@@ -281,12 +280,14 @@ class UC_VisualFusionConfig(io.ComfyNode):
         visual_block_size: int,
         dither_ratio: float,
         save_blended_embeds: bool = False,
-        save_path: str = "blended_visual_embeds.safetensors"
+        save_path: str = "blended_visual_embeds.safetensors",
+        seed: int = 0,
     ) -> io.NodeOutput:
         config = {
             "visual_fusion_method": visual_fusion_method,
             "visual_block_size": visual_block_size,
             "dither_ratio": dither_ratio,
+            "seed": seed,
             "save_blended_embeds": save_blended_embeds,
             "save_path": save_path
         }
@@ -1906,11 +1907,10 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         deepstack_dict = {}
         visual_ranges = {}
         tokens_dict = {}
-        ref_cond_dict = None
         last_cond_dict = None
 
         if visual_fusion_config is None:
-            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5, "seed": 0}
         visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
 
         def process_vlm_image(image, res):
@@ -1970,14 +1970,14 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             if P_X is not None:
                 pooled_tensors[letter] = P_X
 
-            # Tokenize and find visual token range for isolation blending
-            try:
-                tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
-                tokens_dict[letter] = tokens
-                vis_start, vis_end = find_visual_token_range(tokens, C_X)
-                visual_ranges[letter] = (vis_start, vis_end)
-            except Exception:
-                visual_ranges[letter] = (0, 0)
+            if visual_method != "off":
+                try:
+                    tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
+                    tokens_dict[letter] = tokens
+                    vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                    visual_ranges[letter] = (vis_start, vis_end)
+                except Exception as e:
+                    raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
             # Extract DeepStack per-layer tensors if present
             if "embeds_info" in cond_X[0][1] and len(cond_X[0][1]["embeds_info"]) > 0:
@@ -1985,11 +1985,10 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 if "deepstack" in extra:
                     deepstack_dict[letter] = extra["deepstack"]
 
-            if idx == 0:
-                ref_cond_dict = cond_X[0][1]
             last_cond_dict = cond_X[0][1]
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
+        fusion_mask_cache = {}
         if visual_method != "off":
             device = comfy.model_management.get_torch_device()
 
@@ -1998,7 +1997,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 key_name = next(iter(tokens.keys()))
 
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -2006,59 +2005,31 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         # Evaluate mathematical formula on DeepStack layers
         deepstack_blended = None
         if deepstack_dict:
-            first_key = next(iter(sequence_tensors.keys()))
-            num_layers = len(deepstack_dict[first_key])
-            max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
-
-            deepstack_blended = []
-
-
-            for l in range(num_layers):
-                layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
-
-                if visual_method != "off":
-                    wrapped_layer_tensors = {let: t.unsqueeze(0) for let, t in layer_tensors.items()}
-                    device = comfy.model_management.get_torch_device()
-                    # DeepStack intermediate layers must be blended recursively. We use linear blending fallback.
-                    C_l_blended, _ = evaluate_conditioning_consensus_blend(
-                        wrapped_layer_tensors, {}, visual_fusion_config={"visual_fusion_method": "linear"}, device=device
-                    )
-                    deepstack_blended.append(C_l_blended.squeeze(0))
-                else:
-                    # Align layer tensors to maximum length
+            if visual_method != "off":
+                expected_visual_length = max(end - start for start, end in visual_ranges.values())
+                deepstack_blended = fuse_deepstack_layers(deepstack_dict, visual_fusion_config, device, fusion_mask_cache, expected_visual_length)
+            else:
+                first_key = next(iter(sequence_tensors.keys()))
+                num_layers = len(deepstack_dict[first_key])
+                max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
+                deepstack_blended = []
+                for l in range(num_layers):
+                    layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
                     aligned_layer_tensors = {}
                     for name, tensor in layer_tensors.items():
                         if tensor.shape[0] < max_vis_len:
                             if padding_method == "interpolate":
                                 tensor_perm = tensor.permute(1, 0).unsqueeze(0)
-                                tensor_interp = F.interpolate(tensor_perm, size=max_vis_len, mode='linear', align_corners=False)
-                                tensor = tensor_interp.squeeze(0).permute(1, 0)
-                            else:  # zero-pad
-                                pad_size = max_vis_len - tensor.shape[0]
-                                padding = torch.zeros((pad_size, tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
+                                tensor = F.interpolate(tensor_perm, size=max_vis_len, mode="linear", align_corners=False).squeeze(0).permute(1, 0)
+                            else:
+                                padding = torch.zeros((max_vis_len - tensor.shape[0], tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
                                 tensor = torch.cat([tensor, padding], dim=0)
                         aligned_layer_tensors[name] = tensor
 
-                    safe_dict_layer = {
-                        "__builtins__": {},
-                        "clamp": torch.clamp,
-                        "min": torch.minimum,
-                        "max": torch.maximum,
-                        "abs": torch.abs,
-                    }
-                    for name, t in aligned_layer_tensors.items():
-                        safe_dict_layer[name] = t
-
-                    # Handle classical weighting conversions inside math formula
-                    layer_expression = re.sub(
-                        r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)",
-                        r"(\1 * \2)",
-                        formula
-                    )
-
+                    safe_dict_layer = {"__builtins__": {}, "clamp": torch.clamp, "min": torch.minimum, "max": torch.maximum, "abs": torch.abs, **aligned_layer_tensors}
+                    layer_expression = re.sub(r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)", r"(\1 * \2)", formula)
                     try:
-                        layer_blended = eval(layer_expression, safe_dict_layer, {}) # noqa: S307
-                        deepstack_blended.append(layer_blended)
+                        deepstack_blended.append(eval(layer_expression, safe_dict_layer, {}))  # noqa: S307
                     except Exception as e:
                         raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
 
@@ -2194,11 +2165,10 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         pooled_tensors = {}
         visual_ranges = {}
         tokens_dict = {}
-        ref_cond_dict = None
         last_cond_dict = None
 
         if visual_fusion_config is None:
-            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5, "seed": 0}
         visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
 
         def process_vlm_image(image, res):
@@ -2243,20 +2213,19 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
             if P_X is not None:
                 pooled_tensors[letter] = P_X
 
-            # Tokenize and find visual token range for isolation blending
-            try:
-                tokens = clip.tokenize(modified_prompt, images=[processed_img], skip_template=True)
-                tokens_dict[letter] = tokens
-                vis_start, vis_end = find_visual_token_range(tokens, C_X)
-                visual_ranges[letter] = (vis_start, vis_end)
-            except Exception:
-                visual_ranges[letter] = (0, 0)
+            if visual_method != "off":
+                try:
+                    tokens = clip.tokenize(modified_prompt, images=[processed_img], skip_template=True)
+                    tokens_dict[letter] = tokens
+                    vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                    visual_ranges[letter] = (vis_start, vis_end)
+                except Exception as e:
+                    raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
-            if idx == 0:
-                ref_cond_dict = cond_X[0][1]
             last_cond_dict = cond_X[0][1]
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
+        fusion_mask_cache = {}
         if visual_method != "off":
             device = comfy.model_management.get_torch_device()
 
@@ -2265,7 +2234,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 key_name = next(iter(tokens.keys()))
 
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -2790,7 +2759,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         clean_system_prompt = system_prompt
 
         if visual_fusion_config is None:
-            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5, "seed": 0}
         visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
 
         def process_vlm_image(image, res):
@@ -2944,7 +2913,6 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             deepstack_dict = {}
             visual_ranges = {}
             tokens_dict = {}
-            ref_cond_dict = None
             last_cond_dict = None
 
             for idx, img in enumerate(active_images):
@@ -2978,24 +2946,23 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 if P_X is not None:
                     pooled_tensors[letter] = P_X
 
-                # Tokenize and find visual token range for isolation blending
-                try:
-                    tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
-                    tokens_dict[letter] = tokens
-                    vis_start, vis_end = find_visual_token_range(tokens, C_X)
-                    visual_ranges[letter] = (vis_start, vis_end)
-                except Exception:
-                    visual_ranges[letter] = (0, 0)
+                if visual_method != "off":
+                    try:
+                        tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
+                        tokens_dict[letter] = tokens
+                        vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                        visual_ranges[letter] = (vis_start, vis_end)
+                    except Exception as e:
+                        raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
                 if "embeds_info" in cond_X[0][1] and len(cond_X[0][1]["embeds_info"]) > 0:
                     extra = cond_X[0][1]["embeds_info"][0].get("extra", {})
                     if "deepstack" in extra:
                         deepstack_dict[letter] = extra["deepstack"]
 
-                if idx == 0:
-                    ref_cond_dict = cond_X[0][1]
                 last_cond_dict = cond_X[0][1]
 
+            fusion_mask_cache = {}
             if visual_method != "off":
                 device = comfy.model_management.get_torch_device()
 
@@ -3004,64 +2971,38 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     key_name = next(iter(tokens.keys()))
 
                 C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict
+                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache
                 )
             else:
                 C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
             deepstack_blended = None
             if deepstack_dict:
-                first_key = next(iter(sequence_tensors.keys()))
-                num_layers = len(deepstack_dict[first_key])
-                max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
-
-                deepstack_blended = []
-
-
-                for l in range(num_layers):
-                    layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
-
-                    if visual_method != "off":
-                        wrapped_layer_tensors = {let: t.unsqueeze(0) for let, t in layer_tensors.items()}
-                        device = comfy.model_management.get_torch_device()
-                        # DeepStack intermediate layers are blended linearly for spatial stability
-                        C_l_blended, _ = evaluate_conditioning_consensus_blend(
-                            wrapped_layer_tensors, {}, visual_fusion_config={"visual_fusion_method": "linear"}, device=device
-                        )
-                        deepstack_blended.append(C_l_blended.squeeze(0))
-                    else:
+                if visual_method != "off":
+                    expected_visual_length = max(end - start for start, end in visual_ranges.values())
+                    deepstack_blended = fuse_deepstack_layers(deepstack_dict, visual_fusion_config, device, fusion_mask_cache, expected_visual_length)
+                else:
+                    first_key = next(iter(sequence_tensors.keys()))
+                    num_layers = len(deepstack_dict[first_key])
+                    max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
+                    deepstack_blended = []
+                    for l in range(num_layers):
+                        layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
                         aligned_layer_tensors = {}
                         for name, tensor in layer_tensors.items():
                             if tensor.shape[0] < max_vis_len:
                                 if padding_method == "interpolate":
                                     tensor_perm = tensor.permute(1, 0).unsqueeze(0)
-                                    tensor_interp = F.interpolate(tensor_perm, size=max_vis_len, mode='linear', align_corners=False)
-                                    tensor = tensor_interp.squeeze(0).permute(1, 0)
+                                    tensor = F.interpolate(tensor_perm, size=max_vis_len, mode="linear", align_corners=False).squeeze(0).permute(1, 0)
                                 else:
-                                    pad_size = max_vis_len - tensor.shape[0]
-                                    padding = torch.zeros((pad_size, tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
+                                    padding = torch.zeros((max_vis_len - tensor.shape[0], tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
                                     tensor = torch.cat([tensor, padding], dim=0)
                             aligned_layer_tensors[name] = tensor
 
-                        safe_dict_layer = {
-                            "__builtins__": {},
-                            "clamp": torch.clamp,
-                            "min": torch.minimum,
-                            "max": torch.maximum,
-                            "abs": torch.abs,
-                        }
-                        for name, t in aligned_layer_tensors.items():
-                            safe_dict_layer[name] = t
-
-                        layer_expression = re.sub(
-                            r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)",
-                            r"(\1 * \2)",
-                            formula
-                        )
-
+                        safe_dict_layer = {"__builtins__": {}, "clamp": torch.clamp, "min": torch.minimum, "max": torch.maximum, "abs": torch.abs, **aligned_layer_tensors}
+                        layer_expression = re.sub(r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)", r"(\1 * \2)", formula)
                         try:
-                            layer_blended = eval(layer_expression, safe_dict_layer, {})
-                            deepstack_blended.append(layer_blended)
+                            deepstack_blended.append(eval(layer_expression, safe_dict_layer, {}))  # noqa: S307
                         except Exception as e:
                             raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
 
