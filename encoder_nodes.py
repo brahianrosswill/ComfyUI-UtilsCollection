@@ -2512,10 +2512,15 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                 if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
                     modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
-            tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
+            # Prepend <|im_start|> to trigger skip_template internally
+            modified_prompt = "<|im_start|>" + modified_prompt
+            tokens = clip.tokenize(modified_prompt, images=images_vl)
 
             key_name = next(iter(tokens.keys()))
             token_list = tokens[key_name]
+            # Slice off the first token (the <|im_start|> trigger token) to match skip_template behavior
+            for i in range(len(token_list)):
+                token_list[i] = token_list[i][1:]
             tokens_only = [[t[0] for t in b] for b in token_list]
             device = comfy.model_management.get_torch_device()
 
@@ -2694,13 +2699,18 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                 if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
                     modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
-            tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
+            # Prepend <|im_start|> to trigger skip_template internally
+            modified_prompt = "<|im_start|>" + modified_prompt
+            tokens = clip.tokenize(modified_prompt, images=images_vl)
 
             # Retrieve the key name dynamically (typically "qwen3vl_4b" or "qwen3vl_8b")
             key_name = "qwen3vl_8b"
             if tokens:
                 key_name = next(iter(tokens.keys()))
             token_list = tokens.get(key_name, [])
+            # Slice off the first token (the <|im_start|> trigger token) to match skip_template behavior
+            for i in range(len(token_list)):
+                token_list[i] = token_list[i][1:]
             tokens_only = [[t[0] for t in b] for b in token_list]
             device = comfy.model_management.get_torch_device()
 
@@ -2766,6 +2776,11 @@ class UC_SaveFusedEmbeddings(io.ComfyNode):
                     default="Fast (384)",
                     tooltip="Resolution of the image passed to the VLM (semantic path).",
                 ),
+                io.Boolean.Input(
+                    "slice_visual_tokens",
+                    default=False,
+                    tooltip="If True, performs perfect visual slicing (Method A) to cut out visual tokens, saving a pure language embedding. If False (default), preserves the full interleaved sequence including visual tokens.",
+                ),
                 VisualFusionConfig.Input("visual_fusion_config", optional=False, tooltip="Spatial visual fusion configuration from UC_VisualFusionConfig."),
             ],
             outputs=[
@@ -2775,7 +2790,7 @@ class UC_SaveFusedEmbeddings(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, image_paths, vlm_resolution, visual_fusion_config) -> io.NodeOutput:
+    def execute(cls, clip, image_paths, vlm_resolution, visual_fusion_config, slice_visual_tokens=False) -> io.NodeOutput:
         # 1. Parse image paths
         img_paths_list = [p.strip() for p in image_paths.split("\n") if p.strip()]
 
@@ -2846,8 +2861,8 @@ class UC_SaveFusedEmbeddings(io.ComfyNode):
             images_vl = [processed_img]
 
             # Standard isolated template tokenization
-            prompt = "<|vision_start|><|image_pad|><|vision_end|>"
-            tokens = clip.tokenize(prompt, images=images_vl, skip_template=True)
+            prompt = "<|im_start|><|vision_start|><|image_pad|><|vision_end|>"
+            tokens = clip.tokenize(prompt, images=images_vl)
 
             if tokens:
                 key_name = next(iter(tokens.keys()))
@@ -2857,8 +2872,42 @@ class UC_SaveFusedEmbeddings(io.ComfyNode):
             with torch.inference_mode():
                 embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, device)
 
-            # Preserve the entire visual block sequence (including all structural, positional and newline tokens)
-            raw_vis_embed = embeds[0].clone().cpu()
+            # Determine slicing based on slice_visual_tokens Boolean using embeds_info to differentiate content vs padding
+            if slice_visual_tokens:
+                image_ranges = [(e["index"], e["index"] + e["size"]) for e in embeds_info if e.get("type") == "image"]
+                token_list_0 = token_list[0]
+                text_token_count = sum(1 for t in token_list_0 if not is_image_token(t))
+                image_token_count = sum(1 for t in token_list_0 if is_image_token(t))
+                V = (embeds.shape[1] - text_token_count) // image_token_count if image_token_count > 0 else 1
+
+                mapping = []
+                current_idx = 0
+                for t in token_list_0:
+                    is_img = is_image_token(t)
+                    size = V if is_img else 1
+                    mapping.append((current_idx, current_idx + size))
+                    current_idx += size
+
+                keep_indices = []
+                for i, t in enumerate(token_list_0):
+                    # Always discard leading trigger token <|im_start|> at index 0
+                    if i == 0:
+                        continue
+                    start, end = mapping[i]
+                    is_replaced = any(start < r_end and end > r_start for r_start, r_end in image_ranges)
+                    if is_replaced:
+                        keep_indices.extend(range(start, end))
+                        continue
+                    if is_image_token(t):
+                        continue
+                    keep_indices.extend(range(start, end))
+
+                keep_tensor = torch.tensor(keep_indices, dtype=torch.long, device=embeds.device)
+                raw_vis_embed = embeds[0][keep_tensor]
+            else:
+                raw_vis_embed = embeds[0][1:]
+
+            raw_vis_embed = raw_vis_embed.clone().cpu()
             raw_visuals.append(raw_vis_embed)
 
             # Clean VRAM loop references
@@ -3532,7 +3581,7 @@ class UC_TextEncodeKrea2SysEditScaledPaths(io.ComfyNode):
                 )
 
             # Encode individual sequence pass
-            cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
+            cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img])
             C_X = cond_X[0][0]
             P_X = cond_X[0][1].get("pooled_output", None)
 
@@ -3542,7 +3591,7 @@ class UC_TextEncodeKrea2SysEditScaledPaths(io.ComfyNode):
 
             # Tokenize and find visual token range for isolation blending
             try:
-                tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
+                tokens = clip.tokenize(full_prompt, images=[processed_img])
                 tokens_dict[letter] = tokens
                 vis_start, vis_end = find_visual_token_range(tokens, C_X)
                 visual_ranges[letter] = (vis_start, vis_end)
