@@ -1348,3 +1348,73 @@ class UC_ImagePad(io.ComfyNode):
 
         return io.NodeOutput(out_image, out_masks)
 
+
+class UC_ListToImageBatch(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_ListToImageBatch",
+            display_name="List to Image Batch (High Performance)",
+            category="utils",
+            is_input_list=True,  # Tells ComfyUI to pass the list itself instead of auto-iterating!
+            inputs=[
+                io.Image.Input("images"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="images"),
+            ]
+        )
+
+    @classmethod
+    def execute(cls, images):
+        if not images:
+            # Fallback: single empty black image
+            black_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return io.NodeOutput(black_image)
+
+        # Filter out None values
+        valid_images = [img for img in images if img is not None]
+        if not valid_images:
+            black_image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return io.NodeOutput(black_image)
+
+        # Check if all images have the exact same shape.
+        # This is the fast-path! It avoids any interpolation/upscaling overhead.
+        first_shape = valid_images[0].shape
+        same_shape = all(img.shape == first_shape for img in valid_images)
+
+        if same_shape:
+            # Extremely fast path: direct concat along batch dimension
+            batched = torch.cat(valid_images, dim=0)
+            return io.NodeOutput(batched)
+
+        # Slow-path (only if dimensions or channels differ)
+        # Pad channels if they differ
+        max_channels = max(image.shape[-1] for image in valid_images)
+        padded_images = []
+        for image in valid_images:
+            if image.shape[-1] < max_channels:
+                pad_size = max_channels - image.shape[-1]
+                padded = torch.nn.functional.pad(image, (0, pad_size), mode='constant', value=1.0)
+                padded_images.append(padded)
+            else:
+                padded_images.append(image)
+
+        # Resize all to match the first image's height and width
+        first_h, first_w = first_shape[1], first_shape[2]
+        resized_images = []
+        for image in padded_images:
+            if image.shape[1] != first_h or image.shape[2] != first_w:
+                # permute to [B, C, H, W] for interpolate
+                img_perm = image.movedim(-1, 1)
+                img_resized = torch.nn.functional.interpolate(
+                    img_perm, size=(first_h, first_w), mode='bilinear', align_corners=False
+                )
+                resized_images.append(img_resized.movedim(1, -1))
+            else:
+                resized_images.append(image)
+
+        batched = torch.cat(resized_images, dim=0)
+        return io.NodeOutput(batched)
+
+

@@ -57,6 +57,7 @@ class SamplingUtils(ComfyExtension):
             UC_TagNormalizeCombine,
             UC_LoadImagePath,
             UC_LoadImageDirectory,
+            UC_ListToImageBatch,
             UC_SwitchInverseNode,
             UC_SoftSwitchInverseNode,
             UC_IntegerRangeRandom,
