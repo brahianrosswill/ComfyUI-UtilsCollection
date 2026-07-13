@@ -223,44 +223,107 @@ def reconstruct_2d_grid(N: int) -> tuple:
             return N // w, w
     return N, 1
 
-def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_size: int = 2, dither_ratio: float = 0.5, device: str = "cpu") -> torch.Tensor:
+SPATIAL_FUSION_METHODS = {"spatial-checkerboard", "spatial-block-interleave", "spatial-dither-random"}
+VISUAL_FUSION_METHODS = SPATIAL_FUSION_METHODS | {"linear"}
+
+
+def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_size: int = 2, dither_ratio: float = 0.5, device: str = "cpu", seed: int = 0) -> torch.Tensor:
     """
-    Generates a deterministic 1D token index mapping array corresponding to a source image index.
+    Generates a seeded 1D token index mapping array corresponding to a source image index.
     """
-    if num_sources <= 1:
+    if N < 0:
+        raise ValueError("Visual token count cannot be negative.")
+    if num_sources < 1:
+        raise ValueError("Visual fusion requires at least one source.")
+    if method not in SPATIAL_FUSION_METHODS:
+        raise ValueError(f"Unsupported spatial fusion method: {method}")
+    if method == "spatial-block-interleave" and block_size < 1:
+        raise ValueError("Visual block size must be at least 1.")
+    if method == "spatial-dither-random" and not 0.0 <= dither_ratio <= 1.0:
+        raise ValueError("Dither ratio must be between 0.0 and 1.0.")
+    if not 0 <= seed <= 0xffffffffffffffff:
+        raise ValueError("Visual fusion seed must be between 0 and 18446744073709551615.")
+    if num_sources == 1:
         return torch.zeros(N, dtype=torch.long, device=device)
 
     h, w = reconstruct_2d_grid(N)
+    rows = torch.arange(h, device=device).unsqueeze(1)
+    columns = torch.arange(w, device=device).unsqueeze(0)
 
     if method == "spatial-checkerboard":
-        mask = torch.zeros(N, dtype=torch.long, device=device)
-        for i in range(N):
-            r = i // w
-            c = i % w
-            mask[i] = (r + c) % num_sources
-        return mask
+        return ((rows + columns) % num_sources).flatten()
+    if method == "spatial-block-interleave":
+        return ((rows // block_size + columns // block_size) % num_sources).flatten()
 
-    elif method == "spatial-block-interleave":
-        mask = torch.zeros(N, dtype=torch.long, device=device)
-        for i in range(N):
-            r = i // w
-            c = i % w
-            block_r = r // block_size
-            block_c = c // block_size
-            mask[i] = (block_r + block_c) % num_sources
-        return mask
+    generator = torch.Generator(device=device).manual_seed(seed)
+    random = torch.rand(N, generator=generator, device=device)
+    other_sources = 1 + ((rows + columns) % (num_sources - 1)).flatten()
+    return torch.where(random < dither_ratio, 0, other_sources)
 
-    elif method == "spatial-dither-random":
-        g = torch.Generator(device=device)
-        g.manual_seed(42)  # Deterministic seed to prevent shifting patterns on every generation run
-        rands = torch.rand(N, generator=g, device=device)
-        if num_sources == 2:
-            return torch.where(rands < dither_ratio, 0, 1)
-        else:
-            return (rands * num_sources).long()
 
-    else:
-        return torch.zeros(N, dtype=torch.long, device=device)
+def _visual_fusion_mask(config, N, num_sources, mask_device, output_device, mask_cache):
+    method = config.get("visual_fusion_method", "spatial-checkerboard")
+    block_size = config.get("visual_block_size", 2)
+    dither_ratio = config.get("dither_ratio", 0.5)
+    seed = config.get("seed", 0)
+    key = (N, num_sources, method, block_size, dither_ratio, seed)
+    if key not in mask_cache:
+        mask_cache[key] = generate_spatial_fusion_mask(N, num_sources, method, block_size, dither_ratio, mask_device, seed)
+    return mask_cache[key].to(output_device)
+
+
+def fuse_visual_token_sources(sources, visual_fusion_config, mask_device, mask_cache=None, expected_length=None):
+    if not sources:
+        raise ValueError("Visual fusion requires at least one visual token source.")
+
+    method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
+    if method not in VISUAL_FUSION_METHODS:
+        raise ValueError(f"Unsupported visual fusion method: {method}")
+    if any(source.ndim != 2 for source in sources):
+        raise ValueError("Visual fusion sources must have shape [tokens, dimensions].")
+    if any(source.shape[1] != sources[0].shape[1] for source in sources[1:]):
+        raise ValueError("Visual fusion sources must have matching embedding dimensions.")
+    if any(source.device != sources[0].device for source in sources[1:]):
+        raise ValueError("Visual fusion sources must be on the same device.")
+
+    max_length = max(source.shape[0] for source in sources)
+    if expected_length is not None and max_length != expected_length:
+        raise ValueError(f"Visual token layout mismatch: expected {expected_length} tokens, received {max_length}.")
+
+    output_dtype = sources[0].dtype
+    compute_float = method == "linear" or any(source.shape[0] != max_length for source in sources)
+    aligned = []
+    for source in sources:
+        value = source.to(dtype=torch.float32) if compute_float else source
+        if value.shape[0] != max_length:
+            value = F.interpolate(value.transpose(0, 1).unsqueeze(0), size=max_length, mode="linear", align_corners=False).squeeze(0).transpose(0, 1)
+        aligned.append(value)
+
+    stacked = torch.stack(aligned, dim=1)
+    if method == "linear":
+        return stacked.mean(dim=1).to(dtype=output_dtype)
+
+    if mask_cache is None:
+        mask_cache = {}
+    mask = _visual_fusion_mask(visual_fusion_config, max_length, len(sources), mask_device, stacked.device, mask_cache)
+    fused = torch.take_along_dim(stacked, mask[:, None, None], dim=1).squeeze(1)
+    return fused.to(dtype=output_dtype)
+
+
+def fuse_deepstack_layers(deepstack_tensors, visual_fusion_config, device, mask_cache, expected_length):
+    active_keys = sorted(deepstack_tensors)
+    if not active_keys:
+        return None
+
+    num_layers = len(deepstack_tensors[active_keys[0]])
+    if any(len(deepstack_tensors[key]) != num_layers for key in active_keys[1:]):
+        raise ValueError("Visual fusion sources produced different DeepStack layer counts.")
+
+    blended = []
+    for layer in range(num_layers):
+        sources = [deepstack_tensors[key][layer].to(device=device) for key in active_keys]
+        blended.append(fuse_visual_token_sources(sources, visual_fusion_config, device, mask_cache, expected_length))
+    return blended
 
 
 # =====================================================================
@@ -308,11 +371,10 @@ def save_blended_visual_embeddings(
     if not save_name.endswith(".safetensors"):
         save_name += ".safetensors"
 
-    try:
-        embed_paths = folder_paths.get_folder_paths("embeddings")
-        embeddings_dir = embed_paths[0] if embed_paths else "models/embeddings"
-    except Exception:
-        embeddings_dir = "models/embeddings"
+    embed_paths = folder_paths.get_folder_paths("embeddings")
+    if not embed_paths:
+        raise ValueError("No ComfyUI embeddings directory is configured.")
+    embeddings_dir = embed_paths[0]
 
     os.makedirs(embeddings_dir, exist_ok=True)
     full_save_path = os.path.join(embeddings_dir, save_name)
@@ -331,7 +393,8 @@ def evaluate_conditioning_consensus_blend(
     visual_ranges: dict = None,
     embedding_key: str = "qwen3vl_8b",
     clip = None,
-    tokens_dict: dict = None
+    tokens_dict: dict = None,
+    mask_cache: dict = None,
 ) -> tuple:
     """
     Decoupled blending engine focused entirely on isolated visual token spatial fusion.
@@ -339,9 +402,15 @@ def evaluate_conditioning_consensus_blend(
     """
 
     if visual_fusion_config is None:
-        visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5}
+        visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5, "seed": 0}
 
     visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
+    if visual_method not in VISUAL_FUSION_METHODS:
+        raise ValueError(f"Unsupported visual fusion method: {visual_method}")
+    if visual_ranges is None:
+        raise ValueError("Visual token ranges are required for visual fusion.")
+    if mask_cache is None:
+        mask_cache = {}
 
     active_keys = sorted(list(sequence_tensors.keys()))
     tensors_list = [sequence_tensors[k] for k in active_keys]
@@ -349,80 +418,13 @@ def evaluate_conditioning_consensus_blend(
         return None, None
 
     B = tensors_list[0].shape[0]
-    D = tensors_list[0].shape[2]
-
-    # --- Independent Standalone RAW Visual Embeddings Extraction & Saving ---
-    if visual_fusion_config.get("save_blended_embeds", False) and clip is not None and tokens_dict:
-        try:
-            cond_stage = clip.cond_stage_model
-            clip_model = None
-            if hasattr(cond_stage, "clip") and isinstance(cond_stage.clip, str) and hasattr(cond_stage, cond_stage.clip):
-                clip_model = getattr(cond_stage, cond_stage.clip)
-            elif hasattr(cond_stage, "clip_model"):
-                clip_model = cond_stage.clip_model
-            elif hasattr(cond_stage, "clip_d"):
-                clip_model = cond_stage.clip_d
-            else:
-                clip_model = cond_stage
-
-            raw_visuals = {}
-            for k in active_keys:
-                if k in tokens_dict:
-                    tok = tokens_dict[k]
-                    key_name = next(iter(tok.keys()))
-                    token_list = tok[key_name]
-                    tokens_only = [[t[0] for t in b] for b in token_list]
-                    with torch.inference_mode():
-                        embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, device)
-
-                    vr = visual_ranges.get(k, (0, 0))
-                    if vr and vr != (0, 0):
-                        v_start, v_end = vr
-                        raw_visuals[k] = embeds[0, v_start:v_end, :].clone().cpu()
-
-            if raw_visuals:
-                max_vis_len_raw = max(v.shape[0] for v in raw_visuals.values())
-                D_raw = next(iter(raw_visuals.values())).shape[1]
-
-                aligned_raw = {}
-                for k, v in raw_visuals.items():
-                    if v.shape[0] != max_vis_len_raw:
-                        v_perm = v.permute(1, 0).unsqueeze(0)
-                        v_interp = torch.nn.functional.interpolate(v_perm, size=max_vis_len_raw, mode='linear', align_corners=False)
-                        v = v_interp.squeeze(0).permute(1, 0)
-                    aligned_raw[k] = v
-
-                if visual_method.startswith("spatial-"):
-                    blended_raw_2d = torch.zeros((max_vis_len_raw, D_raw), device="cpu", dtype=torch.float32)
-                    sources_list = [aligned_raw[k] for k in active_keys if k in aligned_raw]
-
-                    fusion_mask = generate_spatial_fusion_mask(
-                        N=max_vis_len_raw,
-                        num_sources=len(sources_list),
-                        method=visual_method,
-                        block_size=visual_fusion_config.get("visual_block_size", 2),
-                        dither_ratio=visual_fusion_config.get("dither_ratio", 0.5),
-                        device="cpu"
-                    )
-
-                    for i in range(max_vis_len_raw):
-                        src_idx = fusion_mask[i].item()
-                        blended_raw_2d[i] = sources_list[src_idx][i]
-                elif visual_method == "linear":
-                    sources_list = [aligned_raw[k] for k in active_keys if k in aligned_raw]
-                    stacked = torch.stack(sources_list, dim=0)
-                    blended_raw_2d = torch.mean(stacked, dim=0)
-                else:
-                    blended_raw_2d = aligned_raw[active_keys[0]]
-
-                # Save correct raw visual input embeddings [N, D_raw] (e.g. 2560) directly
-                save_blended_visual_embeddings([blended_raw_2d], visual_fusion_config, embedding_key)
-        except Exception as e:
-            logging.error(f"[evaluate_conditioning_consensus_blend] Failed to process and save raw embeddings: {e}", exc_info=True)
+    expected_visual_length = max(end - start for start, end in (visual_ranges.get(key, (0, 0)) for key in active_keys))
+    if expected_visual_length <= 0 or any(visual_ranges.get(key, (0, 0)) == (0, 0) for key in active_keys):
+        raise ValueError("Every visual fusion source must have a valid visual token range.")
 
     C_blended_list = []
     for b in range(B):
-        batch_tensors_dict = {k: sequence_tensors[k][b].to(device=device, dtype=torch.float32) for k in active_keys}
+        batch_tensors_dict = {k: sequence_tensors[k][b].to(device=device) for k in active_keys}
         ref_key = active_keys[0]
 
         prefixes = {}
@@ -431,56 +433,13 @@ def evaluate_conditioning_consensus_blend(
 
         for k in active_keys:
             t = batch_tensors_dict[k]
-            vr = visual_ranges.get(k, (0, 0))
-            if vr is None or vr == (0, 0):
-                prefixes[k] = t
-                visuals[k] = torch.zeros((0, D), device=device, dtype=t.dtype)
-                suffixes[k] = torch.zeros((0, D), device=device, dtype=t.dtype)
-            else:
-                v_start, v_end = vr
-                prefixes[k] = t[:v_start, :]
-                visuals[k] = t[v_start:v_end, :]
-                suffixes[k] = t[v_end:, :]
+            v_start, v_end = visual_ranges[k]
+            prefixes[k] = t[:v_start, :]
+            visuals[k] = t[v_start:v_end, :]
+            suffixes[k] = t[v_end:, :]
 
-        # Splicing of isolated visual blocks
-        active_visuals = {k: v for k, v in visuals.items() if v.shape[0] > 0}
-        if active_visuals and visual_method != "off":
-            max_vis_len = max(v.shape[0] for v in active_visuals.values())
-            aligned_visuals = {}
-            for k, v in active_visuals.items():
-                if v.shape[0] != max_vis_len:
-                    v_perm = v.permute(1, 0).unsqueeze(0)
-                    v_interp = torch.nn.functional.interpolate(v_perm, size=max_vis_len, mode='linear', align_corners=False)
-                    v = v_interp.squeeze(0).permute(1, 0)
-                aligned_visuals[k] = v
-
-            if visual_method.startswith("spatial-"):
-                blended_vis_2d = torch.zeros((max_vis_len, D), device=device, dtype=torch.float32)
-                sources_list = [aligned_visuals[k] for k in active_keys if k in aligned_visuals]
-
-                fusion_mask = generate_spatial_fusion_mask(
-                    N=max_vis_len,
-                    num_sources=len(sources_list),
-                    method=visual_method,
-                    block_size=visual_fusion_config.get("visual_block_size", 2),
-                    dither_ratio=visual_fusion_config.get("dither_ratio", 0.5),
-                    device=device
-                )
-
-                for i in range(max_vis_len):
-                    src_idx = fusion_mask[i].item()
-                    blended_vis_2d[i] = sources_list[src_idx][i]
-
-            elif visual_method == "linear":
-                # Fallback linear average
-                sources_list = [aligned_visuals[k] for k in active_keys if k in aligned_visuals]
-                stacked = torch.stack(sources_list, dim=0)
-                blended_vis_2d = torch.mean(stacked, dim=0)
-            else:
-                # Default fallback to reference image
-                blended_vis_2d = aligned_visuals[ref_key]
-        else:
-            blended_vis_2d = aligned_visuals[ref_key] if active_visuals else torch.zeros((0, D), device=device)
+        sources = [visuals[key] for key in active_keys]
+        blended_vis_2d = fuse_visual_token_sources(sources, visual_fusion_config, device, mask_cache, expected_visual_length)
 
         # Surrounding text (prefixes & suffixes) are kept 100% pure from the reference pass
         blended_prefix = prefixes[ref_key]
@@ -490,6 +449,33 @@ def evaluate_conditioning_consensus_blend(
         C_blended_list.append(torch.cat([blended_prefix, blended_vis_2d, blended_suffix], dim=0))
 
     C_blended = torch.stack(C_blended_list, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
+
+    if visual_fusion_config.get("save_blended_embeds", False):
+        if clip is None or not tokens_dict:
+            raise ValueError("Saving blended visual embeddings requires the text encoder and source tokens.")
+
+        cond_stage = clip.cond_stage_model
+        if hasattr(cond_stage, "clip") and isinstance(cond_stage.clip, str) and hasattr(cond_stage, cond_stage.clip):
+            clip_model = getattr(cond_stage, cond_stage.clip)
+        elif hasattr(cond_stage, "clip_model"):
+            clip_model = cond_stage.clip_model
+        elif hasattr(cond_stage, "clip_d"):
+            clip_model = cond_stage.clip_d
+        else:
+            clip_model = cond_stage
+
+        raw_visuals = []
+        for key in active_keys:
+            if key not in tokens_dict:
+                raise ValueError(f"Missing source tokens for raw visual embedding {key}.")
+            token_list = tokens_dict[key][next(iter(tokens_dict[key]))]
+            tokens_only = [[token[0] for token in batch] for batch in token_list]
+            embeds, _, _, _ = clip_model.process_tokens(tokens_only, device)
+            v_start, v_end = visual_ranges[key]
+            raw_visuals.append(embeds[0, v_start:v_end, :].clone().cpu())
+
+        blended_raw = fuse_visual_token_sources(raw_visuals, visual_fusion_config, device, mask_cache, expected_visual_length)
+        save_blended_visual_embeddings([blended_raw], visual_fusion_config, embedding_key)
 
     # Pooled output is kept pure from reference pass since text is identical
     ref_key = active_keys[0]
