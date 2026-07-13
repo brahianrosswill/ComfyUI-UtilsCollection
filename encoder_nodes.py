@@ -1,11 +1,18 @@
 import re
-import torch
 import math
 import os
+import gc
+import types
+import logging
+import torch
+import torch.nn.functional as F
+from safetensors.torch import save_file
 
+import comfy
+import folder_paths
+import node_helpers
 from comfy_api.latest import ComfyExtension, io
 from comfy.utils import common_upscale
-import node_helpers
 from .helper_functions import get_token_count, get_token_count_scaled
 from .encoder_helpers import(
     encode_embedding_scaled_bias,
@@ -24,6 +31,7 @@ from .encoder_helpers import(
     krea2_token_ids,
     find_subsequence,
     krea2_attn_forward_weight,
+    ImageInputMapping,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -31,7 +39,6 @@ def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return conditioning
 
     if "parallel" in ref_latent_mode:
-        import comfy
         # Encode empty prompt as neutral base
         tokens_neutral = clip.tokenize("")
         conditioning_neutral = clip.encode_from_tokens_scheduled(tokens_neutral)
@@ -309,7 +316,6 @@ class UC_ConditioningConsensusBlend(io.ComfyNode):
         """
         Blends stock or custom ComfyUI conditioning outputs post-encoder using CWB math.
         """
-        import torch
         if not conditioning_inputs:
             raise ValueError("At least one conditioning input must be connected to UC_ConditioningConsensusBlend.")
 
@@ -348,7 +354,6 @@ class UC_ConditioningConsensusBlend(io.ComfyNode):
                 pooled_tensors[key] = None
 
         # Execute CWB blending
-        import comfy
         device = comfy.model_management.get_torch_device()
         dtype = sequence_tensors['a'].dtype
 
@@ -2044,7 +2049,6 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
         if visual_method != "off":
-            import comfy
             device = comfy.model_management.get_torch_device()
 
             key_name = "qwen3vl_8b"
@@ -2065,14 +2069,13 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
 
             deepstack_blended = []
-            import torch.nn.functional as F
+
 
             for l in range(num_layers):
                 layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
 
                 if visual_method != "off":
                     wrapped_layer_tensors = {let: t.unsqueeze(0) for let, t in layer_tensors.items()}
-                    import comfy
                     device = comfy.model_management.get_torch_device()
                     # DeepStack intermediate layers must be blended recursively. We use linear blending fallback.
                     C_l_blended, _ = evaluate_conditioning_consensus_blend(
@@ -2317,7 +2320,6 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
         if visual_method != "off":
-            import comfy
             device = comfy.model_management.get_torch_device()
 
             key_name = "qwen3vl_8b"
@@ -2456,8 +2458,6 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
         if clip_model is None or not hasattr(clip_model, "process_tokens"):
             raise AttributeError("Could not locate underlying model wrapper with 'process_tokens' method in cond_stage_model.")
 
-        import folder_paths
-        from safetensors.torch import save_file
 
         # Locate ComfyUI embeddings directory
         try:
@@ -2513,13 +2513,16 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                 if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
                     modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
+            # Prepend <|im_start|> to trigger skip_template internally
+            modified_prompt = "<|im_start|>" + modified_prompt
             tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
 
             key_name = next(iter(tokens.keys()))
             token_list = tokens[key_name]
+            # Slice off the first token (the <|im_start|> trigger token) to match skip_template behavior
+            for i in range(len(token_list)):
+                token_list[i] = token_list[i][1:]
             tokens_only = [[t[0] for t in b] for b in token_list]
-
-            import comfy
             device = comfy.model_management.get_torch_device()
 
             with torch.inference_mode():
@@ -2556,7 +2559,6 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                 del image_tensor, processed_img
 
         # 5. Final VRAM release and soft_empty_cache
-        import gc
         gc.collect()
         comfy.model_management.soft_empty_cache()
 
@@ -2643,8 +2645,6 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
         if clip_model is None or not hasattr(clip_model, "process_tokens"):
             raise AttributeError("Could not locate underlying model wrapper with 'process_tokens' method in cond_stage_model.")
 
-        import folder_paths
-        from safetensors.torch import save_file
 
         # Locate ComfyUI embeddings directory
         try:
@@ -2700,6 +2700,8 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                 if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
                     modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
+            # Prepend <|im_start|> to trigger skip_template internally
+            modified_prompt = "<|im_start|>" + modified_prompt
             tokens = clip.tokenize(modified_prompt, images=images_vl, skip_template=True)
 
             # Retrieve the key name dynamically (typically "qwen3vl_4b" or "qwen3vl_8b")
@@ -2707,9 +2709,10 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
             if tokens:
                 key_name = next(iter(tokens.keys()))
             token_list = tokens.get(key_name, [])
+            # Slice off the first token (the <|im_start|> trigger token) to match skip_template behavior
+            for i in range(len(token_list)):
+                token_list[i] = token_list[i][1:]
             tokens_only = [[t[0] for t in b] for b in token_list]
-
-            import comfy
             device = comfy.model_management.get_torch_device()
 
             with torch.inference_mode():
@@ -2746,18 +2749,17 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                 del image_tensor, processed_img
 
         # 5. Final VRAM release and soft_empty_cache
-        import gc
         gc.collect()
         comfy.model_management.soft_empty_cache()
 
         return io.NodeOutput(state_dict, tensor_2d)
 
 
+
 _QWEN_IM_START, _QWEN_USER, _QWEN_NL, _QWEN_IM_END = 151644, 872, 198, 151645
 
 class Krea2WeightPatch:
     def __get__(self, obj, objtype=None):
-        import types
         return types.MethodType(krea2_attn_forward_weight, obj)
 
 class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
@@ -2845,7 +2847,6 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     active_images.append(v)
 
         # 1. Parse weights from the attention_weights widget using regex
-        import re
         pattern = re.compile(r"\(([^():]+):(-?\d*\.?\d+)\)")
         terms = [(m.group(1).strip(), float(m.group(2))) for m in pattern.finditer(attention_weights)]
 
@@ -2981,7 +2982,6 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                                 positions.append(mapping[t_idx][0])
                     break
             if not positions:
-                import logging
                 logging.warning(f"Krea2PromptWeight: phrase '{phrase}' not found in prompt or system prompt; skipped.")
                 continue
             for cp in positions:
@@ -2991,7 +2991,6 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         # 3. Patch model
         model_clone = model.clone()
         if weight_pairs:
-            import logging
             logging.info(f"Krea2PromptWeight (Attn): weighting {weight_pairs}")
             diffusion_model = model_clone.get_model_object("diffusion_model")
             transformer_options = model_clone.model_options.get("transformer_options", {}).copy()
@@ -3063,7 +3062,6 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 last_cond_dict = cond_X[0][1]
 
             if visual_method != "off":
-                import comfy
                 device = comfy.model_management.get_torch_device()
 
                 key_name = "qwen3vl_8b"
@@ -3083,14 +3081,13 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
 
                 deepstack_blended = []
-                import torch.nn.functional as F
+
 
                 for l in range(num_layers):
                     layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
 
                     if visual_method != "off":
                         wrapped_layer_tensors = {let: t.unsqueeze(0) for let, t in layer_tensors.items()}
-                        import comfy
                         device = comfy.model_management.get_torch_device()
                         # DeepStack intermediate layers are blended linearly for spatial stability
                         C_l_blended, _ = evaluate_conditioning_consensus_blend(
