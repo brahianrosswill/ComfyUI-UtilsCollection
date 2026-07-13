@@ -32,6 +32,7 @@ from .encoder_helpers import(
     find_subsequence,
     krea2_attn_forward_weight,
     ImageInputMapping,
+    extract_and_flatten_images,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -940,22 +941,8 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None) -> io.NodeOutput:
-        # Collect and parse all autogrow keys
-        raw_images = {}
-        if image_inputs is not None:
-            # image_inputs can be a dict, let's handle cases where it might be empty
-            for k, v in image_inputs.items():
-                if v is not None:
-                    # Extract numeric suffix (e.g. "image1" -> 1)
-                    digits = re.findall(r'\d+', k)
-                    if digits:
-                        idx = int(digits[0])
-                    else:
-                        idx = 1
-                    raw_images[idx] = v
-
-        # Determine indexing: 0-indexed or 1-indexed.
-        is_zero_indexed = 0 in raw_images
+        # Collect, extract, and parse all autogrow keys (including batched images)
+        raw_images, flat_images, is_zero_indexed = extract_and_flatten_images(image_inputs)
 
         # Check if the prompt has any image_input_ keyword matches (case-insensitive)
         pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
@@ -1139,22 +1126,8 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None) -> io.NodeOutput:
-        # Collect and parse all autogrow keys
-        raw_images = {}
-        if image_inputs is not None:
-            # image_inputs can be a dict, let's handle cases where it might be empty
-            for k, v in image_inputs.items():
-                if v is not None:
-                    # Extract numeric suffix (e.g. "image1" -> 1)
-                    digits = re.findall(r'\d+', k)
-                    if digits:
-                        idx = int(digits[0])
-                    else:
-                        idx = 1
-                    raw_images[idx] = v
-
-        # Determine indexing: 0-indexed or 1-indexed.
-        is_zero_indexed = 0 in raw_images
+        # Collect, extract, and parse all autogrow keys (including batched images)
+        raw_images, flat_images, is_zero_indexed = extract_and_flatten_images(image_inputs)
 
         # Check if the prompt has any image_input_ keyword matches (case-insensitive)
         pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
@@ -1337,22 +1310,8 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None) -> io.NodeOutput:
-        # Collect and parse all autogrow keys
-        raw_images = {}
-        if image_inputs is not None:
-            # image_inputs can be a dict, let's handle cases where it might be empty
-            for k, v in image_inputs.items():
-                if v is not None:
-                    # Extract numeric suffix (e.g. "image1" -> 1)
-                    digits = re.findall(r'\d+', k)
-                    if digits:
-                        idx = int(digits[0])
-                    else:
-                        idx = 1
-                    raw_images[idx] = v
-
-        # Determine indexing: 0-indexed or 1-indexed.
-        is_zero_indexed = 0 in raw_images
+        # Collect, extract, and parse all autogrow keys (including batched images)
+        raw_images, flat_images, is_zero_indexed = extract_and_flatten_images(image_inputs)
 
         # Check if the prompt has any image_input_ keyword matches (case-insensitive)
         pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
@@ -1511,21 +1470,8 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None) -> io.NodeOutput:
-        # Collect and parse all autogrow keys
-        raw_images = {}
-        if image_inputs is not None:
-            for k, v in image_inputs.items():
-                if v is not None:
-                    # Extract numeric suffix (e.g. "image1" -> 1)
-                    digits = re.findall(r'\d+', k)
-                    if digits:
-                        idx = int(digits[0])
-                    else:
-                        idx = 1
-                    raw_images[idx] = v
-
-        # Determine indexing: 0-indexed or 1-indexed.
-        is_zero_indexed = 0 in raw_images
+        # Collect, extract, and parse all autogrow keys (including batched images)
+        raw_images, flat_images, is_zero_indexed = extract_and_flatten_images(image_inputs)
 
         # Check if the prompt has any image_input_ keyword matches (case-insensitive)
         pattern = re.compile(r'image_input_(\d+)', re.IGNORECASE)
@@ -1946,12 +1892,8 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0) -> io.NodeOutput:
-        # Collect and parse all active (non-null) connected images sequentially
-        active_images = []
-        if image_inputs is not None:
-            for k, v in image_inputs.items():
-                if v is not None:
-                    active_images.append(v)
+        # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
+        _, active_images, _ = extract_and_flatten_images(image_inputs)
 
         if not active_images:
             # Fallback if no images are connected: encode prompt as plain text
@@ -2239,12 +2181,8 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0) -> io.NodeOutput:
-        # Collect and parse all active (non-null) connected images sequentially
-        active_images = []
-        if image_inputs is not None:
-            for k, v in image_inputs.items():
-                if v is not None:
-                    active_images.append(v)
+        # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
+        _, active_images, _ = extract_and_flatten_images(image_inputs)
 
         if not active_images:
             # Fallback if no images are connected: encode prompt as plain text
@@ -2840,11 +2778,8 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
 
     @classmethod
     def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: str, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0) -> io.NodeOutput:
-        active_images = []
-        if image_inputs is not None:
-            for k, v in image_inputs.items():
-                if v is not None:
-                    active_images.append(v)
+        # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
+        _, active_images, _ = extract_and_flatten_images(image_inputs)
 
         # 1. Parse weights from the attention_weights widget using regex
         pattern = re.compile(r"\(([^():]+):(-?\d*\.?\d+)\)")

@@ -963,6 +963,55 @@ def krea2_user_content_span(ids):
             return start, end
     return None, None
 
+def extract_and_flatten_images(image_inputs) -> tuple:
+    """
+    Extracts individual images from batched image tensors within the image_inputs dict.
+    Returns:
+        - raw_images: Dict mapping sequential index to a single image tensor of shape [1, H, W, C]
+        - flat_images: List of individual image tensors
+        - is_zero_indexed: Boolean indicating if the original keys started at 0
+    """
+    is_zero_indexed = False
+    if image_inputs is not None:
+        for k in image_inputs.keys():
+            digits = re.findall(r'\d+', k)
+            if digits and int(digits[0]) == 0:
+                is_zero_indexed = True
+                break
+
+    flat_images = []
+    if image_inputs is not None:
+        # Sort keys numerically by their suffix to ensure correct sequential order
+        def get_num(k):
+            digits = re.findall(r'\d+', k)
+            return int(digits[0]) if digits else 0
+        sorted_keys = sorted(image_inputs.keys(), key=get_num)
+
+        for k in sorted_keys:
+            v = image_inputs[k]
+            if v is not None:
+                if isinstance(v, torch.Tensor) and len(v.shape) == 4:
+                    # Shape is [B, H, W, C]. Slice into B individual tensors of [1, H, W, C]
+                    for i in range(v.shape[0]):
+                        flat_images.append(v[i:i+1])
+                elif isinstance(v, list):
+                    # Handle lists of tensors if passed
+                    for item in v:
+                        if isinstance(item, torch.Tensor) and len(item.shape) == 4:
+                            for i in range(item.shape[0]):
+                                flat_images.append(item[i:i+1])
+                        elif isinstance(item, torch.Tensor):
+                            flat_images.append(item)
+                else:
+                    flat_images.append(v)
+
+    start_idx = 0 if is_zero_indexed else 1
+    raw_images = {}
+    for idx, img in enumerate(flat_images):
+        raw_images[start_idx + idx] = img
+
+    return raw_images, flat_images, is_zero_indexed
+
 def krea2_token_ids(clip, text):
     tok = clip.tokenize(text)
     key = next(iter(tok))
