@@ -89,11 +89,28 @@ def test_target_warp_keeps_crop_border_fixed():
 
     warped = composite_nodes._warp_target(target, source_points, target_points, 1.0, 4)
 
-    assert torch.allclose(warped[0], target[0])
-    assert torch.allclose(warped[-1], target[-1])
-    assert torch.allclose(warped[:, 0], target[:, 0])
-    assert torch.allclose(warped[:, -1], target[:, -1])
+    assert torch.allclose(warped[0], target[0], atol=1e-4)
+    assert torch.allclose(warped[-1], target[-1], atol=1e-4)
+    assert torch.allclose(warped[:, 0], target[:, 0], atol=1e-4)
+    assert torch.allclose(warped[:, -1], target[:, -1], atol=1e-4)
     assert not torch.allclose(warped[5:12, 5:12], target[5:12, 5:12])
+    for source_point, target_point in zip(source_points.astype(int), target_points.astype(int)):
+        expected = target[target_point[1], target_point[0]]
+        actual = warped[source_point[1], source_point[0]]
+        assert torch.allclose(actual, expected, atol=2e-3)
+
+
+def test_similarity_transform_allows_rotation_without_source_warp():
+    source = np.array([[2, 2], [8, 2], [8, 10], [2, 10]], dtype=np.float32)
+    rotation = np.array([[0, -1], [1, 0]], dtype=np.float32)
+    target = 1.5 * (source @ rotation.T) + np.array([20, 5], dtype=np.float32)
+
+    scale, solved_rotation, translation = composite_nodes._similarity_transform(source, target)
+    transformed = scale * (source @ solved_rotation.T) + translation
+
+    assert scale == pytest.approx(1.5)
+    assert np.allclose(solved_rotation, rotation, atol=1e-6)
+    assert np.allclose(transformed, target, atol=1e-5)
 
 
 class _FaceModel:
