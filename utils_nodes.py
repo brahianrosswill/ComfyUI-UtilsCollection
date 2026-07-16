@@ -434,7 +434,7 @@ class UC_ExtractBoundingBox(io.ComfyNode):
         return boxes
 
     @classmethod
-    def execute(cls, input_data: any, index: int) -> io.NodeOutput:
+    def select_box(cls, input_data, index: int) -> tuple[int, int, int, int]:
         boxes = cls.find_boxes(input_data)
         if not boxes:
             raise ValueError("No bounding boxes containing 'x', 'y', 'width', and 'height' were found in the input data.")
@@ -443,16 +443,94 @@ class UC_ExtractBoundingBox(io.ComfyNode):
             raise ValueError(f"Index {index} is out of range. Found {len(boxes)} bounding box(es).")
 
         box = boxes[index]
-
         try:
             x = int(float(box["x"]))
             y = int(float(box["y"]))
-            w = int(float(box["width"]))
-            h = int(float(box["height"]))
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Failed to convert bounding box values at index {index} to integers: {e}")
+            width = int(float(box["width"]))
+            height = int(float(box["height"]))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Failed to convert bounding box values at index {index} to integers: {exc}") from exc
 
-        return io.NodeOutput(x, y, w, h)
+        return x, y, width, height
+
+    @classmethod
+    def execute(cls, input_data: any, index: int) -> io.NodeOutput:
+        return io.NodeOutput(*cls.select_box(input_data, index))
+
+
+class UC_AdjustBoundingBox(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_AdjustBoundingBox",
+            display_name="Adjust Bounding Box",
+            category="utils/primitive",
+            inputs=[
+                io.AnyType.Input(
+                    "input_data",
+                    tooltip="Bounding-box data accepted by Extract Bounding Box: a native box, JSON string, list, dict, or nested structure.",
+                ),
+                io.Int.Input(
+                    "index",
+                    default=0,
+                    min=0,
+                    max=sys.maxsize,
+                    tooltip="Index of the bounding box to adjust.",
+                ),
+                io.Int.Input(
+                    "pixel_expansion",
+                    default=0,
+                    min=0,
+                    max=sys.maxsize,
+                    tooltip="Pixels added to each selected edge. Both adds this value on all four sides.",
+                ),
+                io.Combo.Input(
+                    "expansion_axis",
+                    options=["both", "horizontal", "vertical"],
+                    default="both",
+                    tooltip="Choose which axes receive the explicit pixel expansion.",
+                ),
+                io.Combo.Input(
+                    "size_multiple",
+                    options=["0", "8", "16", "32"],
+                    default="0",
+                    tooltip="Round width and height upward to this multiple while keeping the box centered. Zero disables alignment.",
+                ),
+            ],
+            outputs=[
+                io.BoundingBox.Output("bounding_box"),
+            ],
+        )
+
+    @staticmethod
+    def _expand_centered(origin: int, size: int, amount: int) -> tuple[int, int]:
+        return origin - amount, size + 2 * amount
+
+    @staticmethod
+    def _align_centered(origin: int, size: int, multiple: int) -> tuple[int, int]:
+        if multiple == 0:
+            return origin, size
+        aligned_size = ((size + multiple - 1) // multiple) * multiple
+        added = aligned_size - size
+        return origin - added // 2, aligned_size
+
+    @classmethod
+    def execute(cls, input_data, index, pixel_expansion, expansion_axis, size_multiple) -> io.NodeOutput:
+        x, y, width, height = UC_ExtractBoundingBox.select_box(input_data, index)
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Bounding box at index {index} must have positive width and height; got {width}x{height}.")
+
+        if expansion_axis in ("both", "horizontal"):
+            x, width = cls._expand_centered(x, width, pixel_expansion)
+        if expansion_axis in ("both", "vertical"):
+            y, height = cls._expand_centered(y, height, pixel_expansion)
+
+        multiple = int(size_multiple)
+        x, width = cls._align_centered(x, width, multiple)
+        y, height = cls._align_centered(y, height, multiple)
+
+        bounding_box = {"x": x, "y": y, "width": width, "height": height}
+        return io.NodeOutput(bounding_box)
 
 
 class UC_Krea2LayerProbe(io.ComfyNode):
@@ -710,9 +788,9 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "##### Key Details:\n"
                 "- You can write your weights using standard weighting syntax: `(prompt text:weight)`, for example `(beautiful sunset:1.25)` or `(red car:0.8)`.\n"
                 "- Before tokenization, our weight translation engine parses and extracts these markers, strips the outer parenthesis and weight markers, and compiles the clean text.\n"
-                "- To handle the complex visual/image token expansions precisely, a dynamic token-to-embedding mapping calculates the exact sequence locations in the final encoded embedding tensor.\n"
+                "- Token positions mirror released Core's Krea2 prefix slice and validate it against the exact Qwen3-VL image-grid expansion. A mismatch is rejected instead of guessing a visual range.\n"
                 "- The precise slices of the conditioning tensor are then multiplied element-wise by the target strength.\n"
-                "- The pooled output (the global embedding representing the entire sequence) is also safely scaled by the maximum weight found."
+                "- Local weights leave pooled output unchanged. The separate global multiplier scales both sequence and pooled output."
             )
         elif topic == "math_expressions":
             markdown = (
@@ -721,7 +799,7 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "##### Key Details:\n"
                 "- Enter your mathematical expression directly in the dedicated single-line `formula` input field (e.g., `(a + b) / 2`). No prompt pipe syntax is required.\n"
                 "- Inside the formula, use variables `a`, `b`, `c`, `d`... representing your active connected VLM image conditionings.\n"
-                "- Under the hood, the node automatically runs independent, native single-image encoding passes for each active image, then evaluates the mathematical formula directly on those extracted high-dimensional continuous sequence tensors ($C \\in \\mathbb{R}^{B \\times L \\times D}$), pooled tensors ($P \\in \\mathbb{R}^{B \\times D}$), and DeepStack layers.\n"
+                "- Under the hood, the node runs independent single-image encoding passes, then evaluates the formula on the returned sequence tensors ($C \\in \\mathbb{R}^{B \\times L \\times D}$) and compatible pooled tensors ($P \\in \\mathbb{R}^{B \\times D}$). Core consumes Qwen DeepStack features inside the text encoder and does not expose them as conditioning metadata.\n"
                 "- Supported operations:\n"
                 "  - Addition (+), Subtraction (-), Multiplication (*), Division (/)\n"
                 "  - Parentheses for nesting operations: `((a * 1.05) + b) / 2`\n"
@@ -730,14 +808,14 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "- **Sequence Alignment Modes**: If your images have different aspect ratios or resolutions, the node supports two alignment options below the multiplier widget:\n"
                 "  - `zero-pad`: Silently zero-pads shorter sequence tensors to align lengths (matches ComfyUI core conditioning logic exactly).\n"
                 "  - `interpolate`: Dynamically resizes the visual token sequence using 1D linear interpolation to align attention features perfectly across the entire sequence without dead space.\n"
-                "- Security: All formulas are parsed and evaluated within a completely sandboxed namespace (`__builtins__ = {}`), preventing any insecure code executions while giving you full access to PyTorch's tensor math."
+                "- Security: Formulas use a restricted AST grammar. Attribute access, indexing, comprehensions, imports, and arbitrary calls are rejected."
             )
         elif topic == "saving_embeddings":
             markdown = (
                 "##### Saving Pre-Transformer Input Embeddings\n"
                 "You can save raw pre-transformer interleaved text and visual embeddings directly to disk before they enter the transformer layers.\n\n"
                 "##### Key Details:\n"
-                "- The **Krea 2 Input Embeddings** (`UC_Krea2InputEmbeds`) and **Qwen3-VL Unified Input Embeddings** (`UC_Qwen3VLInputEmbeds`) nodes handle this task.\n"
+                "- **VLM Input Embedding Export** (`UC_VLMInputEmbeds`) is the canonical node. The former Krea2 and Qwen3-VL IDs remain deprecated compatibility nodes for one release.\n"
                 "- The prompt text is tokenized with `skip_template=True` so that any model-specific chat/prompt wrappers are skipped, preserving raw text embeddings.\n"
                 "- If an image is connected, the image is tokenized and its visual token pad structures are interleaved within the language tokens.\n"
                 "- The model's `process_tokens` method extracts the high-dimensional continuous input embeddings.\n"

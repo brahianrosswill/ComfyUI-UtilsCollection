@@ -11,6 +11,7 @@ from .scheduler_nodes import *
 from .loader_nodes import *
 from .text_nodes import *
 from .textgen_nodes import *
+from .composite_nodes import *
 
 from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
@@ -30,6 +31,12 @@ class SamplingUtils(ComfyExtension):
             UC_TextEncodeZITSystemPrompt,
             UC_TextEncodeZImageThinkPrompt,
             UC_TextEncodeSystemPrompt,
+            UC_WeightedTextEncodeSystemPrompt,
+            UC_TextEncodeSystemEditAdvanced,
+            UC_TextEncodeGemmaSystemEditAdvanced,
+            UC_AdvancedVisualConditioningEncode,
+            UC_VLMInputEmbeds,
+            UC_Krea2TokenAttentionWeight,
             UC_ScaledBiasTextEncodeFlux2SystemPrompt,
             UC_ScaledBiasTextEncodeKleinSystemPrompt,
             UC_ScaledBiasTextEncodeLtxv2SystemPrompt,
@@ -39,6 +46,12 @@ class SamplingUtils(ComfyExtension):
             UC_ModifyMask,
             UC_ImageBlendByMask,
             UC_ImagePad,
+            UC_CropByMask,
+            UC_ImageCropMerge,
+            UC_ImageAndMaskResize,
+            UC_ResizeMask,
+            UC_MediaPipeFaceCompositeOptions,
+            UC_MediaPipeFaceComposite,
             UC_SystemMessagePresets,
             UC_SystemMessageVideoPresets,
             UC_InstructPromptPresets,
@@ -76,6 +89,7 @@ class SamplingUtils(ComfyExtension):
             UC_TextGenerateQwen35SystemPrompt,
             UC_ColorConvertNode,
             UC_ExtractBoundingBox,
+            UC_AdjustBoundingBox,
             UC_Krea2LayerProbe,
             UC_Krea2LayerAblator,
             UC_Krea2InputEmbeds,

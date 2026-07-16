@@ -20,46 +20,63 @@ from .encoder_helpers import(
     evaluate_formula,
     evaluate_conditioning_formula,
     evaluate_conditioning_consensus_blend,
-    fuse_deepstack_layers,
     blend_text_vectors,
     find_visual_token_range,
+    build_token_to_conditioning_map,
     encode_embedding_classical_scaled_bias,
+    strip_contextual_weight_syntax,
     load_vlm_image_tensor,
     krea2_user_content_span,
     krea2_token_ids,
     find_subsequence,
     krea2_attn_forward_weight,
     ImageInputMapping,
+    VISION_BLOCK,
+    prepare_image_placeholder_prompt,
     extract_and_flatten_images,
+    resolve_embedding_output_path,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
     if not ref_latents:
         return conditioning
 
+    stage = getattr(clip, "cond_stage_model", None)
+    stage_names = " ".join(
+        type(value).__name__
+        for value in (stage, getattr(stage, "clip_model", None), getattr(stage, "clip", None))
+        if value is not None
+    ).lower()
+    if "krea2" in stage_names:
+        raise ValueError("Krea2 Core does not consume reference_latents; disable the reference-latent mode.")
+
     if "parallel" in ref_latent_mode:
-        # Encode empty prompt as neutral base
+        # Keep semantic conditioning and reference-latent conditioning as separate
+        # Comfy conditioning entries. Sequence concatenation is not a parallel stream.
         tokens_neutral = clip.tokenize("")
         conditioning_neutral = clip.encode_from_tokens_scheduled(tokens_neutral)
-
-        out = []
-        for i in range(len(conditioning)):
-            c_vlm, meta_vlm = conditioning[i]
-            c_neutral, meta_neutral = conditioning_neutral[i] if i < len(conditioning_neutral) else conditioning_neutral[-1]
-
-            c_neutral_cast = comfy.model_management.cast_to_device(c_neutral, c_vlm.device, c_vlm.dtype)
-            c_combined = torch.cat([c_vlm, c_neutral_cast], dim=1)
-
-            meta_combined = meta_vlm.copy()
-            meta_combined["reference_latents"] = ref_latents
-            if "attention_mask" in meta_combined:
-                del meta_combined["attention_mask"]
-
-            out.append([c_combined, meta_combined])
+        out = [[tensor, metadata.copy()] for tensor, metadata in conditioning]
+        for tensor, metadata in conditioning_neutral:
+            neutral_meta = metadata.copy()
+            neutral_meta["reference_latents"] = list(ref_latents)
+            out.append([tensor, neutral_meta])
         return out
     else:
         # Standard append mode
         return node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+
+
+def multiply_conditioning(conditioning, multiplier):
+    if multiplier == 1.0:
+        return conditioning
+    output = []
+    for tensor, metadata in conditioning:
+        new_metadata = metadata.copy()
+        pooled = new_metadata.get("pooled_output")
+        if pooled is not None:
+            new_metadata["pooled_output"] = pooled * multiplier
+        output.append([tensor * multiplier, new_metadata])
+    return output
 
 
 class UC_AttentionBiasTextEncode(io.ComfyNode):
@@ -75,7 +92,8 @@ class UC_AttentionBiasTextEncode(io.ComfyNode):
             ],
             outputs=[
                 io.Conditioning.Output(display_name="conditioning"),
-            ]
+            ],
+            is_experimental=True,
         )
 
     @classmethod
@@ -85,8 +103,7 @@ class UC_AttentionBiasTextEncode(io.ComfyNode):
 
         if '<' not in text and '>' not in text and '=' not in text:
             tokens = clip.tokenize(text)
-            cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
-            return ([[cond, {"pooled_output": pooled}]], )
+            return io.NodeOutput(clip.encode_from_tokens_scheduled(tokens))
 
         bias_pattern = re.compile(r"<([^>]+)=([0-9.-]+)>")
         split_pattern = re.compile(r"(<[^>]+=[0-9.-]+>)")
@@ -95,8 +112,6 @@ class UC_AttentionBiasTextEncode(io.ComfyNode):
         clean_text = ""
         biases_to_apply = []
 
-        current_token_index = 1
-
         for segment in segments:
             if not segment:
                 continue
@@ -104,58 +119,60 @@ class UC_AttentionBiasTextEncode(io.ComfyNode):
             match = bias_pattern.fullmatch(segment)
             if match:
                 bias_text, strength_str = match.groups()
+                before = clip.tokenize(clean_text)
+                key = next(iter(before))
+                start_index = len(before[key][0])
                 strength = float(strength_str)
                 clean_text += bias_text
-                num_tokens = get_token_count(clip, bias_text)
-
-                if num_tokens > 0:
-                    start_index = current_token_index
-                    end_index = current_token_index + num_tokens
+                after = clip.tokenize(clean_text)
+                end_index = len(after[key][0])
+                if end_index > start_index:
                     biases_to_apply.append({"start": start_index, "end": end_index, "strength": strength})
-
-                current_token_index += num_tokens
             else:
                 clean_text += segment
-                num_tokens = get_token_count(clip, segment)
-                current_token_index += num_tokens
 
         tokens = clip.tokenize(clean_text)
-        cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
-
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
         if not biases_to_apply:
-            return ([[cond, {"pooled_output": pooled}]], )
+            return io.NodeOutput(conditioning)
 
-        cond_dict = {"pooled_output": pooled}
-        n_text_tokens = cond.shape[1]
-        device = cond.device
-        dtype = torch.float16
-
-
-        final_seq_len = n_text_tokens + 1
-        attn_mask = torch.zeros((1, final_seq_len, final_seq_len), dtype=dtype, device=device)
-
-        pooled_offset = 1
-
-        for bias in biases_to_apply:
-            strength = bias["strength"]
-            attn_bias_value = torch.log(torch.tensor(strength, dtype=dtype, device=device))
-
-            start = min(bias["start"] + pooled_offset, final_seq_len)
-            end = min(bias["end"] + pooled_offset, final_seq_len)
-
-            if start >= end:
-                continue
-
-            attn_mask[:, :, start:end] += attn_bias_value
-            attn_mask[:, start:end, :] += attn_bias_value
-
-        cond_dict["attention_mask"] = attn_mask
-        cond_dict["attention_mask_img_shape"] = (1, 1)
-
-
-        new_conditioning = ([[cond, cond_dict]])
-
-        return io.NodeOutput(new_conditioning)
+        output = []
+        for cond, metadata in conditioning:
+            seq_len = cond.shape[1]
+            key = next(iter(tokens))
+            mapping = build_token_to_conditioning_map(tokens[key][0], cond)
+            attn_mask = torch.zeros((1, seq_len, seq_len), dtype=cond.dtype, device=cond.device)
+            for bias in biases_to_apply:
+                strength = bias["strength"]
+                if not math.isfinite(strength) or strength < 0:
+                    raise ValueError("Attention weights must be finite and non-negative.")
+                value = math.log(max(strength, 1e-6))
+                if bias["start"] >= len(mapping):
+                    continue
+                start = mapping[bias["start"]][0]
+                end = mapping[min(bias["end"] - 1, len(mapping) - 1)][1]
+                if start < end:
+                    # Key-column odds scaling. Row scaling would square the
+                    # weighted intersection and is intentionally not applied.
+                    attn_mask[:, :, start:end] += value
+            new_metadata = metadata.copy()
+            existing = new_metadata.get("attention_mask")
+            if existing is not None and torch.is_tensor(existing):
+                if existing.shape[-1] != seq_len:
+                    raise ValueError("Existing attention mask does not match the encoded sequence length.")
+                existing = existing.to(device=cond.device)
+                if existing.dtype == torch.bool:
+                    additive = torch.zeros(existing.shape, device=cond.device, dtype=cond.dtype)
+                    additive.masked_fill_(~existing, -torch.finfo(cond.dtype).max)
+                else:
+                    additive = existing.to(dtype=cond.dtype)
+                while additive.ndim < attn_mask.ndim:
+                    additive = additive.unsqueeze(-2)
+                attn_mask = attn_mask + additive
+            new_metadata["attention_mask"] = attn_mask
+            new_metadata["attention_mask_img_shape"] = (1, 1)
+            output.append([cond, new_metadata])
+        return io.NodeOutput(output)
 
 # --- Type Definitions for Modular Configurations ---
 TextBlendConfig = io.Custom("TEXT_BLEND_CONFIG")
@@ -207,7 +224,8 @@ class UC_TextConsensusBlendConfig(io.ComfyNode):
             ],
             outputs=[
                 TextBlendConfig.Output("text_blend_config")
-            ]
+            ],
+            is_experimental=True,
         )
 
     @classmethod
@@ -260,13 +278,19 @@ class UC_VisualFusionConfig(io.ComfyNode):
                     "visual_fusion_method",
                     options=["off", "linear", "spatial-checkerboard", "spatial-block-interleave", "spatial-dither-random"],
                     default="spatial-checkerboard",
-                    tooltip="Method to combine isolated visual tokens. Methods starting with 'spatial-' interleave pure token vectors to keep details perfectly sharp and achieve true fusion instead of filter-like blurring."
+                    tooltip="Method to combine isolated visual-token vectors. Spatial methods select source vectors according to a reproducible token-grid pattern; generation quality is model and prompt dependent."
                 ),
                 io.Int.Input("visual_block_size", default=2, min=1, max=8, step=1, tooltip="Active for spatial-block-interleave. Size of the spatial token patches to group and switch together."),
                 io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Active for spatial-dither-random. Probability of selecting the first image. Remaining images are selected with a checkerboard pattern."),
                 io.Boolean.Input("save_blended_embeds", default=False, tooltip="Enable to save the blended visual tokens as a standalone .safetensors embedding."),
                 io.String.Input("save_path", default="blended_visual_embeds.safetensors", tooltip="Target filename/path under models/embeddings to save the .safetensors file."),
-                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Seed for the spatial-dither-random pattern.")
+                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Seed for the spatial-dither-random pattern."),
+                io.Combo.Input(
+                    "visual_encoder_path",
+                    options=["grid-deepstack", "legacy-flat"],
+                    default="grid-deepstack",
+                    tooltip="Qwen3-VL encoder route used by visual fusion. grid-deepstack uses current Core grid MRoPE and DeepStack injection; legacy-flat reproduces the pre-d0008a89 flat 1D route."
+                )
             ],
             outputs=[
                 VisualFusionConfig.Output("visual_fusion_config")
@@ -282,12 +306,14 @@ class UC_VisualFusionConfig(io.ComfyNode):
         save_blended_embeds: bool = False,
         save_path: str = "blended_visual_embeds.safetensors",
         seed: int = 0,
+        visual_encoder_path: str = "grid-deepstack",
     ) -> io.NodeOutput:
         config = {
             "visual_fusion_method": visual_fusion_method,
             "visual_block_size": visual_block_size,
             "dither_ratio": dither_ratio,
             "seed": seed,
+            "visual_encoder_path": visual_encoder_path,
             "save_blended_embeds": save_blended_embeds,
             "save_path": save_path
         }
@@ -310,7 +336,8 @@ class UC_ConditioningConsensusBlend(io.ComfyNode):
             ],
             outputs=[
                 io.Conditioning.Output("conditioning")
-            ]
+            ],
+            is_experimental=True,
         )
 
     @classmethod
@@ -337,56 +364,53 @@ class UC_ConditioningConsensusBlend(io.ComfyNode):
         if text_blend_config is None:
             text_blend_config = {"blend_preset": "baseline"}
 
-        # Extract sequence and pooled tensors across conditionings
-        sequence_tensors = {}
-        pooled_tensors = {}
+        if text_blend_config.get("blend_preset") == "off":
+            return io.NodeOutput(active_conds[0])
 
-        # ComfyUI conditioning data structure is a list of lists of dictionaries:
-        # [ [ [conditioning_tensor, { "pooled_output": pooled_tensor, ... }] ] ]
-        for idx, cond_list in enumerate(active_conds):
-            key = chr(97 + idx) # 'a', 'b', 'c', ...
-            # Extract first element's tensor
-            main_tensor = cond_list[0][0]
-            sequence_tensors[key] = main_tensor
+        schedule_lengths = {len(conditioning) for conditioning in active_conds}
+        if len(schedule_lengths) != 1:
+            raise ValueError("All conditioning inputs must have the same number of scheduled entries.")
 
-            meta_dict = cond_list[0][1]
-            if meta_dict and "pooled_output" in meta_dict:
-                pooled_tensors[key] = meta_dict["pooled_output"]
-            else:
-                pooled_tensors[key] = None
+        def compatible_metadata(metadata_items):
+            layout_keys = {"attention_mask", "attention_mask_img_shape", "embeds_info"}
+            result = {}
+            common_keys = set.intersection(*(set(item) for item in metadata_items)) - layout_keys - {"pooled_output"}
+            for key in common_keys:
+                values = [item[key] for item in metadata_items]
+                first = values[0]
+                if torch.is_tensor(first):
+                    if all(torch.is_tensor(value) and value.shape == first.shape and torch.equal(value, first) for value in values[1:]):
+                        result[key] = first
+                elif all(value is first for value in values[1:]):
+                    result[key] = first
+                elif isinstance(first, (str, int, float, bool, type(None))) and all(value == first for value in values[1:]):
+                    result[key] = first
+            return result
 
-        # Execute CWB blending
         device = comfy.model_management.get_torch_device()
-        dtype = sequence_tensors['a'].dtype
-
-        # Cast all sequence and pooled tensors safely using Comfy's non-blocking, aimdo-aware pipeline
-        safe_sequence_tensors = {}
-        for k, t in sequence_tensors.items():
-            safe_sequence_tensors[k] = comfy.model_management.cast_to_device(t, device, dtype)
-
-        safe_pooled_tensors = {}
-        for k, p in pooled_tensors.items():
-            if p is not None:
-                safe_pooled_tensors[k] = comfy.model_management.cast_to_device(p, device, dtype)
-            else:
-                safe_pooled_tensors[k] = None
-
-        C_blended, P_blended = blend_text_vectors(
-            safe_sequence_tensors,
-            text_blend_config,
-            pooled_tensors=safe_pooled_tensors,
-            device=str(device)
-        )
-
-        # Reconstruct ComfyUI conditioning list structure
-        # Clone reference meta dict to preserve auxiliary items (like guidance, controls, etc.)
-        ref_meta = active_conds[0][0][1].copy()
-        if P_blended is not None:
-            ref_meta["pooled_output"] = P_blended
-        elif "pooled_output" in ref_meta:
-            del ref_meta["pooled_output"]
-
-        blended_conditioning = [[C_blended, ref_meta]]
+        blended_conditioning = []
+        for schedule_index in range(next(iter(schedule_lengths))):
+            entries = [conditioning[schedule_index] for conditioning in active_conds]
+            dtype = entries[0][0].dtype
+            sequence_tensors = {}
+            pooled_tensors = {}
+            for index, (tensor, metadata) in enumerate(entries):
+                key = chr(97 + index)
+                sequence_tensors[key] = comfy.model_management.cast_to_device(tensor, device, dtype)
+                pooled = metadata.get("pooled_output") if metadata else None
+                pooled_tensors[key] = (
+                    comfy.model_management.cast_to_device(pooled, device, dtype) if pooled is not None else None
+                )
+            C_blended, P_blended = blend_text_vectors(
+                sequence_tensors,
+                text_blend_config,
+                pooled_tensors=pooled_tensors,
+                device=str(device),
+            )
+            metadata = compatible_metadata([entry[1] for entry in entries])
+            if P_blended is not None:
+                metadata["pooled_output"] = P_blended
+            blended_conditioning.append([C_blended, metadata])
         return io.NodeOutput(blended_conditioning)
 
 class UC_ScaledBiasTextEncodeFlux2SystemPrompt(io.ComfyNode):
@@ -1759,7 +1783,37 @@ SYSTEM_PROMPT_TEMPLATES = {
         "prefix": "<|im_start|>system\n",
         "suffix": "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
     },
+    "krea2": {
+        "prefix": "<|im_start|>system\n",
+        "suffix": "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+    },
 }
+
+
+def system_prompt_template(model_type, system_prompt, thinking_content=""):
+    if model_type == "klein" and thinking_content:
+        if system_prompt:
+            return (
+                f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                "<|im_start|>user\n{}<|im_end|>\n"
+                f"<|im_start|>assistant\n<think>\n{thinking_content}\n</think>\n\n"
+            ), True
+        return (
+            "<|im_start|>user\n{}<|im_end|>\n"
+            f"<|im_start|>assistant\n<think>\n{thinking_content}\n</think>\n\n"
+        ), True
+    if model_type == "z-image-thinking" and thinking_content:
+        system_block = f"<|im_start|>system\n{system_prompt}<|im_end|>\n" if system_prompt else ""
+        return (
+            system_block
+            + "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n"
+            + f"{thinking_content}\n</think>\n\n"
+        ), False
+    if system_prompt:
+        template_key = "z-image" if model_type == "z-image-thinking" else model_type
+        template = SYSTEM_PROMPT_TEMPLATES.get(template_key, SYSTEM_PROMPT_TEMPLATES["flux2dev"])
+        return f"{template['prefix']}{system_prompt}{template['suffix']}", model_type == "klein"
+    return None, False
 
 
 class UC_TextEncodeSystemPrompt(io.ComfyNode):
@@ -1772,7 +1826,7 @@ class UC_TextEncodeSystemPrompt(io.ComfyNode):
                 io.Clip.Input("clip"),
                 io.Combo.Input(
                     "model_type",
-                    options=["flux2dev", "klein", "z-image"],
+                    options=["flux2dev", "klein", "krea2", "z-image", "z-image-thinking"],
                     default="flux2dev",
                     tooltip="Select the model type to use the correct template format.",
                 ),
@@ -1783,7 +1837,7 @@ class UC_TextEncodeSystemPrompt(io.ComfyNode):
                     multiline=True,
                     dynamic_prompts=True,
                     default="",
-                    tooltip="(Klein only) Custom thinking content to inject. Leave empty for default.",
+                    tooltip="Custom thinking content for Klein or the z-image-thinking profile. Leave empty for the model default.",
                 ),
             ],
             outputs=[
@@ -1793,33 +1847,48 @@ class UC_TextEncodeSystemPrompt(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip, model_type, prompt, system_prompt="", thinking_content="") -> io.NodeOutput:
-        if model_type == "klein" and len(thinking_content) > 0:
-            # Klein with custom thinking content
-            if len(system_prompt) > 0:
-                llama_template = (
-                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n" +
-                    f"<|im_start|>user\n{{}}<|im_end|>\n" +
-                    f"<|im_start|>assistant\n<think>\n{thinking_content}\n</think>\n\n"
-                )
-            else:
-                llama_template = (
-                    "<|im_start|>user\n{}<|im_end|>\n" +
-                    f"<|im_start|>assistant\n<think>\n{thinking_content}\n</think>\n\n"
-                )
-            tokens = clip.tokenize(prompt, llama_template=llama_template, skip_template=True)
-        elif len(system_prompt) > 0:
-            template = SYSTEM_PROMPT_TEMPLATES.get(model_type, SYSTEM_PROMPT_TEMPLATES["flux2dev"])
-            llama_template = f"{template['prefix']}{system_prompt}{template['suffix']}"
-            # If klein was chosen but without custom thinking_content, it uses the SYSTEM_PROMPT_TEMPLATES definition
-            # which has an empty thinking block pre-defined inside suffix: "<think>\n\n</think>\n\n".
-            # We must skip template to prevent the core from appending another redundant think block!
-            skip_template = (model_type == "klein")
-            tokens = clip.tokenize(prompt, llama_template=llama_template, skip_template=skip_template)
-        else:
+        llama_template, skip_template = system_prompt_template(model_type, system_prompt, thinking_content)
+        if llama_template is None:
             tokens = clip.tokenize(prompt)
+        else:
+            tokens = clip.tokenize(prompt, llama_template=llama_template, skip_template=skip_template)
 
         conditioning = clip.encode_from_tokens_scheduled(tokens)
         return io.NodeOutput(conditioning)
+
+
+class UC_WeightedTextEncodeSystemPrompt(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_WeightedTextEncodeSystemPrompt",
+            display_name="Weighted System Prompt Text Encode",
+            category="advanced/conditioning",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.Combo.Input(
+                    "model_type",
+                    options=["flux2dev", "klein", "krea2", "z-image", "z-image-thinking"],
+                    default="flux2dev",
+                ),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.String.Input("thinking_content", multiline=True, dynamic_prompts=True, default=""),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1),
+            ],
+            outputs=[io.Conditioning.Output()],
+        )
+
+    @classmethod
+    def execute(cls, clip, model_type, prompt, system_prompt="", thinking_content="", multiplier=1.0):
+        llama_template, skip_template = system_prompt_template(model_type, system_prompt, thinking_content)
+        conditioning = encode_embedding_classical_scaled_bias(
+            clip,
+            prompt,
+            llama_template=llama_template,
+            skip_template=skip_template,
+        )
+        return io.NodeOutput(multiply_conditioning(conditioning, multiplier))
 
 
 
@@ -1844,7 +1913,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main user text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
+                    tooltip="Main prompt. With fusion off, image_input_N places active image N inline. With fusion on, use image_input_fusion (image_input_1 is accepted as an alias).",
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
                 io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
@@ -1863,7 +1932,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     "formula",
                     default="a",
                     multiline=False,
-                    tooltip="Mathematical formula to blend conditioning outputs. Active ONLY if visual_fusion_config is disconnected or set to 'off'. Use variables a, b, c, d... to reference active connected image inputs.",
+                    tooltip="Mathematical formula used with fusion off when no numbered inline placeholders are present. Use a, b, c, d... for active image passes.",
                 ),
                 io.Combo.Input(
                     "padding_method",
@@ -1896,22 +1965,47 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
+        def format_krea_prompt(user_prompt):
+            if system_prompt:
+                return (
+                    "<|im_start|>user\n<|im_end|>\n"
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                )
+            return (
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n"
+                f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+
         if not active_images:
             # Fallback if no images are connected: encode prompt as plain text
-            conditioning = encode_embedding_classical_scaled_bias(clip, prompt, multiplier=multiplier)
+            logging.warning("AdvancedVisualConditioning: no images are connected; encoding the prompt as text only.")
+            clean_prompt, _ = prepare_image_placeholder_prompt(
+                prompt,
+                image_count=0,
+                fusion_active=False,
+                context="AdvancedVisualConditioning",
+            )
+            full_prompt = format_krea_prompt(clean_prompt)
+            conditioning = multiply_conditioning(
+                encode_embedding_classical_scaled_bias(clip, full_prompt, skip_template=True),
+                multiplier,
+            )
             return io.NodeOutput(conditioning)
 
         # Map active images sequentially to letter variables (a, b, c, ...) and encode each pass
         sequence_tensors = {}
         pooled_tensors = {}
-        deepstack_dict = {}
         visual_ranges = {}
         tokens_dict = {}
-        last_cond_dict = None
+        reference_cond_dict = None
 
         if visual_fusion_config is None:
-            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5, "seed": 0}
-        visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
+            visual_fusion_config = {"visual_fusion_method": "off"}
+        visual_method = visual_fusion_config.get("visual_fusion_method", "off")
+        visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
 
         def process_vlm_image(image, res):
             if image is None:
@@ -1937,32 +2031,76 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
                 return s_vlm.movedim(1, -1)
 
-        for idx, img in enumerate(active_images):
+        processed_active_images = [process_vlm_image(image, vlm_resolution) for image in active_images]
+        prepared_prompt, inline_numbers = prepare_image_placeholder_prompt(
+            prompt,
+            image_count=len(processed_active_images),
+            fusion_active=visual_method != "off",
+            context="AdvancedVisualConditioning",
+        )
+
+        inline_mode = False
+        if visual_method == "off" and inline_numbers:
+            inline_images = [processed_active_images[number - 1] for number in inline_numbers]
+            inline_prompt = format_krea_prompt(prepared_prompt)
+            if strip_contextual_weight_syntax(inline_prompt) != inline_prompt:
+                logging.warning(
+                    "AdvancedVisualConditioning: custom contextual vector scaling is disabled for native multi-image inline encoding."
+                )
+            try:
+                inline_tokens = clip.tokenize(inline_prompt, images=inline_images, skip_template=True)
+                inline_cond = clip.encode_from_tokens_scheduled(inline_tokens)
+                if len(inline_cond) != 1:
+                    raise ValueError("Inline image encoding requires a single conditioning schedule entry.")
+            except (TypeError, ValueError) as exc:
+                logging.warning(
+                    "AdvancedVisualConditioning: inline placeholder encoding failed (%s); falling back to per-image formula encoding.",
+                    exc,
+                )
+                prepared_prompt, _ = prepare_image_placeholder_prompt(
+                    prompt,
+                    image_count=0,
+                    fusion_active=False,
+                    context="AdvancedVisualConditioning fallback",
+                )
+            except Exception:
+                logging.exception("AdvancedVisualConditioning: inline image encoding failed and cannot be safely recovered.")
+                raise
+            else:
+                inline_mode = True
+                sequence_tensors["a"] = inline_cond[0][0]
+                pooled_output = inline_cond[0][1].get("pooled_output")
+                if pooled_output is not None:
+                    pooled_tensors["a"] = pooled_output
+                reference_cond_dict = inline_cond[0][1]
+                if formula.strip() != "a":
+                    logging.warning(
+                        "AdvancedVisualConditioning: numbered inline placeholders encode one native multimodal sequence; formula '%s' was ignored.",
+                        formula,
+                    )
+                formula = "a"
+
+        multipass_images = [] if inline_mode else processed_active_images
+
+        for idx, processed_img in enumerate(multipass_images):
             letter = chr(97 + idx)  # 0 -> 'a', 1 -> 'b', 2 -> 'c', ...
-            processed_img = process_vlm_image(img, vlm_resolution)
 
             # Ensure prompt has image pad tokens so tokenizer knows where to inject the image
-            modified_prompt = prompt
-            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
-                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
-
-            # Wrap in Llama/Krea2 system prompt template format
-            if len(system_prompt) > 0:
-                full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
-                    "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
-            else:
-                full_prompt = (
-                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                    "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
+            modified_prompt = prepared_prompt
+            if not any(tag in modified_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
+                modified_prompt = VISION_BLOCK + modified_prompt
+            full_prompt = format_krea_prompt(modified_prompt)
 
             # Encode individual sequence pass
-            cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
+            cond_X = encode_embedding_classical_scaled_bias(
+                clip,
+                full_prompt,
+                images=[processed_img],
+                skip_template=True,
+                visual_encoder_path=visual_encoder_path if visual_method != "off" else "grid-deepstack",
+            )
+            if len(cond_X) != 1:
+                raise ValueError("Advanced visual fusion requires a single conditioning schedule entry.")
             C_X = cond_X[0][0]
             P_X = cond_X[0][1].get("pooled_output", None)
 
@@ -1974,18 +2112,17 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 try:
                     tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
                     tokens_dict[letter] = tokens
-                    vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                    vis_start, vis_end = find_visual_token_range(
+                        tokens,
+                        C_X,
+                        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                    )
                     visual_ranges[letter] = (vis_start, vis_end)
                 except Exception as e:
                     raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
-            # Extract DeepStack per-layer tensors if present
-            if "embeds_info" in cond_X[0][1] and len(cond_X[0][1]["embeds_info"]) > 0:
-                extra = cond_X[0][1]["embeds_info"][0].get("extra", {})
-                if "deepstack" in extra:
-                    deepstack_dict[letter] = extra["deepstack"]
-
-            last_cond_dict = cond_X[0][1]
+            if reference_cond_dict is None:
+                reference_cond_dict = cond_X[0][1]
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
         fusion_mask_cache = {}
@@ -2002,46 +2139,14 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
-        # Evaluate mathematical formula on DeepStack layers
-        deepstack_blended = None
-        if deepstack_dict:
-            if visual_method != "off":
-                expected_visual_length = max(end - start for start, end in visual_ranges.values())
-                deepstack_blended = fuse_deepstack_layers(deepstack_dict, visual_fusion_config, device, fusion_mask_cache, expected_visual_length)
-            else:
-                first_key = next(iter(sequence_tensors.keys()))
-                num_layers = len(deepstack_dict[first_key])
-                max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
-                deepstack_blended = []
-                for l in range(num_layers):
-                    layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
-                    aligned_layer_tensors = {}
-                    for name, tensor in layer_tensors.items():
-                        if tensor.shape[0] < max_vis_len:
-                            if padding_method == "interpolate":
-                                tensor_perm = tensor.permute(1, 0).unsqueeze(0)
-                                tensor = F.interpolate(tensor_perm, size=max_vis_len, mode="linear", align_corners=False).squeeze(0).permute(1, 0)
-                            else:
-                                padding = torch.zeros((max_vis_len - tensor.shape[0], tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
-                                tensor = torch.cat([tensor, padding], dim=0)
-                        aligned_layer_tensors[name] = tensor
-
-                    safe_dict_layer = {"__builtins__": {}, "clamp": torch.clamp, "min": torch.minimum, "max": torch.maximum, "abs": torch.abs, **aligned_layer_tensors}
-                    layer_expression = re.sub(r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)", r"(\1 * \2)", formula)
-                    try:
-                        deepstack_blended.append(eval(layer_expression, safe_dict_layer, {}))  # noqa: S307
-                    except Exception as e:
-                        raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
-
         # Build final conditioning dictionary
-        final_cond_dict = last_cond_dict.copy()
+        final_cond_dict = reference_cond_dict.copy()
+        attention_mask = final_cond_dict.get("attention_mask")
+        if torch.is_tensor(attention_mask) and attention_mask.shape[-1] != C_blended.shape[1]:
+            final_cond_dict.pop("attention_mask", None)
+            final_cond_dict.pop("attention_mask_img_shape", None)
         if P_blended is not None:
             final_cond_dict["pooled_output"] = P_blended
-
-        if deepstack_blended is not None and "embeds_info" in final_cond_dict and len(final_cond_dict["embeds_info"]) > 0:
-            final_cond_dict["embeds_info"] = [final_cond_dict["embeds_info"][0].copy()]
-            final_cond_dict["embeds_info"][0]["extra"] = final_cond_dict["embeds_info"][0]["extra"].copy()
-            final_cond_dict["embeds_info"][0]["extra"]["deepstack"] = deepstack_blended
 
         if multiplier != 1.0:
             C_blended *= multiplier
@@ -2157,7 +2262,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
 
         if not active_images:
             # Fallback if no images are connected: encode prompt as plain text
-            conditioning = encode_embedding_classical_scaled_bias(clip, prompt, multiplier=multiplier)
+            conditioning = multiply_conditioning(encode_embedding_classical_scaled_bias(clip, prompt), multiplier)
             return io.NodeOutput(conditioning)
 
         # Map active images sequentially to letter variables (a, b, c, ...) and encode each pass
@@ -2165,11 +2270,12 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         pooled_tensors = {}
         visual_ranges = {}
         tokens_dict = {}
-        last_cond_dict = None
+        reference_cond_dict = None
 
         if visual_fusion_config is None:
-            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5, "seed": 0}
-        visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
+            visual_fusion_config = {"visual_fusion_method": "off"}
+        visual_method = visual_fusion_config.get("visual_fusion_method", "off")
+        visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
 
         def process_vlm_image(image, res):
             if image is None:
@@ -2205,7 +2311,14 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
             # Encode individual sequence pass
-            cond_X = encode_embedding_classical_scaled_bias(clip, modified_prompt, images=[processed_img])
+            cond_X = encode_embedding_classical_scaled_bias(
+                clip,
+                modified_prompt,
+                images=[processed_img],
+                visual_encoder_path=visual_encoder_path if visual_method != "off" else "grid-deepstack",
+            )
+            if len(cond_X) != 1:
+                raise ValueError("Advanced visual fusion requires a single conditioning schedule entry.")
             C_X = cond_X[0][0]
             P_X = cond_X[0][1].get("pooled_output", None)
 
@@ -2217,12 +2330,17 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 try:
                     tokens = clip.tokenize(modified_prompt, images=[processed_img], skip_template=True)
                     tokens_dict[letter] = tokens
-                    vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                    vis_start, vis_end = find_visual_token_range(
+                        tokens,
+                        C_X,
+                        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                    )
                     visual_ranges[letter] = (vis_start, vis_end)
                 except Exception as e:
                     raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
-            last_cond_dict = cond_X[0][1]
+            if reference_cond_dict is None:
+                reference_cond_dict = cond_X[0][1]
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
         fusion_mask_cache = {}
@@ -2240,7 +2358,11 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
         # Build final conditioning dictionary
-        final_cond_dict = last_cond_dict.copy()
+        final_cond_dict = reference_cond_dict.copy()
+        attention_mask = final_cond_dict.get("attention_mask")
+        if torch.is_tensor(attention_mask) and attention_mask.shape[-1] != C_blended.shape[1]:
+            final_cond_dict.pop("attention_mask", None)
+            final_cond_dict.pop("attention_mask_img_shape", None)
         if P_blended is not None:
             final_cond_dict["pooled_output"] = P_blended
 
@@ -2306,7 +2428,7 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                 io.Boolean.Input(
                     "slice_visual_tokens",
                     default=False,
-                    tooltip="If True, performs perfect visual slicing (Method A) to cut out visual tokens, saving a pure language embedding. If False (default), preserves the full interleaved sequence including visual tokens.",
+                    tooltip="If True, removes the first validated visual-token span. If False, preserves the full interleaved sequence.",
                 ),
             ],
             outputs=[
@@ -2451,7 +2573,7 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
             state_dict = {key_name: tensor_2d}
 
             # Save the safetensors file (ensure nested directories exist)
-            target_path = os.path.join(embeddings_dir, f"{f_name}.safetensors")
+            target_path = resolve_embedding_output_path(embeddings_dir, f"{f_name}.safetensors")
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
             state_dict_safe = {k: v.contiguous() for k, v in state_dict.items()}
@@ -2493,7 +2615,7 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                 io.Boolean.Input(
                     "slice_visual_tokens",
                     default=False,
-                    tooltip="If True, performs perfect visual slicing (Method A) to cut out visual tokens, saving a pure language embedding. If False (default), preserves the full interleaved sequence including visual tokens.",
+                    tooltip="If True, removes the first validated visual-token span. If False, preserves the full interleaved sequence.",
                 ),
             ],
             outputs=[
@@ -2641,7 +2763,7 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
             state_dict = {key_name: tensor_2d}
 
             # Save the safetensors file (ensure nested directories exist)
-            target_path = os.path.join(embeddings_dir, f"{f_name}.safetensors")
+            target_path = resolve_embedding_output_path(embeddings_dir, f"{f_name}.safetensors")
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
             state_dict_safe = {k: v.contiguous() for k, v in state_dict.items()}
@@ -2690,14 +2812,14 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main user text prompt.",
+                    tooltip="Main prompt. Fusion accepts image_input_fusion or image_input_1 for its single visual slot. Numbered multi-image inline placement is intentionally unavailable in this attention node.",
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
                 io.String.Input(
                     "attention_weights",
                     multiline=False,
                     default="",
-                    tooltip="Space-separated list of weighted words/phrases. Example: (arms:1.5) (painting:-1) (photo:2)",
+                    tooltip="Space-separated non-negative attention odds weights. Example: (arms:1.5) (painting:0) (photo:2)",
                 ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
                 io.Combo.Input(
@@ -2743,6 +2865,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 io.Model.Output(),
                 io.Conditioning.Output(),
             ],
+            is_experimental=True,
         )
 
     @classmethod
@@ -2753,14 +2876,57 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         # 1. Parse weights from the attention_weights widget using regex
         pattern = re.compile(r"\(([^():]+):(-?\d*\.?\d+)\)")
         terms = [(m.group(1).strip(), float(m.group(2))) for m in pattern.finditer(attention_weights)]
+        if any(not math.isfinite(weight) or weight < 0 for _, weight in terms):
+            raise ValueError("Krea2 attention weights must be finite and non-negative.")
 
-        # Prompt inputs remain as untouched plain-text strings
-        clean_prompt = prompt
-        clean_system_prompt = system_prompt
+        weighted_prompt = prompt
+        weighted_system_prompt = system_prompt
+
+        def format_krea_prompt(user_text, system_text):
+            if system_text:
+                return (
+                    "<|im_start|>user\n<|im_end|>\n"
+                    f"<|im_start|>system\n{system_text}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_text}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                )
+            return (
+                "<|im_start|>user\n<|im_end|>\n"
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n"
+                f"<|im_start|>user\n{user_text}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+
+        def add_image_marker(user_text):
+            if any(tag in user_text for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
+                return user_text
+            return "<|vision_start|><|image_pad|><|vision_end|>" + user_text
 
         if visual_fusion_config is None:
-            visual_fusion_config = {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 2, "dither_ratio": 0.5, "seed": 0}
-        visual_method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
+            visual_fusion_config = {"visual_fusion_method": "off"}
+        visual_method = visual_fusion_config.get("visual_fusion_method", "off")
+        visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
+
+        if active_images and visual_method != "off":
+            weighted_prompt, _ = prepare_image_placeholder_prompt(
+                weighted_prompt,
+                image_count=len(active_images),
+                fusion_active=True,
+                context="Krea2TokenAttentionWeight",
+            )
+        elif re.search(r"\bimage_input_(?:fusion|\d+)\b", weighted_prompt, re.IGNORECASE):
+            logging.warning(
+                "Krea2TokenAttentionWeight: numbered inline images are not supported because attention positions cannot be mapped safely across multiple visual spans; using the existing per-image path."
+            )
+            weighted_prompt, _ = prepare_image_placeholder_prompt(
+                weighted_prompt,
+                image_count=0,
+                fusion_active=False,
+                context="Krea2TokenAttentionWeight",
+            )
+
+        clean_prompt = strip_contextual_weight_syntax(weighted_prompt)
+        clean_system_prompt = strip_contextual_weight_syntax(weighted_system_prompt)
 
         def process_vlm_image(image, res):
             if image is None:
@@ -2791,40 +2957,14 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             first_img = active_images[0]
             processed_first_img = process_vlm_image(first_img, vlm_resolution)
 
-            modified_clean_prompt = clean_prompt
-            if not any(tag in clean_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
-                modified_clean_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_clean_prompt
-
-            if len(clean_system_prompt) > 0:
-                clean_full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
-                    "<|im_start|>user\n" + modified_clean_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
-            else:
-                clean_full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                    "<|im_start|>user\n" + modified_clean_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
+            modified_clean_prompt = add_image_marker(clean_prompt)
+            modified_weighted_prompt = add_image_marker(weighted_prompt)
+            clean_full_prompt = format_krea_prompt(modified_clean_prompt, clean_system_prompt)
+            weighted_full_prompt = format_krea_prompt(modified_weighted_prompt, weighted_system_prompt)
             tok = clip.tokenize(clean_full_prompt, images=[processed_first_img], skip_template=True)
         else:
-            if len(clean_system_prompt) > 0:
-                clean_full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
-                    "<|im_start|>user\n" + clean_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
-            else:
-                clean_full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                    "<|im_start|>user\n" + clean_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
+            clean_full_prompt = format_krea_prompt(clean_prompt, clean_system_prompt)
+            weighted_full_prompt = format_krea_prompt(weighted_prompt, weighted_system_prompt)
             tok = clip.tokenize(clean_full_prompt, skip_template=True)
 
         key = next(iter(tok))
@@ -2841,36 +2981,11 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         cond = clip.encode_from_tokens_scheduled(tok)
         cond_len = cond[0][0].shape[1]
 
-        # Count text vs image tokens for mapping
-        text_token_count = 0
-        image_token_count = 0
-        for t in token_list:
-            if is_image_token(t):
-                image_token_count += 1
-            else:
-                text_token_count += 1
-
-        if image_token_count > 0:
-            V = (cond_len - text_token_count) // image_token_count
-        else:
-            V = 1
-
-        mapping = []
-        current_idx = 0
-        for t in token_list:
-            is_img = is_image_token(t)
-            size = V if is_img else 1
-            start = current_idx
-            end = current_idx + size
-            mapping.append((start, end))
-            current_idx = end
+        mapping = build_token_to_conditioning_map(token_list, cond[0][0])
 
         weight_pairs = []
         for phrase, w in terms:
-            if w > 1.0:
-                v_factor, k_bias = 1.0, strength * (w - 1.0) * 2.0
-            else:
-                v_factor, k_bias = 1.0 + strength * (w - 1.0), 0.0
+            k_bias = math.log(max(w, 1e-6)) * strength
             positions = []
             for variant in (" " + phrase, phrase):
                 sub = krea2_token_ids(clip, variant)
@@ -2890,7 +3005,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 continue
             for cp in positions:
                 if 0 <= cp < cond_len:
-                    weight_pairs.append((cp, v_factor, k_bias))
+                    weight_pairs.append((cp, k_bias))
 
         # 3. Patch model
         model_clone = model.clone()
@@ -2910,35 +3025,26 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         if active_images:
             sequence_tensors = {}
             pooled_tensors = {}
-            deepstack_dict = {}
             visual_ranges = {}
             tokens_dict = {}
-            last_cond_dict = None
+            reference_cond_dict = None
 
             for idx, img in enumerate(active_images):
                 letter = chr(97 + idx)
                 processed_img = process_vlm_image(img, vlm_resolution)
 
-                modified_prompt = clean_prompt
-                if not any(tag in clean_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
-                    modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+                clean_pass_prompt = format_krea_prompt(add_image_marker(clean_prompt), clean_system_prompt)
+                weighted_pass_prompt = format_krea_prompt(add_image_marker(weighted_prompt), weighted_system_prompt)
 
-                if len(clean_system_prompt) > 0:
-                    full_prompt = (
-                        "<|im_start|>user\n" + "<|im_end|>\n" +
-                        "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
-                        "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                        "<|im_start|>assistant\n"
-                    )
-                else:
-                    full_prompt = (
-                        "<|im_start|>user\n" + "<|im_end|>\n" +
-                        "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                        "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                        "<|im_start|>assistant\n"
-                    )
-
-                cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
+                cond_X = encode_embedding_classical_scaled_bias(
+                    clip,
+                    weighted_pass_prompt,
+                    images=[processed_img],
+                    skip_template=True,
+                    visual_encoder_path=visual_encoder_path,
+                )
+                if len(cond_X) != 1:
+                    raise ValueError("Krea2 attention visual fusion requires a single conditioning schedule entry.")
                 C_X = cond_X[0][0]
                 P_X = cond_X[0][1].get("pooled_output", None)
 
@@ -2948,19 +3054,19 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
 
                 if visual_method != "off":
                     try:
-                        tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
+                        tokens = clip.tokenize(clean_pass_prompt, images=[processed_img], skip_template=True)
                         tokens_dict[letter] = tokens
-                        vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                        vis_start, vis_end = find_visual_token_range(
+                            tokens,
+                            C_X,
+                            legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                        )
                         visual_ranges[letter] = (vis_start, vis_end)
                     except Exception as e:
                         raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
-                if "embeds_info" in cond_X[0][1] and len(cond_X[0][1]["embeds_info"]) > 0:
-                    extra = cond_X[0][1]["embeds_info"][0].get("extra", {})
-                    if "deepstack" in extra:
-                        deepstack_dict[letter] = extra["deepstack"]
-
-                last_cond_dict = cond_X[0][1]
+                if reference_cond_dict is None:
+                    reference_cond_dict = cond_X[0][1]
 
             fusion_mask_cache = {}
             if visual_method != "off":
@@ -2976,45 +3082,14 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             else:
                 C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
 
-            deepstack_blended = None
-            if deepstack_dict:
-                if visual_method != "off":
-                    expected_visual_length = max(end - start for start, end in visual_ranges.values())
-                    deepstack_blended = fuse_deepstack_layers(deepstack_dict, visual_fusion_config, device, fusion_mask_cache, expected_visual_length)
-                else:
-                    first_key = next(iter(sequence_tensors.keys()))
-                    num_layers = len(deepstack_dict[first_key])
-                    max_vis_len = max(ds_list[0].shape[0] for ds_list in deepstack_dict.values())
-                    deepstack_blended = []
-                    for l in range(num_layers):
-                        layer_tensors = {let: ds_list[l] for let, ds_list in deepstack_dict.items()}
-                        aligned_layer_tensors = {}
-                        for name, tensor in layer_tensors.items():
-                            if tensor.shape[0] < max_vis_len:
-                                if padding_method == "interpolate":
-                                    tensor_perm = tensor.permute(1, 0).unsqueeze(0)
-                                    tensor = F.interpolate(tensor_perm, size=max_vis_len, mode="linear", align_corners=False).squeeze(0).permute(1, 0)
-                                else:
-                                    padding = torch.zeros((max_vis_len - tensor.shape[0], tensor.shape[1]), device=tensor.device, dtype=tensor.dtype)
-                                    tensor = torch.cat([tensor, padding], dim=0)
-                            aligned_layer_tensors[name] = tensor
-
-                        safe_dict_layer = {"__builtins__": {}, "clamp": torch.clamp, "min": torch.minimum, "max": torch.maximum, "abs": torch.abs, **aligned_layer_tensors}
-                        layer_expression = re.sub(r"\(\s*([a-zA-Z0-9_]+)\s*:\s*([0-9.-]+)\s*\)", r"(\1 * \2)", formula)
-                        try:
-                            deepstack_blended.append(eval(layer_expression, safe_dict_layer, {}))  # noqa: S307
-                        except Exception as e:
-                            raise RuntimeError(f"Error evaluating DeepStack math expression at layer {l}: {e}")
-
             # Build final conditioning dictionary
-            final_cond_dict = last_cond_dict.copy()
+            final_cond_dict = reference_cond_dict.copy()
+            attention_mask = final_cond_dict.get("attention_mask")
+            if torch.is_tensor(attention_mask) and attention_mask.shape[-1] != C_blended.shape[1]:
+                final_cond_dict.pop("attention_mask", None)
+                final_cond_dict.pop("attention_mask_img_shape", None)
             if P_blended is not None:
                 final_cond_dict["pooled_output"] = P_blended
-
-            if deepstack_blended is not None and "embeds_info" in final_cond_dict and len(final_cond_dict["embeds_info"]) > 0:
-                final_cond_dict["embeds_info"] = [final_cond_dict["embeds_info"][0].copy()]
-                final_cond_dict["embeds_info"][0]["extra"] = final_cond_dict["embeds_info"][0]["extra"].copy()
-                final_cond_dict["embeds_info"][0]["extra"]["deepstack"] = deepstack_blended
 
             if multiplier != 1.0:
                 C_blended *= multiplier
@@ -3023,7 +3098,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
 
             conditioning = [[C_blended, final_cond_dict]]
         else:
-            conditioning = encode_embedding_classical_scaled_bias(clip, clean_full_prompt)
+            conditioning = encode_embedding_classical_scaled_bias(clip, weighted_full_prompt, skip_template=True)
             if multiplier != 1.0:
                 for i in range(len(conditioning)):
                     conditioning[i][0] *= multiplier
@@ -3063,5 +3138,98 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
 
         return io.NodeOutput(model_clone, conditioning)
+
+
+# Canonical 0.10 node IDs. Compatibility classes below remain registered for
+# one release and delegate to the same execution implementations.
+class UC_TextEncodeSystemEditAdvanced(TextEncodeSystemEditPlusAdvanced):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "UC_TextEncodeSystemEditAdvanced"
+        schema.display_name = "System Edit Text Encode (Advanced)"
+        schema.is_deprecated = False
+        return schema
+
+
+class UC_TextEncodeGemmaSystemEditAdvanced(TextEncodeGemmaSystemEditPlusAdvanced):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "UC_TextEncodeGemmaSystemEditAdvanced"
+        schema.display_name = "Gemma System Edit Text Encode (Advanced)"
+        schema.is_deprecated = False
+        return schema
+
+
+class UC_AdvancedVisualConditioningEncode(TextEncodeKrea2SystemEditScaledAdv):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "UC_AdvancedVisualConditioningEncode"
+        schema.display_name = "Advanced Visual Conditioning Encode"
+        schema.is_deprecated = False
+        # Model-backed validation is required before this can be stable.
+        schema.is_experimental = True
+        return schema
+
+
+class UC_VLMInputEmbeds(UC_Qwen3VLInputEmbeds):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "UC_VLMInputEmbeds"
+        schema.display_name = "VLM Input Embedding Export"
+        schema.is_deprecated = False
+        return schema
+
+
+class UC_Krea2TokenAttentionWeight(TextEncodeKrea2SysEditScaledAdvAttn):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "UC_Krea2TokenAttentionWeight"
+        schema.display_name = "Krea2 Token Attention Weight"
+        schema.is_deprecated = False
+        schema.is_experimental = True
+        return schema
+
+
+def _mark_deprecated_node(node_class):
+    original = node_class.define_schema.__func__
+
+    @classmethod
+    def deprecated_schema(cls):
+        schema = original(cls)
+        schema.is_deprecated = True
+        return schema
+
+    node_class.define_schema = deprecated_schema
+
+
+for _deprecated_node in (
+    UC_TextEncodeFlux2SystemPrompt,
+    UC_TextEncodeKleinSystemPrompt,
+    UC_TextEncodeKrea2SystemPrompt,
+    UC_TextEncodeZITSystemPrompt,
+    UC_TextEncodeZImageThinkPrompt,
+    UC_ScaledBiasTextEncodeFlux2SystemPrompt,
+    UC_ScaledBiasTextEncodeKleinSystemPrompt,
+    UC_ScaledBiasTextEncodeLtxv2SystemPrompt,
+    UC_ScaledBiasTextEncodeZITSystemPrompt,
+    UC_ScaledBiasTextEncodeZImageThinkPrompt,
+    UC_ScaledBiasTextEncodeSystemPrompt,
+    TextEncodeSystemEditPlus,
+    TextEncodeSystemEditPlusAdvanced,
+    TextEncodeKrea2SystemEditPlusAdvanced,
+    TextEncodeEditPlusAdvanced,
+    TextEncodeKrea2SystemEditScaledAdv,
+    TextEncodeEditScaledAdv,
+    TextEncodeGemmaSystemEditPlusAdvanced,
+    UC_Krea2InputEmbeds,
+    UC_Qwen3VLInputEmbeds,
+    TextEncodeKrea2SysEditScaledAdvAttn,
+):
+    _mark_deprecated_node(_deprecated_node)
 
 
