@@ -109,6 +109,46 @@ def test_contextual_weight_syntax_clean_text_matches_encoder_input():
     assert encoder_helpers.strip_contextual_weight_syntax("a (painting:-1) and ((light:2):0.5)") == "a painting and light"
 
 
+def test_numbered_image_placeholders_preserve_prompt_order_and_strip_invalid(caplog):
+    prompt, numbers = encoder_helpers.prepare_image_placeholder_prompt(
+        "first image_input_2 then IMAGE_INPUT_1 repeat image_input_2 missing image_input_3 image_input_fusion",
+        image_count=2,
+        fusion_active=False,
+        context="test",
+    )
+
+    assert numbers == (2, 1, 2)
+    assert prompt.count(encoder_helpers.VISION_BLOCK) == 3
+    assert "image_input_" not in prompt.lower()
+    assert "stripped unavailable or fusion-only" in caplog.text
+
+
+def test_fusion_placeholder_uses_one_slot_and_strips_the_rest(caplog):
+    prompt, numbers = encoder_helpers.prepare_image_placeholder_prompt(
+        "ignored image_input_1 chosen image_input_fusion removed image_input_2",
+        image_count=2,
+        fusion_active=True,
+        context="test",
+    )
+
+    assert numbers == ()
+    assert prompt.count(encoder_helpers.VISION_BLOCK) == 1
+    assert "image_input_" not in prompt.lower()
+    assert "stripped 2 additional" in caplog.text
+
+
+def test_fusion_placeholder_accepts_image_one_alias_and_logs_fallback(caplog):
+    prompt, _ = encoder_helpers.prepare_image_placeholder_prompt(
+        "near image_input_1 subject",
+        image_count=3,
+        fusion_active=True,
+        context="test",
+    )
+
+    assert prompt == f"near {encoder_helpers.VISION_BLOCK} subject"
+    assert "treating image_input_1 as image_input_fusion" in caplog.text
+
+
 def test_canonical_and_compatibility_schema_flags():
     assert UC_AttentionBiasTextEncode.define_schema().is_experimental
     assert UC_Krea2TokenAttentionWeight.define_schema().is_experimental

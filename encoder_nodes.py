@@ -31,6 +31,8 @@ from .encoder_helpers import(
     find_subsequence,
     krea2_attn_forward_weight,
     ImageInputMapping,
+    VISION_BLOCK,
+    prepare_image_placeholder_prompt,
     extract_and_flatten_images,
     resolve_embedding_output_path,
 )
@@ -1903,7 +1905,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main user text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
+                    tooltip="Main prompt. With fusion off, image_input_N places active image N inline. With fusion on, use image_input_fusion (image_input_1 is accepted as an alias).",
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
                 io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
@@ -1922,7 +1924,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     "formula",
                     default="a",
                     multiline=False,
-                    tooltip="Mathematical formula to blend conditioning outputs. Active ONLY if visual_fusion_config is disconnected or set to 'off'. Use variables a, b, c, d... to reference active connected image inputs.",
+                    tooltip="Mathematical formula used with fusion off when no numbered inline placeholders are present. Use a, b, c, d... for active image passes.",
                 ),
                 io.Combo.Input(
                     "padding_method",
@@ -1957,7 +1959,14 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
 
         if not active_images:
             # Fallback if no images are connected: encode prompt as plain text
-            conditioning = multiply_conditioning(encode_embedding_classical_scaled_bias(clip, prompt), multiplier)
+            logging.warning("AdvancedVisualConditioning: no images are connected; encoding the prompt as text only.")
+            clean_prompt, _ = prepare_image_placeholder_prompt(
+                prompt,
+                image_count=0,
+                fusion_active=False,
+                context="AdvancedVisualConditioning",
+            )
+            conditioning = multiply_conditioning(encode_embedding_classical_scaled_bias(clip, clean_prompt), multiplier)
             return io.NodeOutput(conditioning)
 
         # Map active images sequentially to letter variables (a, b, c, ...) and encode each pass
@@ -1995,29 +2004,79 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
                 return s_vlm.movedim(1, -1)
 
-        for idx, img in enumerate(active_images):
+        def format_krea_prompt(user_prompt):
+            if system_prompt:
+                return (
+                    "<|im_start|>user\n<|im_end|>\n"
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                )
+            return (
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n"
+                f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+
+        processed_active_images = [process_vlm_image(image, vlm_resolution) for image in active_images]
+        prepared_prompt, inline_numbers = prepare_image_placeholder_prompt(
+            prompt,
+            image_count=len(processed_active_images),
+            fusion_active=visual_method != "off",
+            context="AdvancedVisualConditioning",
+        )
+
+        inline_mode = False
+        if visual_method == "off" and inline_numbers:
+            inline_images = [processed_active_images[number - 1] for number in inline_numbers]
+            inline_prompt = format_krea_prompt(prepared_prompt)
+            if strip_contextual_weight_syntax(inline_prompt) != inline_prompt:
+                logging.warning(
+                    "AdvancedVisualConditioning: custom contextual vector scaling is disabled for native multi-image inline encoding."
+                )
+            try:
+                inline_tokens = clip.tokenize(inline_prompt, images=inline_images, skip_template=True)
+                inline_cond = clip.encode_from_tokens_scheduled(inline_tokens)
+                if len(inline_cond) != 1:
+                    raise ValueError("Inline image encoding requires a single conditioning schedule entry.")
+            except (TypeError, ValueError) as exc:
+                logging.warning(
+                    "AdvancedVisualConditioning: inline placeholder encoding failed (%s); falling back to per-image formula encoding.",
+                    exc,
+                )
+                prepared_prompt, _ = prepare_image_placeholder_prompt(
+                    prompt,
+                    image_count=0,
+                    fusion_active=False,
+                    context="AdvancedVisualConditioning fallback",
+                )
+            except Exception:
+                logging.exception("AdvancedVisualConditioning: inline image encoding failed and cannot be safely recovered.")
+                raise
+            else:
+                inline_mode = True
+                sequence_tensors["a"] = inline_cond[0][0]
+                pooled_output = inline_cond[0][1].get("pooled_output")
+                if pooled_output is not None:
+                    pooled_tensors["a"] = pooled_output
+                reference_cond_dict = inline_cond[0][1]
+                if formula.strip() != "a":
+                    logging.warning(
+                        "AdvancedVisualConditioning: numbered inline placeholders encode one native multimodal sequence; formula '%s' was ignored.",
+                        formula,
+                    )
+                formula = "a"
+
+        multipass_images = [] if inline_mode else processed_active_images
+
+        for idx, processed_img in enumerate(multipass_images):
             letter = chr(97 + idx)  # 0 -> 'a', 1 -> 'b', 2 -> 'c', ...
-            processed_img = process_vlm_image(img, vlm_resolution)
 
             # Ensure prompt has image pad tokens so tokenizer knows where to inject the image
-            modified_prompt = prompt
-            if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
-                modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
-
-            # Wrap in Llama/Krea2 system prompt template format
-            if len(system_prompt) > 0:
-                full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\n" + system_prompt + "<|im_end|>\n" +
-                    "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
-            else:
-                full_prompt = (
-                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                    "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
+            modified_prompt = prepared_prompt
+            if not any(tag in modified_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
+                modified_prompt = VISION_BLOCK + modified_prompt
+            full_prompt = format_krea_prompt(modified_prompt)
 
             # Encode individual sequence pass
             cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
@@ -2720,7 +2779,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main user text prompt.",
+                    tooltip="Main prompt. Fusion accepts image_input_fusion or image_input_1 for its single visual slot. Numbered multi-image inline placement is intentionally unavailable in this attention node.",
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
                 io.String.Input(
@@ -2789,8 +2848,6 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
 
         weighted_prompt = prompt
         weighted_system_prompt = system_prompt
-        clean_prompt = strip_contextual_weight_syntax(weighted_prompt)
-        clean_system_prompt = strip_contextual_weight_syntax(weighted_system_prompt)
 
         def format_krea_prompt(user_text, system_text):
             if system_text:
@@ -2815,6 +2872,27 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         if visual_fusion_config is None:
             visual_fusion_config = {"visual_fusion_method": "off"}
         visual_method = visual_fusion_config.get("visual_fusion_method", "off")
+
+        if active_images and visual_method != "off":
+            weighted_prompt, _ = prepare_image_placeholder_prompt(
+                weighted_prompt,
+                image_count=len(active_images),
+                fusion_active=True,
+                context="Krea2TokenAttentionWeight",
+            )
+        elif re.search(r"\bimage_input_(?:fusion|\d+)\b", weighted_prompt, re.IGNORECASE):
+            logging.warning(
+                "Krea2TokenAttentionWeight: numbered inline images are not supported because attention positions cannot be mapped safely across multiple visual spans; using the existing per-image path."
+            )
+            weighted_prompt, _ = prepare_image_placeholder_prompt(
+                weighted_prompt,
+                image_count=0,
+                fusion_active=False,
+                context="Krea2TokenAttentionWeight",
+            )
+
+        clean_prompt = strip_contextual_weight_syntax(weighted_prompt)
+        clean_system_prompt = strip_contextual_weight_syntax(weighted_system_prompt)
 
         def process_vlm_image(image, res):
             if image is None:

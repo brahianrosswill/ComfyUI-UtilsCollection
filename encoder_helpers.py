@@ -117,6 +117,77 @@ class ImageInputMapping(Enum):
         offset = cls.ZERO_INDEXED_OFFSET.value if is_zero_indexed else cls.ONE_INDEXED_OFFSET.value
         return num - offset
 
+
+_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\bimage_input_(fusion|\d+)\b", re.IGNORECASE)
+VISION_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
+
+
+def prepare_image_placeholder_prompt(prompt: str, image_count: int, fusion_active: bool, context: str) -> tuple[str, tuple[int, ...]]:
+    """Normalize custom image placeholders without leaving invalid names as text."""
+    matches = list(_IMAGE_PLACEHOLDER_PATTERN.finditer(prompt))
+
+    if fusion_active:
+        if any(tag in prompt for tag in ("<|image_pad|>", "<|image|>", "<|vision_start|>")):
+            if matches:
+                logging.warning(
+                    "%s: native visual tokens already exist; stripped %d image_input placeholder(s).",
+                    context,
+                    len(matches),
+                )
+            return _IMAGE_PLACEHOLDER_PATTERN.sub("", prompt), ()
+
+        chosen = next((match for match in matches if match.group(1).lower() == "fusion"), None)
+        if chosen is None:
+            chosen = next((match for match in matches if match.group(1) == "1"), None)
+
+        if chosen is None:
+            if matches:
+                logging.warning(
+                    "%s: fusion accepts image_input_fusion or image_input_1; stripped %d unsupported placeholder(s).",
+                    context,
+                    len(matches),
+                )
+            logging.warning("%s: no fusion placeholder found; prepended the fused visual slot.", context)
+            return VISION_BLOCK + _IMAGE_PLACEHOLDER_PATTERN.sub("", prompt), ()
+
+        if chosen.group(1).lower() == "1":
+            logging.warning("%s: treating image_input_1 as image_input_fusion.", context)
+        if len(matches) > 1:
+            logging.warning(
+                "%s: fusion uses one visual slot; stripped %d additional image_input placeholder(s).",
+                context,
+                len(matches) - 1,
+            )
+
+        def replace_fusion(match):
+            return VISION_BLOCK if match.start() == chosen.start() else ""
+
+        return _IMAGE_PLACEHOLDER_PATTERN.sub(replace_fusion, prompt), ()
+
+    valid_numbers = []
+    removed = []
+
+    def validate_numbered(match):
+        suffix = match.group(1).lower()
+        if suffix == "fusion":
+            removed.append(match.group(0))
+            return ""
+        number = int(suffix)
+        if number < 1 or number > image_count:
+            removed.append(match.group(0))
+            return ""
+        valid_numbers.append(number)
+        return VISION_BLOCK
+
+    rewritten = _IMAGE_PLACEHOLDER_PATTERN.sub(validate_numbered, prompt)
+    if removed:
+        logging.warning(
+            "%s: stripped unavailable or fusion-only placeholder(s): %s.",
+            context,
+            ", ".join(removed),
+        )
+    return rewritten, tuple(valid_numbers)
+
 def is_image_token(t):
     if isinstance(t, tuple) and len(t) > 0:
         val = t[0]
