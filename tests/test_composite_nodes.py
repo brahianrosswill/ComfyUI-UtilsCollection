@@ -81,6 +81,24 @@ def test_crop_merge_supports_mask_and_singleton_broadcast():
     assert output[:, 2:6, 4:6].sum() == 0
 
 
+def test_mask_expansion_and_feather_support_contraction():
+    mask = torch.zeros(9, 9)
+    mask[2:7, 2:7] = 1.0
+
+    expanded = composite_nodes._expand_mask(mask, 1)
+    contracted = composite_nodes._expand_mask(mask, -1)
+    outward = composite_nodes._feather_mask(mask, 2)
+    inward = composite_nodes._feather_mask(mask, -2)
+
+    assert expanded.sum() > mask.sum()
+    assert contracted.sum() < mask.sum()
+    assert outward.sum() > mask.sum()
+    assert inward.sum() < mask.sum()
+    assert torch.equal(outward[2:7, 2:7], mask[2:7, 2:7])
+    assert inward[:2].sum() == 0
+    assert inward[:, :2].sum() == 0
+
+
 def test_target_warp_keeps_crop_border_fixed():
     y, x = torch.meshgrid(torch.arange(16), torch.arange(16), indexing="ij")
     target = torch.stack((x, y, x + y), dim=-1).to(torch.float32).div_(30.0)

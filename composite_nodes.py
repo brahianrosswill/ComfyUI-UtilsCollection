@@ -50,6 +50,28 @@ def _blur_mask(mask, radius):
     return mask.squeeze(1)
 
 
+def _expand_mask(mask, amount):
+    if amount == 0:
+        return mask
+    radius = abs(int(amount))
+    kernel = 2 * radius + 1
+    mask = mask.unsqueeze(0).unsqueeze(0)
+    if amount > 0:
+        mask = F.max_pool2d(mask, kernel, stride=1, padding=radius)
+    else:
+        mask = 1.0 - F.max_pool2d(1.0 - mask, kernel, stride=1, padding=radius)
+    return mask[0, 0]
+
+
+def _feather_mask(mask, radius):
+    if radius == 0:
+        return mask
+    blurred = _blur_mask(mask.unsqueeze(0), abs(int(radius)))[0].clamp(0.0, 1.0)
+    if radius > 0:
+        return torch.maximum(mask, blurred)
+    return torch.minimum(mask, blurred)
+
+
 def _crop_bounds(mask, padding, multiple=8):
     points = torch.nonzero(mask > 0, as_tuple=False)
     if points.numel() == 0:
@@ -377,8 +399,8 @@ class UC_MediaPipeFaceCompositeOptions(io.ComfyNode):
             category="utils/image",
             inputs=[
                 io.Int.Input("bbox_expansion", default=64, min=0, max=MAX_RESOLUTION, step=1),
-                io.Int.Input("mask_expansion", default=0, min=0, max=MAX_RESOLUTION, step=1),
-                io.Int.Input("feather_radius", default=8, min=0, max=512, step=1),
+                io.Int.Input("mask_expansion", default=0, min=-MAX_RESOLUTION, max=MAX_RESOLUTION, step=1),
+                io.Int.Input("feather_radius", default=8, min=-512, max=512, step=1),
                 io.Float.Input("target_warp_strength", default=1.0, min=0.0, max=2.0, step=0.01),
                 io.Int.Input("warp_decay_radius", default=64, min=1, max=MAX_RESOLUTION, step=1),
             ],
@@ -468,14 +490,8 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
         placed_source_points = scale * (local_source_points @ rotation.T) + translation
         warped_target = _warp_target(target_crop, placed_source_points, local_target_points, options["target_warp_strength"], options["warp_decay_radius"])
 
-        mask_expansion = options["mask_expansion"]
-        opaque = placed_oval.unsqueeze(0).unsqueeze(0)
-        if mask_expansion > 0:
-            kernel = 2 * mask_expansion + 1
-            opaque = F.max_pool2d(opaque, kernel, stride=1, padding=mask_expansion)
-        opaque = opaque.squeeze(0).squeeze(0).clamp(0.0, 1.0)
-        feathered = _blur_mask(opaque.unsqueeze(0), options["feather_radius"])[0].clamp(0.0, 1.0)
-        alpha = torch.maximum(placed_oval, feathered) * placed_foreground
+        opaque = _expand_mask(placed_oval, options["mask_expansion"]).clamp(0.0, 1.0)
+        alpha = _feather_mask(opaque, options["feather_radius"]) * placed_foreground
         completed_crop = warped_target * (1.0 - alpha.unsqueeze(-1)) + placed_source * alpha.unsqueeze(-1)
         result = target.clone()
         result[0, ty1:ty2, tx1:tx2] = completed_crop
