@@ -1,11 +1,15 @@
+import ast
+import operator
 import os
 import math
 import re
 import torch
 import logging
+import numbers
 from einops import rearrange
 from safetensors.torch import save_file
 from enum import Enum
+from pathlib import Path
 import torch.nn.functional as F
 from PIL import Image, ImageOps, ImageSequence
 import numpy as np
@@ -15,7 +19,9 @@ import node_helpers
 import comfy
 
 from comfy.ldm.flux.math import apply_rope
-from comfy.ldm.modules.attention import optimized_attention, attention_pytorch
+from comfy.ldm.modules.attention import optimized_attention
+from comfy.sd1_clip import token_weights
+from comfy.text_encoders.qwen_vl import qwen2vl_image_size
 
 
 def encode_embedding_scaled_bias(clip, text, llama_template=None, **kwargs):
@@ -68,11 +74,9 @@ def encode_embedding_scaled_bias(clip, text, llama_template=None, **kwargs):
     if not biases_to_apply:
         return conditioning
 
-    # Apply bias scaling directly to each schedule in conditioning
+    # Apply contextual vector scaling directly to each schedule. Pooled output is
+    # deliberately unchanged: local token weights do not define a pooled weight.
     new_conditioning = []
-    max_strength = 1.0
-    for bias in biases_to_apply:
-        max_strength = max(max_strength, bias["strength"])
 
     for i in range(len(conditioning)):
         cond, cond_dict = conditioning[i]
@@ -90,11 +94,7 @@ def encode_embedding_scaled_bias(clip, text, llama_template=None, **kwargs):
 
             new_cond[:, start:end, :] *= strength
 
-        new_cond_dict = cond_dict.copy()
-        if "pooled_output" in new_cond_dict and new_cond_dict["pooled_output"] is not None:
-            new_cond_dict["pooled_output"] = new_cond_dict["pooled_output"].clone() * max_strength
-
-        new_conditioning.append([new_cond, new_cond_dict])
+        new_conditioning.append([new_cond, cond_dict.copy()])
 
     return new_conditioning
 
@@ -131,28 +131,197 @@ def is_image_token(t):
 
     return False
 
-def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
-    # Sandboxed evaluation dictionary
-    safe_dict = {
-        "__builtins__": {},
-        "clamp": torch.clamp,
-        "min": torch.minimum,
-        "max": torch.maximum,
-        "abs": torch.abs,
-    }
 
-    # Inject variables
-    for name, tensor in processed_images.items():
-        safe_dict[name] = tensor
+_QWEN_IM_START, _QWEN_USER, _QWEN_NL, _QWEN_IM_END = 151644, 872, 198, 151645
 
+
+def _token_id(token):
+    value = token[0] if isinstance(token, tuple) and token else token
+    return int(value) if isinstance(value, numbers.Integral) else None
+
+
+def _krea2_prefix_candidates(token_list) -> list[int]:
+    """Return the released and pending Krea2 prefix-strip boundaries."""
+    seen = 0
+    ids = [_token_id(token) for token in token_list]
+    released_end = -1
+    for index, token_id in enumerate(ids):
+        if token_id == _QWEN_IM_START and seen < 2:
+            released_end = index
+            seen += 1
+    if released_end >= 0 and ids[released_end + 1:released_end + 3] == [_QWEN_USER, _QWEN_NL]:
+        released_end += 3
+
+    image_position = next((index for index, token in enumerate(token_list) if is_image_token(token)), len(token_list))
+    pending_end = -1
+    for index in range(max(0, image_position - 2)):
+        if ids[index:index + 3] == [_QWEN_IM_START, _QWEN_USER, _QWEN_NL]:
+            pending_end = index + 3
+
+    return sorted({candidate for candidate in (released_end, pending_end) if candidate >= 0})
+
+
+def _qwen3vl_image_span(token) -> int | None:
+    value = token[0] if isinstance(token, tuple) and token else token
+    if not isinstance(value, dict) or value.get("type") != "image":
+        return None
+    image = value.get("data")
+    if not torch.is_tensor(image) or image.ndim != 4:
+        return None
+    height, width = image.shape[1:3]
+    resized_height, resized_width = qwen2vl_image_size(
+        height,
+        width,
+        min_pixels=3136,
+        max_pixels=12845056,
+        patch_size=16,
+        merge_size=2,
+    )
+    return (resized_height // 16) * (resized_width // 16) // 4
+
+
+def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, int]]:
+    """Map raw tokenizer entries to conditioning spans, validating all inferred lengths."""
+    cond_len = cond_tensor.shape[1]
+    is_krea2 = cond_tensor.shape[-1] == 12 * 2560
+    prefix_candidates = _krea2_prefix_candidates(token_list) if is_krea2 else [0]
+    if not prefix_candidates:
+        raise ValueError("Could not locate a supported Krea2 user-prompt prefix boundary.")
+
+    prefix_len = None
+    token_spans = None
+    candidate_details = []
+    for candidate in prefix_candidates:
+        retained = token_list[candidate:]
+        exact_spans = [_qwen3vl_image_span(token) if is_image_token(token) else 1 for token in retained]
+        if all(span is not None for span in exact_spans):
+            mapped_length = sum(exact_spans)
+            candidate_details.append((candidate, mapped_length, "exact-grid"))
+            if mapped_length == cond_len:
+                prefix_len = candidate
+                token_spans = exact_spans
+                break
+            continue
+
+        image_count = sum(is_image_token(token) for token in retained)
+        text_count = len(retained) - image_count
+        if image_count == 0:
+            candidate_details.append((candidate, text_count, "text-only"))
+            if text_count == cond_len:
+                prefix_len = candidate
+                token_spans = [1] * len(retained)
+                break
+        else:
+            expanded = cond_len - text_count
+            candidate_details.append((candidate, expanded, "uniform-fallback"))
+            if expanded >= image_count and expanded % image_count == 0:
+                image_span = expanded // image_count
+                prefix_len = candidate
+                token_spans = [image_span if is_image_token(token) else 1 for token in retained]
+                break
+
+    if prefix_len is None:
+        raise ValueError(
+            "No supported tokenizer-prefix contract maps exactly to the returned conditioning length "
+            f"(conditioning_length={cond_len}, candidates={candidate_details})."
+        )
+
+    mapping = []
+    current = 0
+    retained_index = 0
+    for index, token in enumerate(token_list):
+        if index < prefix_len:
+            mapping.append((-1, -1))
+            continue
+        size = token_spans[retained_index]
+        retained_index += 1
+        mapping.append((current, current + size))
+        current += size
+    if current != cond_len:
+        raise ValueError(f"Token mapping ended at {current}, expected conditioning length {cond_len}.")
+    return mapping
+
+_FORMULA_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+}
+_FORMULA_UNARYOPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def _formula_min(a, b):
+    if torch.is_tensor(a) or torch.is_tensor(b):
+        if not torch.is_tensor(a):
+            a = torch.as_tensor(a, device=b.device, dtype=b.dtype)
+        if not torch.is_tensor(b):
+            b = torch.as_tensor(b, device=a.device, dtype=a.dtype)
+        return torch.minimum(a, b)
+    return min(a, b)
+
+
+def _formula_max(a, b):
+    if torch.is_tensor(a) or torch.is_tensor(b):
+        if not torch.is_tensor(a):
+            a = torch.as_tensor(a, device=b.device, dtype=b.dtype)
+        if not torch.is_tensor(b):
+            b = torch.as_tensor(b, device=a.device, dtype=a.dtype)
+        return torch.maximum(a, b)
+    return max(a, b)
+
+
+_FORMULA_FUNCTIONS = {
+    "abs": abs,
+    "min": _formula_min,
+    "max": _formula_max,
+    "clamp": torch.clamp,
+}
+
+
+def evaluate_tensor_expression(expression: str, variables: dict):
+    """Evaluate the documented tensor-expression grammar without Python eval."""
     try:
-        # PyTorch overloads +, -, *, /, ** on tensors automatically!
-        result = eval(expression, safe_dict, {})  # noqa: S307
+        root = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"Invalid expression syntax: {exc.msg}") from exc
 
-        # Ensure result stays bounded between 0.0 and 1.0 (clamping standard image pixel range)
+    def visit(node):
+        if isinstance(node, ast.Expression):
+            return visit(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id not in variables:
+                raise ValueError(f"Unknown expression variable: {node.id}")
+            return variables[node.id]
+        if isinstance(node, ast.BinOp) and type(node.op) in _FORMULA_BINOPS:
+            return _FORMULA_BINOPS[type(node.op)](visit(node.left), visit(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _FORMULA_UNARYOPS:
+            return _FORMULA_UNARYOPS[type(node.op)](visit(node.operand))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FORMULA_FUNCTIONS:
+            if node.keywords:
+                raise ValueError("Keyword arguments are not supported in expressions.")
+            return _FORMULA_FUNCTIONS[node.func.id](*(visit(arg) for arg in node.args))
+        raise ValueError(f"Unsupported expression element: {type(node).__name__}")
+
+    result = visit(root)
+    if torch.is_tensor(result) and not torch.isfinite(result).all():
+        raise ValueError("Expression produced NaN or infinite values.")
+    return result
+
+
+def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
+    try:
+        result = evaluate_tensor_expression(expression, processed_images)
+        if not torch.is_tensor(result):
+            reference = next(iter(processed_images.values()), None)
+            if reference is None:
+                raise ValueError("A visual formula requires at least one image variable.")
+            result = torch.full_like(reference, float(result))
         return torch.clamp(result, 0.0, 1.0)
     except Exception as e:
-        raise RuntimeError(f"Error evaluating visual math expression '|{expression}|': {e}")
+        raise RuntimeError(f"Error evaluating visual math expression '{expression}': {e}") from e
 
 def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, pooled_tensors: dict, padding_method: str = "zero-pad") -> tuple:
     # Preprocess classic weighting syntax inside math expression to math scaling
@@ -181,35 +350,20 @@ def evaluate_conditioning_formula(expression: str, sequence_tensors: dict, poole
         # Cast the padded tensor to the target device via Comfy's non-blocking, aimdo-aware pipeline
         aligned_sequence_tensors[name] = comfy.model_management.cast_to_device(tensor, tensor.device, tensor.dtype)
 
-    safe_dict_cond = {
-        "__builtins__": {},
-        "clamp": torch.clamp,
-        "min": torch.minimum,
-        "max": torch.maximum,
-        "abs": torch.abs,
-    }
-    for name, tensor in aligned_sequence_tensors.items():
-        safe_dict_cond[name] = tensor
-
-    safe_dict_pooled = {
-        "__builtins__": {},
-        "clamp": torch.clamp,
-        "min": torch.minimum,
-        "max": torch.maximum,
-        "abs": torch.abs,
-    }
-    for name, tensor in pooled_tensors.items():
-        if tensor is not None:
-            safe_dict_pooled[name] = tensor
-
     try:
-        C_blended = eval(expression, safe_dict_cond, {})  # noqa: S307
+        C_blended = evaluate_tensor_expression(expression, aligned_sequence_tensors)
         P_blended = None
         if any(v is not None for v in pooled_tensors.values()):
-            P_blended = eval(expression, safe_dict_pooled, {})  # noqa: S307
+            pooled_variables = {name: tensor for name, tensor in pooled_tensors.items() if tensor is not None}
+            missing = set(aligned_sequence_tensors) - set(pooled_variables)
+            if missing:
+                raise ValueError(f"Formula references conditioning sources without pooled outputs: {sorted(missing)}")
+            P_blended = evaluate_tensor_expression(expression, pooled_variables)
+        if not torch.is_tensor(C_blended) or C_blended.ndim != 3:
+            raise ValueError("Conditioning formula must produce a [batch, tokens, channels] tensor.")
         return C_blended, P_blended
     except Exception as e:
-        raise RuntimeError(f"Error evaluating conditioning math expression '{expression}': {e}")
+        raise RuntimeError(f"Error evaluating conditioning math expression '{expression}': {e}") from e
 
 def reconstruct_2d_grid(N: int) -> tuple:
     """
@@ -375,14 +529,29 @@ def save_blended_visual_embeddings(
     if not embed_paths:
         raise ValueError("No ComfyUI embeddings directory is configured.")
     embeddings_dir = embed_paths[0]
-
-    os.makedirs(embeddings_dir, exist_ok=True)
-    full_save_path = os.path.join(embeddings_dir, save_name)
+    full_save_path = resolve_embedding_output_path(embeddings_dir, save_name)
+    os.makedirs(os.path.dirname(full_save_path), exist_ok=True)
 
     # State dict must contain exactly one layer matching the VLM's dynamic embedding_key
     state_dict = {embedding_key: stacked_vis.contiguous()}
     save_file(state_dict, full_save_path)
     logging.info(f"[UC_VisualFusionConfig] Saved blended visual tokens as {embedding_key} embedding to: {full_save_path}")
+
+
+def resolve_embedding_output_path(embeddings_dir: str, file_name: str) -> str:
+    """Resolve a relative output name and prove that it remains below embeddings_dir."""
+    if not file_name or not file_name.strip():
+        raise ValueError("Embedding file name cannot be empty.")
+    relative = Path(file_name.strip())
+    if relative.is_absolute():
+        raise ValueError("Embedding file name must be relative to the embeddings directory.")
+    root = Path(embeddings_dir).resolve()
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Embedding output path escapes the embeddings directory.") from exc
+    return str(target)
 
 
 def evaluate_conditioning_consensus_blend(
@@ -490,12 +659,21 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
     Used ONLY post-encoder inside UC_ConditioningConsensusBlend.
     """
     active_keys = sorted(list(sequence_tensors.keys()))
+    if not active_keys:
+        raise ValueError("At least one sequence tensor is required.")
     tensors_list = [sequence_tensors[k] for k in active_keys]
+    if any(t.ndim != 3 for t in tensors_list):
+        raise ValueError("Every sequence tensor must have [batch, tokens, channels] shape.")
+    if len({(t.shape[0], t.shape[2]) for t in tensors_list}) != 1:
+        raise ValueError("All sequence tensors must have matching batch and channel dimensions.")
 
     B = tensors_list[0].shape[0]
     D = tensors_list[0].shape[2]
 
     blend_preset = blend_config.get("blend_preset", "baseline")
+    if blend_preset == "off":
+        first_pooled = pooled_tensors.get(active_keys[0]) if pooled_tensors else None
+        return tensors_list[0], first_pooled
     blend_method = blend_config.get("blend_method", "consensus")
     consensus_type = blend_config.get("consensus_type", "median")
     alignment_method = blend_config.get("alignment_method", "similarity")
@@ -616,8 +794,8 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
                 else:
                     consensus = torch.mean(stacked, dim=0)
 
-                stacked_norm = torch.nn.functional.normalize(stacked, p=2, dim=1)
-                consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=0)
+                stacked_norm = torch.nn.functional.normalize(stacked, p=2, dim=1, eps=1e-8)
+                consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=0, eps=1e-8)
                 similarities = torch.mv(stacked_norm, consensus_norm)
 
                 if dsc_enabled:
@@ -636,9 +814,10 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
                 if mask.any():
                     if diversity_beta > 0.0:
                         distance_base = 1.5 if soft_comfort_enabled else 1.001
-                        row_weights[mask] = torch.pow(stretched_sims[mask], power_alpha) * torch.pow(distance_base - stretched_sims[mask], diversity_beta)
+                        safe_sims = stretched_sims[mask].clamp(min=0.0, max=1.0)
+                        row_weights[mask] = torch.pow(safe_sims, power_alpha) * torch.pow((distance_base - safe_sims).clamp(min=0.0), diversity_beta)
                     else:
-                        row_weights[mask] = torch.pow(stretched_sims[mask], power_alpha)
+                        row_weights[mask] = torch.pow(stretched_sims[mask].clamp(min=0.0), power_alpha)
                     w_sum = row_weights.sum()
                     if w_sum > 0:
                         row_weights /= w_sum
@@ -677,8 +856,8 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
                 else:
                     consensus = torch.mean(stacked, dim=0)
 
-                stacked_norm = torch.nn.functional.normalize(stacked, p=2, dim=1)
-                consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=0)
+                stacked_norm = torch.nn.functional.normalize(stacked, p=2, dim=1, eps=1e-8)
+                consensus_norm = torch.nn.functional.normalize(consensus, p=2, dim=0, eps=1e-8)
                 similarities = torch.mv(stacked_norm, consensus_norm)
 
                 row_weights = torch.zeros_like(similarities)
@@ -686,9 +865,10 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
 
                 if mask.any():
                     if diversity_beta > 0.0:
-                        row_weights[mask] = torch.pow(similarities[mask], power_alpha) * torch.pow(similarities[mask], diversity_beta)
+                        safe_sims = similarities[mask].clamp(min=0.0, max=1.0)
+                        row_weights[mask] = torch.pow(safe_sims, power_alpha) * torch.pow((1.001 - safe_sims).clamp(min=0.0), diversity_beta)
                     else:
-                        row_weights[mask] = torch.pow(similarities[mask], power_alpha)
+                        row_weights[mask] = torch.pow(similarities[mask].clamp(min=0.0), power_alpha)
                     w_sum = row_weights.sum()
                     if w_sum > 0:
                         row_weights /= w_sum
@@ -725,8 +905,13 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
             else:
                 consensus_p = torch.mean(stacked_p, dim=0)
 
-            stacked_p_norm = torch.nn.functional.normalize(stacked_p, p=2, dim=1)
-            consensus_p_norm = torch.nn.functional.normalize(consensus_p, p=2, dim=0)
+            if blend_method == "linear":
+                merged_p = torch.mean(stacked_p, dim=0) * global_scale
+                P_blended_batches.append(merged_p)
+                continue
+
+            stacked_p_norm = torch.nn.functional.normalize(stacked_p, p=2, dim=1, eps=1e-8)
+            consensus_p_norm = torch.nn.functional.normalize(consensus_p, p=2, dim=0, eps=1e-8)
             similarities_p = torch.mv(stacked_p_norm, consensus_p_norm)
 
             weights_p = torch.zeros_like(similarities_p)
@@ -734,9 +919,10 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
 
             if mask_p.any():
                 if diversity_beta > 0.0:
-                    weights_p[mask_p] = torch.pow(similarities_p[mask_p], power_alpha) * torch.pow(1.001 - similarities_p[mask_p], diversity_beta)
+                    safe_sims = similarities_p[mask_p].clamp(min=0.0, max=1.0)
+                    weights_p[mask_p] = torch.pow(safe_sims, power_alpha) * torch.pow((1.001 - safe_sims).clamp(min=0.0), diversity_beta)
                 else:
-                    weights_p[mask_p] = torch.pow(similarities_p[mask_p], power_alpha)
+                    weights_p[mask_p] = torch.pow(similarities_p[mask_p].clamp(min=0.0), power_alpha)
                 w_sum_p = weights_p.sum()
                 if w_sum_p > 0:
                     weights_p /= w_sum_p
@@ -762,34 +948,11 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
 
 
 def find_visual_token_range(tokens, cond_tensor) -> tuple:
-    # Build dynamic mapping from tokens to embeddings
     key_name = next(iter(tokens.keys()))
     token_list = tokens[key_name][0]
-
-    text_token_count = 0
-    image_token_count = 0
-    for t in token_list:
-        if is_image_token(t):
-            image_token_count += 1
-        else:
-            text_token_count += 1
-
-    if image_token_count == 0:
+    if not any(is_image_token(token) for token in token_list):
         return 0, 0
-
-    V = (cond_tensor.shape[1] - text_token_count) // image_token_count
-
-    mapping = []
-    current_idx = 0
-    for t in token_list:
-        is_img = is_image_token(t)
-        size = V if is_img else 1
-        start = current_idx
-        end = current_idx + size
-        mapping.append((start, end))
-        current_idx = end
-
-    # Find the first visual token index range
+    mapping = build_token_to_conditioning_map(token_list, cond_tensor)
     for i, t in enumerate(token_list):
         if is_image_token(t):
             return mapping[i][0], mapping[i][1]
@@ -800,40 +963,23 @@ def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, **kw
     if clip is None:
         raise RuntimeError("ERROR: clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
 
-    if "(" not in text or ":" not in text or ")" not in text:
+    if "(" not in text or ")" not in text:
         tokens = clip.tokenize(text, llama_template=llama_template, **kwargs)
         return clip.encode_from_tokens_scheduled(tokens)
 
-    # Regex for classical weighting syntax, e.g., (blue sky:1.2) or (sunset:0.8)
-    bias_pattern = re.compile(r"\(\s*([^:)]+?)\s*:\s*([0-9.-]+)\s*\)")
-    split_pattern = re.compile(r"(\(\s*[^:)]+?\s*:\s*[0-9.-]+\s*\))")
-    segments = split_pattern.split(text)
-
     clean_text = ""
     biases_to_apply = []
-
-    for segment in segments:
-        if not segment:
-            continue
-
-        match = bias_pattern.fullmatch(segment)
-        if match:
-            # Measure token length of clean text before appending bias text
-            start_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
-            key_name = next(iter(start_tokens.keys()))
-            start_count = len(start_tokens[key_name][0])
-
-            bias_text, strength_str = match.groups()
-            clean_text += bias_text
-
-            # Measure token length of clean text after appending bias text
-            end_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
-            end_count = len(end_tokens[key_name][0])
-
-            if end_count > start_count:
-                biases_to_apply.append({"start": start_count, "end": end_count, "strength": float(strength_str)})
-        else:
-            clean_text += segment
+    for segment, strength in token_weights(text, 1.0):
+        start_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
+        key_name = next(iter(start_tokens.keys()))
+        start_count = len(start_tokens[key_name][0])
+        clean_text += segment
+        end_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
+        end_count = len(end_tokens[key_name][0])
+        if strength != 1.0 and end_count > start_count:
+            if not math.isfinite(strength):
+                raise ValueError("Contextual prompt weights must be finite.")
+            biases_to_apply.append({"start": start_count, "end": end_count, "strength": float(strength)})
 
     tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
     conditioning = clip.encode_from_tokens_scheduled(tokens)
@@ -841,44 +987,17 @@ def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, **kw
     if not biases_to_apply:
         return conditioning
 
-    # Apply bias scaling directly to each schedule in conditioning
+    # Apply contextual vector scaling directly to each schedule. This is a
+    # custom operation for modern encoders that disable Core prompt weights.
     new_conditioning = []
-    max_strength = 1.0
-    for bias in biases_to_apply:
-        max_strength = max(max_strength, bias["strength"])
 
     for i in range(len(conditioning)):
         cond, cond_dict = conditioning[i]
         new_cond = cond.clone()
 
-        # Build dynamic mapping from tokens to embeddings
         key_name = next(iter(tokens.keys()))
         token_list = tokens[key_name][0]
-
-        text_token_count = 0
-        image_token_count = 0
-        for t in token_list:
-            if is_image_token(t):
-                image_token_count += 1
-            else:
-                text_token_count += 1
-
-        # Calculate expansion factor V
-        if image_token_count > 0:
-            V = (new_cond.shape[1] - text_token_count) // image_token_count
-        else:
-            V = 1
-
-        # Build start/end embedding index mapping for each token
-        mapping = []
-        current_idx = 0
-        for t in token_list:
-            is_img = is_image_token(t)
-            size = V if is_img else 1
-            start = current_idx
-            end = current_idx + size
-            mapping.append((start, end))
-            current_idx = end
+        mapping = build_token_to_conditioning_map(token_list, new_cond)
 
         # Scale embeddings using mapped ranges
         for bias in biases_to_apply:
@@ -894,16 +1013,12 @@ def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, **kw
             start = mapping[t_start][0]
             end = mapping[min(t_end - 1, len(mapping) - 1)][1]
 
-            if start >= end:
+            if start < 0 or start >= end:
                 continue
 
             new_cond[:, start:end, :] *= strength
 
-        new_cond_dict = cond_dict.copy()
-        if "pooled_output" in new_cond_dict and new_cond_dict["pooled_output"] is not None:
-            new_cond_dict["pooled_output"] = new_cond_dict["pooled_output"].clone() * max_strength
-
-        new_conditioning.append([new_cond, new_cond_dict])
+        new_conditioning.append([new_cond, cond_dict.copy()])
 
     return new_conditioning
 
@@ -1022,11 +1137,6 @@ def krea2_attn_forward_weight(self, x, freqs=None, mask=None, transformer_option
     v = rearrange(v, "B L (H D) -> B H L D", H=self.kvheads)
 
     weights = transformer_options.get("krea2_token_weights")
-    if weights:
-        v = v.clone()
-        for pos, v_factor, _ in weights:
-            if v_factor != 1.0 and pos < v.shape[2]:
-                v[:, :, pos] = v[:, :, pos] * v_factor
     q, k = self.qknorm(q, k)
     if freqs is not None:
         q, k = apply_rope(q, k, freqs)
@@ -1035,14 +1145,21 @@ def krea2_attn_forward_weight(self, x, freqs=None, mask=None, transformer_option
         k = k.repeat_interleave(rep, dim=1)
         v = v.repeat_interleave(rep, dim=1)
     bias = None
-    if weights and any(kb != 0.0 for _, _, kb in weights):
-        bias = q.new_zeros(1, k.shape[2])
-        for pos, _, kb in weights:
-            if kb != 0.0 and pos < bias.shape[1]:
-                bias[:, pos] = kb
+    if weights and any(kb != 0.0 for _, kb in weights):
+        bias = q.new_zeros(1, 1, 1, k.shape[2])
+        for pos, kb in weights:
+            if kb != 0.0 and pos < bias.shape[-1]:
+                bias[..., pos] = kb
     if bias is not None:
-        out = attention_pytorch(q, k, v, self.heads, mask=bias, skip_reshape=True)
-    else:
-        out = optimized_attention(q, k, v, self.heads, mask=mask, skip_reshape=True, transformer_options=transformer_options)
+        if mask is None:
+            mask = bias
+        else:
+            if mask.dtype == torch.bool:
+                additive_mask = torch.zeros(mask.shape, device=mask.device, dtype=q.dtype)
+                additive_mask.masked_fill_(~mask, -torch.finfo(q.dtype).max)
+            else:
+                additive_mask = mask.to(dtype=q.dtype)
+            mask = additive_mask + bias.to(device=mask.device, dtype=q.dtype)
+    out = optimized_attention(q, k, v, self.heads, mask=mask, skip_reshape=True, transformer_options=transformer_options)
     return self.wo(out * torch.sigmoid(gate))
 

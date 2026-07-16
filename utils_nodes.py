@@ -710,9 +710,9 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "##### Key Details:\n"
                 "- You can write your weights using standard weighting syntax: `(prompt text:weight)`, for example `(beautiful sunset:1.25)` or `(red car:0.8)`.\n"
                 "- Before tokenization, our weight translation engine parses and extracts these markers, strips the outer parenthesis and weight markers, and compiles the clean text.\n"
-                "- To handle the complex visual/image token expansions precisely, a dynamic token-to-embedding mapping calculates the exact sequence locations in the final encoded embedding tensor.\n"
+                "- Token positions are validated against the returned conditioning sequence. Both the released and pending Krea2 prefix rules are supported, selected by matching Core's exact Qwen3-VL image-grid length.\n"
                 "- The precise slices of the conditioning tensor are then multiplied element-wise by the target strength.\n"
-                "- The pooled output (the global embedding representing the entire sequence) is also safely scaled by the maximum weight found."
+                "- Local weights leave pooled output unchanged. The separate global multiplier scales both sequence and pooled output."
             )
         elif topic == "math_expressions":
             markdown = (
@@ -721,7 +721,7 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "##### Key Details:\n"
                 "- Enter your mathematical expression directly in the dedicated single-line `formula` input field (e.g., `(a + b) / 2`). No prompt pipe syntax is required.\n"
                 "- Inside the formula, use variables `a`, `b`, `c`, `d`... representing your active connected VLM image conditionings.\n"
-                "- Under the hood, the node automatically runs independent, native single-image encoding passes for each active image, then evaluates the mathematical formula directly on those extracted high-dimensional continuous sequence tensors ($C \\in \\mathbb{R}^{B \\times L \\times D}$), pooled tensors ($P \\in \\mathbb{R}^{B \\times D}$), and DeepStack layers.\n"
+                "- Under the hood, the node runs independent single-image encoding passes, then evaluates the formula on the returned sequence tensors ($C \\in \\mathbb{R}^{B \\times L \\times D}$) and compatible pooled tensors ($P \\in \\mathbb{R}^{B \\times D}$). Core consumes Qwen DeepStack features inside the text encoder and does not expose them as conditioning metadata.\n"
                 "- Supported operations:\n"
                 "  - Addition (+), Subtraction (-), Multiplication (*), Division (/)\n"
                 "  - Parentheses for nesting operations: `((a * 1.05) + b) / 2`\n"
@@ -730,14 +730,14 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "- **Sequence Alignment Modes**: If your images have different aspect ratios or resolutions, the node supports two alignment options below the multiplier widget:\n"
                 "  - `zero-pad`: Silently zero-pads shorter sequence tensors to align lengths (matches ComfyUI core conditioning logic exactly).\n"
                 "  - `interpolate`: Dynamically resizes the visual token sequence using 1D linear interpolation to align attention features perfectly across the entire sequence without dead space.\n"
-                "- Security: All formulas are parsed and evaluated within a completely sandboxed namespace (`__builtins__ = {}`), preventing any insecure code executions while giving you full access to PyTorch's tensor math."
+                "- Security: Formulas use a restricted AST grammar. Attribute access, indexing, comprehensions, imports, and arbitrary calls are rejected."
             )
         elif topic == "saving_embeddings":
             markdown = (
                 "##### Saving Pre-Transformer Input Embeddings\n"
                 "You can save raw pre-transformer interleaved text and visual embeddings directly to disk before they enter the transformer layers.\n\n"
                 "##### Key Details:\n"
-                "- The **Krea 2 Input Embeddings** (`UC_Krea2InputEmbeds`) and **Qwen3-VL Unified Input Embeddings** (`UC_Qwen3VLInputEmbeds`) nodes handle this task.\n"
+                "- **VLM Input Embedding Export** (`UC_VLMInputEmbeds`) is the canonical node. The former Krea2 and Qwen3-VL IDs remain deprecated compatibility nodes for one release.\n"
                 "- The prompt text is tokenized with `skip_template=True` so that any model-specific chat/prompt wrappers are skipped, preserving raw text embeddings.\n"
                 "- If an image is connected, the image is tokenized and its visual token pad structures are interleaved within the language tokens.\n"
                 "- The model's `process_tokens` method extracts the high-dimensional continuous input embeddings.\n"
