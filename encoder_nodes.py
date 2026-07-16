@@ -24,6 +24,7 @@ from .encoder_helpers import(
     find_visual_token_range,
     build_token_to_conditioning_map,
     encode_embedding_classical_scaled_bias,
+    strip_contextual_weight_syntax,
     load_vlm_image_tensor,
     krea2_user_content_span,
     krea2_token_ids,
@@ -2786,9 +2787,30 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         if any(not math.isfinite(weight) or weight < 0 for _, weight in terms):
             raise ValueError("Krea2 attention weights must be finite and non-negative.")
 
-        # Prompt inputs remain as untouched plain-text strings
-        clean_prompt = prompt
-        clean_system_prompt = system_prompt
+        weighted_prompt = prompt
+        weighted_system_prompt = system_prompt
+        clean_prompt = strip_contextual_weight_syntax(weighted_prompt)
+        clean_system_prompt = strip_contextual_weight_syntax(weighted_system_prompt)
+
+        def format_krea_prompt(user_text, system_text):
+            if system_text:
+                return (
+                    "<|im_start|>user\n<|im_end|>\n"
+                    f"<|im_start|>system\n{system_text}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_text}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                )
+            return (
+                "<|im_start|>user\n<|im_end|>\n"
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n"
+                f"<|im_start|>user\n{user_text}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+
+        def add_image_marker(user_text):
+            if any(tag in user_text for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
+                return user_text
+            return "<|vision_start|><|image_pad|><|vision_end|>" + user_text
 
         if visual_fusion_config is None:
             visual_fusion_config = {"visual_fusion_method": "off"}
@@ -2823,40 +2845,14 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             first_img = active_images[0]
             processed_first_img = process_vlm_image(first_img, vlm_resolution)
 
-            modified_clean_prompt = clean_prompt
-            if not any(tag in clean_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
-                modified_clean_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_clean_prompt
-
-            if len(clean_system_prompt) > 0:
-                clean_full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
-                    "<|im_start|>user\n" + modified_clean_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
-            else:
-                clean_full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                    "<|im_start|>user\n" + modified_clean_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
+            modified_clean_prompt = add_image_marker(clean_prompt)
+            modified_weighted_prompt = add_image_marker(weighted_prompt)
+            clean_full_prompt = format_krea_prompt(modified_clean_prompt, clean_system_prompt)
+            weighted_full_prompt = format_krea_prompt(modified_weighted_prompt, weighted_system_prompt)
             tok = clip.tokenize(clean_full_prompt, images=[processed_first_img], skip_template=True)
         else:
-            if len(clean_system_prompt) > 0:
-                clean_full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
-                    "<|im_start|>user\n" + clean_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
-            else:
-                clean_full_prompt = (
-                    "<|im_start|>user\n" + "<|im_end|>\n" +
-                    "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                    "<|im_start|>user\n" + clean_prompt + "<|im_end|>\n" +
-                    "<|im_start|>assistant\n"
-                )
+            clean_full_prompt = format_krea_prompt(clean_prompt, clean_system_prompt)
+            weighted_full_prompt = format_krea_prompt(weighted_prompt, weighted_system_prompt)
             tok = clip.tokenize(clean_full_prompt, skip_template=True)
 
         key = next(iter(tok))
@@ -2925,26 +2921,10 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 letter = chr(97 + idx)
                 processed_img = process_vlm_image(img, vlm_resolution)
 
-                modified_prompt = clean_prompt
-                if not any(tag in clean_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
-                    modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
+                clean_pass_prompt = format_krea_prompt(add_image_marker(clean_prompt), clean_system_prompt)
+                weighted_pass_prompt = format_krea_prompt(add_image_marker(weighted_prompt), weighted_system_prompt)
 
-                if len(clean_system_prompt) > 0:
-                    full_prompt = (
-                        "<|im_start|>user\n" + "<|im_end|>\n" +
-                        "<|im_start|>system\n" + clean_system_prompt + "<|im_end|>\n" +
-                        "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                        "<|im_start|>assistant\n"
-                    )
-                else:
-                    full_prompt = (
-                        "<|im_start|>user\n" + "<|im_end|>\n" +
-                        "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n" +
-                        "<|im_start|>user\n" + modified_prompt + "<|im_end|>\n" +
-                        "<|im_start|>assistant\n"
-                    )
-
-                cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
+                cond_X = encode_embedding_classical_scaled_bias(clip, weighted_pass_prompt, images=[processed_img], skip_template=True)
                 if len(cond_X) != 1:
                     raise ValueError("Krea2 attention visual fusion requires a single conditioning schedule entry.")
                 C_X = cond_X[0][0]
@@ -2956,7 +2936,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
 
                 if visual_method != "off":
                     try:
-                        tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
+                        tokens = clip.tokenize(clean_pass_prompt, images=[processed_img], skip_template=True)
                         tokens_dict[letter] = tokens
                         vis_start, vis_end = find_visual_token_range(tokens, C_X)
                         visual_ranges[letter] = (vis_start, vis_end)
@@ -2996,7 +2976,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
 
             conditioning = [[C_blended, final_cond_dict]]
         else:
-            conditioning = encode_embedding_classical_scaled_bias(clip, clean_full_prompt)
+            conditioning = encode_embedding_classical_scaled_bias(clip, weighted_full_prompt, skip_template=True)
             if multiplier != 1.0:
                 for i in range(len(conditioning)):
                     conditioning[i][0] *= multiplier

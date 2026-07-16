@@ -105,6 +105,10 @@ def test_contextual_weighting_does_not_scale_pooled_output():
     assert torch.equal(metadata["pooled_output"], torch.full((1, 2), 7.0))
 
 
+def test_contextual_weight_syntax_clean_text_matches_encoder_input():
+    assert encoder_helpers.strip_contextual_weight_syntax("a (painting:-1) and ((light:2):0.5)") == "a painting and light"
+
+
 def test_canonical_and_compatibility_schema_flags():
     assert UC_AttentionBiasTextEncode.define_schema().is_experimental
     assert UC_Krea2TokenAttentionWeight.define_schema().is_experimental

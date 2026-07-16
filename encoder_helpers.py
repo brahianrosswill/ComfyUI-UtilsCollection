@@ -1022,6 +1022,13 @@ def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, **kw
 
     return new_conditioning
 
+
+def strip_contextual_weight_syntax(text: str) -> str:
+    """Return the exact clean text consumed by contextual vector scaling."""
+    if "(" not in text or ")" not in text:
+        return text
+    return "".join(segment for segment, _ in token_weights(text, 1.0))
+
 def load_vlm_image_tensor(path_str):
     if not path_str:
         return None
