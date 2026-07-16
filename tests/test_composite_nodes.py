@@ -99,6 +99,14 @@ def test_mask_expansion_and_feather_support_contraction():
     assert inward[:, :2].sum() == 0
 
 
+def test_face_foreground_solidification_matches_composite_operation():
+    foreground = torch.tensor([0.25, 0.5, 0.625, 0.75, 1.0])
+    inverted = 1.0 - foreground
+    solid = ((foreground - inverted) * 2.0).clamp(0.0, 1.0)
+
+    assert torch.equal(solid, torch.tensor([0.0, 0.0, 0.5, 1.0, 1.0]))
+
+
 def test_target_warp_keeps_crop_border_fixed():
     y, x = torch.meshgrid(torch.arange(16), torch.arange(16), indexing="ij")
     target = torch.stack((x, y, x + y), dim=-1).to(torch.float32).div_(30.0)

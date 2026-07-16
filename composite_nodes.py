@@ -491,7 +491,9 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
         warped_target = _warp_target(target_crop, placed_source_points, local_target_points, options["target_warp_strength"], options["warp_decay_radius"])
 
         opaque = _expand_mask(placed_oval, options["mask_expansion"]).clamp(0.0, 1.0)
-        alpha = _feather_mask(opaque, options["feather_radius"]) * placed_foreground
+        inverted_foreground = 1.0 - placed_foreground
+        solid_foreground = ((placed_foreground - inverted_foreground) * 2.0).clamp(0.0, 1.0)
+        alpha = _feather_mask(opaque, options["feather_radius"]) * solid_foreground
         completed_crop = warped_target * (1.0 - alpha.unsqueeze(-1)) + placed_source * alpha.unsqueeze(-1)
         result = target.clone()
         result[0, ty1:ty2, tx1:tx2] = completed_crop
