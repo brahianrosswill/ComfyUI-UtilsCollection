@@ -21,9 +21,11 @@ try:
     from utils_collection_encoder_test import encoder_helpers
     from utils_collection_encoder_test.encoder_nodes import (
         TextEncodeKrea2SysEditScaledAdvAttn,
+        UC_AdvancedVisualConditioningEncode,
         UC_AttentionBiasTextEncode,
         UC_Krea2TokenAttentionWeight,
         UC_Qwen3VLInputEmbeds,
+        UC_VisualFusionConfig,
         UC_VLMInputEmbeds,
     )
 finally:
@@ -37,6 +39,36 @@ def test_expression_grammar_and_nonfinite_rejection():
         encoder_helpers.evaluate_tensor_expression("a.__class__", {"a": value})
     with pytest.raises(ValueError, match="NaN or infinite"):
         encoder_helpers.evaluate_tensor_expression("a / 0", {"a": value})
+
+
+def test_visual_fusion_config_selects_real_encoder_path():
+    config = UC_VisualFusionConfig.execute(
+        visual_fusion_method="spatial-checkerboard",
+        visual_block_size=2,
+        dither_ratio=0.5,
+        seed=0,
+        visual_encoder_path="legacy-flat",
+    )[0]
+    assert config["visual_encoder_path"] == "legacy-flat"
+
+
+def test_legacy_flat_temporarily_disables_grid_and_deepstack_inputs():
+    class Transformer:
+        @staticmethod
+        def build_image_inputs(embeds, embeds_info):
+            return "grid", "mask", "deepstack"
+
+    transformer = Transformer()
+    clip = types.SimpleNamespace(
+        cond_stage_model=types.SimpleNamespace(
+            clip_model=types.SimpleNamespace(transformer=transformer),
+        ),
+    )
+
+    with encoder_helpers.qwen3vl_visual_encoder_path(clip, "legacy-flat"):
+        assert transformer.build_image_inputs(None, None) == (None, None, None)
+
+    assert transformer.build_image_inputs(None, None) == ("grid", "mask", "deepstack")
 
 
 def test_embedding_output_cannot_escape_root(tmp_path):
@@ -59,10 +91,56 @@ def test_krea2_mapping_mirrors_core_prefix_strip():
     assert mapping[8:] == [(0, 1), (1, 2), (2, 3)]
 
 
+def test_krea2_mapping_mirrors_custom_system_prefix_strip():
+    image = torch.zeros(1, 32, 32, 3)
+    tokens = [
+        (151644, 1.0), (872, 1.0), (198, 1.0), (151645, 1.0), (198, 1.0),
+        (151644, 1.0), (8948, 1.0), ({"type": "image", "data": image}, 1.0),
+        (200, 1.0), (151645, 1.0),
+    ]
+    conditioning = torch.zeros(1, 8, 12 * 2560)
+
+    mapping = encoder_helpers.build_token_to_conditioning_map(tokens, conditioning)
+
+    assert mapping[:5] == [(-1, -1)] * 5
+    assert mapping[5:] == [(0, 1), (1, 2), (2, 6), (6, 7), (7, 8)]
+
+
+def test_krea2_mapping_rejects_unexplained_length_mismatch():
+    image = torch.zeros(1, 32, 32, 3)
+    tokens = [
+        (151644, 1.0), (872, 1.0), (198, 1.0), (151645, 1.0), (198, 1.0),
+        (151644, 1.0), (8948, 1.0), ({"type": "image", "data": image}, 1.0),
+        (200, 1.0), (151645, 1.0),
+    ]
+    conditioning = torch.zeros(1, 6, 12 * 2560)
+
+    with pytest.raises(ValueError, match="refusing to guess a visual range"):
+        encoder_helpers.build_token_to_conditioning_map(tokens, conditioning)
+
+
+def test_legacy_flat_visual_range_preserves_pre_refactor_spatial_mapping():
+    image = torch.zeros(1, 128, 128, 3)
+    tokens = {
+        "qwen3vl_4b": [[
+            (151644, 1.0), (872, 1.0), (198, 1.0), (151645, 1.0), (198, 1.0),
+            (151644, 1.0), (8948, 1.0), ({"type": "image", "data": image}, 1.0),
+            (200, 1.0), (151645, 1.0),
+        ]],
+    }
+    conditioning = torch.zeros(1, 20, 12 * 2560)
+
+    assert encoder_helpers.find_visual_token_range(
+        tokens,
+        conditioning,
+        legacy_krea_spatial=True,
+    ) == (7, 18)
+
+
 def test_unknown_visual_expansion_is_rejected_when_length_has_no_solution():
     tokens = [({"type": "image"}, 1.0), (10, 1.0), ({"type": "image"}, 1.0)]
     conditioning = torch.zeros(1, 8, 16)
-    with pytest.raises(ValueError, match="No supported tokenizer-prefix contract"):
+    with pytest.raises(ValueError, match="no usable Qwen3-VL tensor payload"):
         encoder_helpers.build_token_to_conditioning_map(tokens, conditioning)
 
 
@@ -107,6 +185,42 @@ def test_contextual_weighting_does_not_scale_pooled_output():
 
 def test_contextual_weight_syntax_clean_text_matches_encoder_input():
     assert encoder_helpers.strip_contextual_weight_syntax("a (painting:-1) and ((light:2):0.5)") == "a painting and light"
+
+
+def test_advanced_visual_text_only_path_preserves_custom_system_prompt():
+    class Clip:
+        tokenized_text = None
+
+        @classmethod
+        def tokenize(cls, text, **kwargs):
+            cls.tokenized_text = text
+            return {"fake": [[(1, 1.0)]]}
+
+        @staticmethod
+        def encode_from_tokens_scheduled(tokens):
+            return [[torch.ones(1, 1, 1), {}]]
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        Clip(),
+        prompt="subject",
+        system_prompt="custom rules",
+        vlm_resolution="Fast (384)",
+        image_inputs={},
+    )
+
+    assert Clip.tokenized_text.startswith("<|im_start|>user\n<|im_end|>\n<|im_start|>system\ncustom rules")
+    assert "<|im_start|>user\nsubject<|im_end|>" in Clip.tokenized_text
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        Clip(),
+        prompt="subject",
+        system_prompt="",
+        vlm_resolution="Fast (384)",
+        image_inputs={},
+    )
+
+    assert Clip.tokenized_text.startswith("<|im_start|>system\nDescribe the image")
+    assert not Clip.tokenized_text.startswith("<|im_start|>user\n<|im_end|>")
 
 
 def test_numbered_image_placeholders_preserve_prompt_order_and_strip_invalid(caplog):

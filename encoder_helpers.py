@@ -1,4 +1,5 @@
 import ast
+from contextlib import contextmanager
 import operator
 import os
 import math
@@ -6,6 +7,7 @@ import re
 import torch
 import logging
 import numbers
+import threading
 from einops import rearrange
 from safetensors.torch import save_file
 from enum import Enum
@@ -21,7 +23,56 @@ import comfy
 from comfy.ldm.flux.math import apply_rope
 from comfy.ldm.modules.attention import optimized_attention
 from comfy.sd1_clip import token_weights
-from comfy.text_encoders.qwen_vl import qwen2vl_image_size
+
+
+_VISUAL_ENCODER_PATH_LOCK = threading.RLock()
+
+
+def _resolve_clip_transformer(clip):
+    stage = getattr(clip, "cond_stage_model", None)
+    if stage is None:
+        return None
+    if hasattr(stage, "clip") and isinstance(stage.clip, str) and hasattr(stage, stage.clip):
+        clip_model = getattr(stage, stage.clip)
+    elif hasattr(stage, "clip_model"):
+        clip_model = stage.clip_model
+    elif hasattr(stage, "clip_d"):
+        clip_model = stage.clip_d
+    else:
+        clip_model = stage
+    return getattr(clip_model, "transformer", None)
+
+
+@contextmanager
+def qwen3vl_visual_encoder_path(clip, path: str):
+    """Select current grid/DeepStack or pre-d0008a89 flat Qwen3-VL encoding."""
+    if path == "grid-deepstack":
+        with _VISUAL_ENCODER_PATH_LOCK:
+            yield
+        return
+    if path != "legacy-flat":
+        raise ValueError(f"Unsupported visual encoder path: {path}")
+
+    transformer = _resolve_clip_transformer(clip)
+    if transformer is None or not hasattr(transformer, "build_image_inputs"):
+        raise ValueError("legacy-flat requires a Qwen3-VL text encoder with build_image_inputs support.")
+
+    # Core d0008a89 made Qwen3-VL build grid MRoPE, a visual-position mask,
+    # and DeepStack inputs here. Returning empty inputs reproduces the inherited
+    # pre-update BaseLlama forward while leaving image preprocessing unchanged.
+    with _VISUAL_ENCODER_PATH_LOCK:
+        original = transformer.build_image_inputs
+        transformer.build_image_inputs = lambda embeds, embeds_info: (None, None, None)
+        try:
+            logging.warning("Visual fusion is using the pre-d0008a89 legacy flat Qwen3-VL encoder path.")
+            yield
+        finally:
+            transformer.build_image_inputs = original
+
+
+def _encode_scheduled_with_visual_path(clip, tokens, visual_encoder_path: str):
+    with qwen3vl_visual_encoder_path(clip, visual_encoder_path):
+        return clip.encode_from_tokens_scheduled(tokens)
 
 
 def encode_embedding_scaled_bias(clip, text, llama_template=None, **kwargs):
@@ -211,25 +262,44 @@ def _token_id(token):
     return int(value) if isinstance(value, numbers.Integral) else None
 
 
-def _krea2_prefix_candidates(token_list) -> list[int]:
-    """Return the released and pending Krea2 prefix-strip boundaries."""
-    seen = 0
+def _released_krea2_prefix_end(token_list, expanded_length: int) -> int:
+    """Mirror released Core's Krea2 prefix slice exactly."""
+    template_end = -1
+    count_im_start = 0
     ids = [_token_id(token) for token in token_list]
-    released_end = -1
     for index, token_id in enumerate(ids):
-        if token_id == _QWEN_IM_START and seen < 2:
-            released_end = index
-            seen += 1
-    if released_end >= 0 and ids[released_end + 1:released_end + 3] == [_QWEN_USER, _QWEN_NL]:
-        released_end += 3
+        if token_id == _QWEN_IM_START and count_im_start < 2:
+            template_end = index
+            count_im_start += 1
 
-    image_position = next((index for index, token in enumerate(token_list) if is_image_token(token)), len(token_list))
-    pending_end = -1
-    for index in range(max(0, image_position - 2)):
-        if ids[index:index + 3] == [_QWEN_IM_START, _QWEN_USER, _QWEN_NL]:
-            pending_end = index + 3
+    if template_end < 0:
+        raise ValueError("Could not locate the Krea2 template prefix marker used by released Core.")
+    if expanded_length > template_end + 3:
+        if ids[template_end + 1:template_end + 3] == [_QWEN_USER, _QWEN_NL]:
+            template_end += 3
+    return template_end
 
-    return sorted({candidate for candidate in (released_end, pending_end) if candidate >= 0})
+
+def _qwen3vl_resized_dimensions(height: int, width: int) -> tuple[int, int]:
+    """Replicate released Core's Qwen3-VL resize arithmetic locally."""
+    patch_size = 16
+    merge_size = 2
+    min_pixels = 3136
+    max_pixels = 12845056
+    factor = patch_size * merge_size
+    resized_height = round(height / factor) * factor
+    resized_width = round(width / factor) * factor
+
+    if resized_height * resized_width > max_pixels:
+        beta = math.sqrt((height * width) / max_pixels)
+        resized_height = max(factor, math.floor(height / beta / factor) * factor)
+        resized_width = max(factor, math.floor(width / beta / factor) * factor)
+    elif resized_height * resized_width < min_pixels:
+        beta = math.sqrt(min_pixels / (height * width))
+        resized_height = math.ceil(height * beta / factor) * factor
+        resized_width = math.ceil(width * beta / factor) * factor
+
+    return resized_height, resized_width
 
 
 def _qwen3vl_image_span(token) -> int | None:
@@ -240,14 +310,7 @@ def _qwen3vl_image_span(token) -> int | None:
     if not torch.is_tensor(image) or image.ndim != 4:
         return None
     height, width = image.shape[1:3]
-    resized_height, resized_width = qwen2vl_image_size(
-        height,
-        width,
-        min_pixels=3136,
-        max_pixels=12845056,
-        patch_size=16,
-        merge_size=2,
-    )
+    resized_height, resized_width = _qwen3vl_resized_dimensions(height, width)
     return (resized_height // 16) * (resized_width // 16) // 4
 
 
@@ -255,46 +318,30 @@ def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, 
     """Map raw tokenizer entries to conditioning spans, validating all inferred lengths."""
     cond_len = cond_tensor.shape[1]
     is_krea2 = cond_tensor.shape[-1] == 12 * 2560
-    prefix_candidates = _krea2_prefix_candidates(token_list) if is_krea2 else [0]
-    if not prefix_candidates:
-        raise ValueError("Could not locate a supported Krea2 user-prompt prefix boundary.")
+    exact_spans = [_qwen3vl_image_span(token) if is_image_token(token) else 1 for token in token_list]
+    if not all(span is not None for span in exact_spans):
+        raise ValueError("Cannot derive token positions because an image token has no usable Qwen3-VL tensor payload.")
 
-    prefix_len = None
-    token_spans = None
-    candidate_details = []
-    for candidate in prefix_candidates:
-        retained = token_list[candidate:]
-        exact_spans = [_qwen3vl_image_span(token) if is_image_token(token) else 1 for token in retained]
-        if all(span is not None for span in exact_spans):
-            mapped_length = sum(exact_spans)
-            candidate_details.append((candidate, mapped_length, "exact-grid"))
-            if mapped_length == cond_len:
-                prefix_len = candidate
-                token_spans = exact_spans
-                break
-            continue
+    total_length = sum(exact_spans)
+    prefix_len = _released_krea2_prefix_end(token_list, total_length) if is_krea2 else 0
+    if any(is_image_token(token) for token in token_list[:prefix_len]):
+        raise ValueError("Released Core's Krea2 prefix slice crosses a visual token; mapping is unsafe.")
 
-        image_count = sum(is_image_token(token) for token in retained)
-        text_count = len(retained) - image_count
-        if image_count == 0:
-            candidate_details.append((candidate, text_count, "text-only"))
-            if text_count == cond_len:
-                prefix_len = candidate
-                token_spans = [1] * len(retained)
-                break
-        else:
-            expanded = cond_len - text_count
-            candidate_details.append((candidate, expanded, "uniform-fallback"))
-            if expanded >= image_count and expanded % image_count == 0:
-                image_span = expanded // image_count
-                prefix_len = candidate
-                token_spans = [image_span if is_image_token(token) else 1 for token in retained]
-                break
-
-    if prefix_len is None:
+    token_spans = exact_spans[prefix_len:]
+    expected_length = sum(token_spans)
+    if expected_length != cond_len:
+        image_details = [
+            (index, exact_spans[index])
+            for index, token in enumerate(token_list)
+            if is_image_token(token)
+        ]
+        nearby_ids = [_token_id(token) for token in token_list[max(0, prefix_len - 3):prefix_len + 4]]
         raise ValueError(
-            "No supported tokenizer-prefix contract maps exactly to the returned conditioning length "
-            f"(conditioning_length={cond_len}, candidates={candidate_details})."
+            "Released Core's Krea2 prefix rule does not match the returned conditioning length; "
+            "refusing to guess a visual range "
+            f"(conditioning_length={cond_len}, expected_length={expected_length}, "
+            f"expanded_length={total_length}, prefix_end={prefix_len}, "
+            f"image_spans={image_details}, nearby_token_ids={nearby_ids})."
         )
 
     mapping = []
@@ -1018,11 +1065,27 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
     return C_blended, P_blended
 
 
-def find_visual_token_range(tokens, cond_tensor) -> tuple:
+def find_visual_token_range(tokens, cond_tensor, legacy_krea_spatial=False) -> tuple:
     key_name = next(iter(tokens.keys()))
     token_list = tokens[key_name][0]
     if not any(is_image_token(token) for token in token_list):
         return 0, 0
+
+    if legacy_krea_spatial and cond_tensor.shape[-1] == 12 * 2560:
+        image_indices = [index for index, token in enumerate(token_list) if is_image_token(token)]
+        if len(image_indices) != 1:
+            raise ValueError("Legacy Krea2 spatial mapping requires exactly one image per encoder pass.")
+        text_count = len(token_list) - 1
+        visual_length = cond_tensor.shape[1] - text_count
+        if visual_length <= 0:
+            raise ValueError("Legacy Krea2 spatial mapping produced a non-positive visual span.")
+        visual_start = image_indices[0]
+        visual_end = visual_start + visual_length
+        trailing_text = len(token_list) - image_indices[0] - 1
+        if visual_end + trailing_text != cond_tensor.shape[1]:
+            raise ValueError("Legacy Krea2 spatial mapping does not cover the conditioning sequence.")
+        return visual_start, visual_end
+
     mapping = build_token_to_conditioning_map(token_list, cond_tensor)
     for i, t in enumerate(token_list):
         if is_image_token(t):
@@ -1030,13 +1093,13 @@ def find_visual_token_range(tokens, cond_tensor) -> tuple:
 
     return 0, 0
 
-def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, **kwargs):
+def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, visual_encoder_path="grid-deepstack", **kwargs):
     if clip is None:
         raise RuntimeError("ERROR: clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
 
     if "(" not in text or ")" not in text:
         tokens = clip.tokenize(text, llama_template=llama_template, **kwargs)
-        return clip.encode_from_tokens_scheduled(tokens)
+        return _encode_scheduled_with_visual_path(clip, tokens, visual_encoder_path)
 
     clean_text = ""
     biases_to_apply = []
@@ -1053,7 +1116,7 @@ def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, **kw
             biases_to_apply.append({"start": start_count, "end": end_count, "strength": float(strength)})
 
     tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
-    conditioning = clip.encode_from_tokens_scheduled(tokens)
+    conditioning = _encode_scheduled_with_visual_path(clip, tokens, visual_encoder_path)
 
     if not biases_to_apply:
         return conditioning

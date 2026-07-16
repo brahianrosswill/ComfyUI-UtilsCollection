@@ -788,7 +788,7 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "##### Key Details:\n"
                 "- You can write your weights using standard weighting syntax: `(prompt text:weight)`, for example `(beautiful sunset:1.25)` or `(red car:0.8)`.\n"
                 "- Before tokenization, our weight translation engine parses and extracts these markers, strips the outer parenthesis and weight markers, and compiles the clean text.\n"
-                "- Token positions are validated against the returned conditioning sequence. Both the released and pending Krea2 prefix rules are supported, selected by matching Core's exact Qwen3-VL image-grid length.\n"
+                "- Token positions mirror released Core's Krea2 prefix slice and validate it against the exact Qwen3-VL image-grid expansion. A mismatch is rejected instead of guessing a visual range.\n"
                 "- The precise slices of the conditioning tensor are then multiplied element-wise by the target strength.\n"
                 "- Local weights leave pooled output unchanged. The separate global multiplier scales both sequence and pooled output."
             )

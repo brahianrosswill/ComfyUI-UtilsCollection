@@ -284,7 +284,13 @@ class UC_VisualFusionConfig(io.ComfyNode):
                 io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Active for spatial-dither-random. Probability of selecting the first image. Remaining images are selected with a checkerboard pattern."),
                 io.Boolean.Input("save_blended_embeds", default=False, tooltip="Enable to save the blended visual tokens as a standalone .safetensors embedding."),
                 io.String.Input("save_path", default="blended_visual_embeds.safetensors", tooltip="Target filename/path under models/embeddings to save the .safetensors file."),
-                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Seed for the spatial-dither-random pattern.")
+                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Seed for the spatial-dither-random pattern."),
+                io.Combo.Input(
+                    "visual_encoder_path",
+                    options=["grid-deepstack", "legacy-flat"],
+                    default="grid-deepstack",
+                    tooltip="Qwen3-VL encoder route used by visual fusion. grid-deepstack uses current Core grid MRoPE and DeepStack injection; legacy-flat reproduces the pre-d0008a89 flat 1D route."
+                )
             ],
             outputs=[
                 VisualFusionConfig.Output("visual_fusion_config")
@@ -300,12 +306,14 @@ class UC_VisualFusionConfig(io.ComfyNode):
         save_blended_embeds: bool = False,
         save_path: str = "blended_visual_embeds.safetensors",
         seed: int = 0,
+        visual_encoder_path: str = "grid-deepstack",
     ) -> io.NodeOutput:
         config = {
             "visual_fusion_method": visual_fusion_method,
             "visual_block_size": visual_block_size,
             "dither_ratio": dither_ratio,
             "seed": seed,
+            "visual_encoder_path": visual_encoder_path,
             "save_blended_embeds": save_blended_embeds,
             "save_path": save_path
         }
@@ -1957,6 +1965,20 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
+        def format_krea_prompt(user_prompt):
+            if system_prompt:
+                return (
+                    "<|im_start|>user\n<|im_end|>\n"
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                )
+            return (
+                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n"
+                f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+
         if not active_images:
             # Fallback if no images are connected: encode prompt as plain text
             logging.warning("AdvancedVisualConditioning: no images are connected; encoding the prompt as text only.")
@@ -1966,7 +1988,11 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 fusion_active=False,
                 context="AdvancedVisualConditioning",
             )
-            conditioning = multiply_conditioning(encode_embedding_classical_scaled_bias(clip, clean_prompt), multiplier)
+            full_prompt = format_krea_prompt(clean_prompt)
+            conditioning = multiply_conditioning(
+                encode_embedding_classical_scaled_bias(clip, full_prompt, skip_template=True),
+                multiplier,
+            )
             return io.NodeOutput(conditioning)
 
         # Map active images sequentially to letter variables (a, b, c, ...) and encode each pass
@@ -1979,6 +2005,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         if visual_fusion_config is None:
             visual_fusion_config = {"visual_fusion_method": "off"}
         visual_method = visual_fusion_config.get("visual_fusion_method", "off")
+        visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
 
         def process_vlm_image(image, res):
             if image is None:
@@ -2003,20 +2030,6 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
 
                 s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
                 return s_vlm.movedim(1, -1)
-
-        def format_krea_prompt(user_prompt):
-            if system_prompt:
-                return (
-                    "<|im_start|>user\n<|im_end|>\n"
-                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-                    f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
-                    "<|im_start|>assistant\n"
-                )
-            return (
-                "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n"
-                f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
-                "<|im_start|>assistant\n"
-            )
 
         processed_active_images = [process_vlm_image(image, vlm_resolution) for image in active_images]
         prepared_prompt, inline_numbers = prepare_image_placeholder_prompt(
@@ -2079,7 +2092,13 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             full_prompt = format_krea_prompt(modified_prompt)
 
             # Encode individual sequence pass
-            cond_X = encode_embedding_classical_scaled_bias(clip, full_prompt, images=[processed_img], skip_template=True)
+            cond_X = encode_embedding_classical_scaled_bias(
+                clip,
+                full_prompt,
+                images=[processed_img],
+                skip_template=True,
+                visual_encoder_path=visual_encoder_path if visual_method != "off" else "grid-deepstack",
+            )
             if len(cond_X) != 1:
                 raise ValueError("Advanced visual fusion requires a single conditioning schedule entry.")
             C_X = cond_X[0][0]
@@ -2093,7 +2112,11 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 try:
                     tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
                     tokens_dict[letter] = tokens
-                    vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                    vis_start, vis_end = find_visual_token_range(
+                        tokens,
+                        C_X,
+                        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                    )
                     visual_ranges[letter] = (vis_start, vis_end)
                 except Exception as e:
                     raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
@@ -2252,6 +2275,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         if visual_fusion_config is None:
             visual_fusion_config = {"visual_fusion_method": "off"}
         visual_method = visual_fusion_config.get("visual_fusion_method", "off")
+        visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
 
         def process_vlm_image(image, res):
             if image is None:
@@ -2287,7 +2311,12 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
             # Encode individual sequence pass
-            cond_X = encode_embedding_classical_scaled_bias(clip, modified_prompt, images=[processed_img])
+            cond_X = encode_embedding_classical_scaled_bias(
+                clip,
+                modified_prompt,
+                images=[processed_img],
+                visual_encoder_path=visual_encoder_path if visual_method != "off" else "grid-deepstack",
+            )
             if len(cond_X) != 1:
                 raise ValueError("Advanced visual fusion requires a single conditioning schedule entry.")
             C_X = cond_X[0][0]
@@ -2301,7 +2330,11 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 try:
                     tokens = clip.tokenize(modified_prompt, images=[processed_img], skip_template=True)
                     tokens_dict[letter] = tokens
-                    vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                    vis_start, vis_end = find_visual_token_range(
+                        tokens,
+                        C_X,
+                        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                    )
                     visual_ranges[letter] = (vis_start, vis_end)
                 except Exception as e:
                     raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
@@ -2872,6 +2905,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         if visual_fusion_config is None:
             visual_fusion_config = {"visual_fusion_method": "off"}
         visual_method = visual_fusion_config.get("visual_fusion_method", "off")
+        visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
 
         if active_images and visual_method != "off":
             weighted_prompt, _ = prepare_image_placeholder_prompt(
@@ -3002,7 +3036,13 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 clean_pass_prompt = format_krea_prompt(add_image_marker(clean_prompt), clean_system_prompt)
                 weighted_pass_prompt = format_krea_prompt(add_image_marker(weighted_prompt), weighted_system_prompt)
 
-                cond_X = encode_embedding_classical_scaled_bias(clip, weighted_pass_prompt, images=[processed_img], skip_template=True)
+                cond_X = encode_embedding_classical_scaled_bias(
+                    clip,
+                    weighted_pass_prompt,
+                    images=[processed_img],
+                    skip_template=True,
+                    visual_encoder_path=visual_encoder_path,
+                )
                 if len(cond_X) != 1:
                     raise ValueError("Krea2 attention visual fusion requires a single conditioning schedule entry.")
                 C_X = cond_X[0][0]
@@ -3016,7 +3056,11 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     try:
                         tokens = clip.tokenize(clean_pass_prompt, images=[processed_img], skip_template=True)
                         tokens_dict[letter] = tokens
-                        vis_start, vis_end = find_visual_token_range(tokens, C_X)
+                        vis_start, vis_end = find_visual_token_range(
+                            tokens,
+                            C_X,
+                            legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                        )
                         visual_ranges[letter] = (vis_start, vis_end)
                     except Exception as e:
                         raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
