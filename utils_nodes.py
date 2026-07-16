@@ -434,7 +434,7 @@ class UC_ExtractBoundingBox(io.ComfyNode):
         return boxes
 
     @classmethod
-    def execute(cls, input_data: any, index: int) -> io.NodeOutput:
+    def select_box(cls, input_data, index: int) -> tuple[int, int, int, int]:
         boxes = cls.find_boxes(input_data)
         if not boxes:
             raise ValueError("No bounding boxes containing 'x', 'y', 'width', and 'height' were found in the input data.")
@@ -443,16 +443,94 @@ class UC_ExtractBoundingBox(io.ComfyNode):
             raise ValueError(f"Index {index} is out of range. Found {len(boxes)} bounding box(es).")
 
         box = boxes[index]
-
         try:
             x = int(float(box["x"]))
             y = int(float(box["y"]))
-            w = int(float(box["width"]))
-            h = int(float(box["height"]))
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Failed to convert bounding box values at index {index} to integers: {e}")
+            width = int(float(box["width"]))
+            height = int(float(box["height"]))
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Failed to convert bounding box values at index {index} to integers: {exc}") from exc
 
-        return io.NodeOutput(x, y, w, h)
+        return x, y, width, height
+
+    @classmethod
+    def execute(cls, input_data: any, index: int) -> io.NodeOutput:
+        return io.NodeOutput(*cls.select_box(input_data, index))
+
+
+class UC_AdjustBoundingBox(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_AdjustBoundingBox",
+            display_name="Adjust Bounding Box",
+            category="utils/primitive",
+            inputs=[
+                io.AnyType.Input(
+                    "input_data",
+                    tooltip="Bounding-box data accepted by Extract Bounding Box: a native box, JSON string, list, dict, or nested structure.",
+                ),
+                io.Int.Input(
+                    "index",
+                    default=0,
+                    min=0,
+                    max=sys.maxsize,
+                    tooltip="Index of the bounding box to adjust.",
+                ),
+                io.Int.Input(
+                    "pixel_expansion",
+                    default=0,
+                    min=0,
+                    max=sys.maxsize,
+                    tooltip="Pixels added to each selected edge. Both adds this value on all four sides.",
+                ),
+                io.Combo.Input(
+                    "expansion_axis",
+                    options=["both", "horizontal", "vertical"],
+                    default="both",
+                    tooltip="Choose which axes receive the explicit pixel expansion.",
+                ),
+                io.Combo.Input(
+                    "size_multiple",
+                    options=["0", "8", "16", "32"],
+                    default="0",
+                    tooltip="Round width and height upward to this multiple while keeping the box centered. Zero disables alignment.",
+                ),
+            ],
+            outputs=[
+                io.BoundingBox.Output("bounding_box"),
+            ],
+        )
+
+    @staticmethod
+    def _expand_centered(origin: int, size: int, amount: int) -> tuple[int, int]:
+        return origin - amount, size + 2 * amount
+
+    @staticmethod
+    def _align_centered(origin: int, size: int, multiple: int) -> tuple[int, int]:
+        if multiple == 0:
+            return origin, size
+        aligned_size = ((size + multiple - 1) // multiple) * multiple
+        added = aligned_size - size
+        return origin - added // 2, aligned_size
+
+    @classmethod
+    def execute(cls, input_data, index, pixel_expansion, expansion_axis, size_multiple) -> io.NodeOutput:
+        x, y, width, height = UC_ExtractBoundingBox.select_box(input_data, index)
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Bounding box at index {index} must have positive width and height; got {width}x{height}.")
+
+        if expansion_axis in ("both", "horizontal"):
+            x, width = cls._expand_centered(x, width, pixel_expansion)
+        if expansion_axis in ("both", "vertical"):
+            y, height = cls._expand_centered(y, height, pixel_expansion)
+
+        multiple = int(size_multiple)
+        x, width = cls._align_centered(x, width, multiple)
+        y, height = cls._align_centered(y, height, multiple)
+
+        bounding_box = {"x": x, "y": y, "width": width, "height": height}
+        return io.NodeOutput(bounding_box)
 
 
 class UC_Krea2LayerProbe(io.ComfyNode):
