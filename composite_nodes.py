@@ -246,29 +246,42 @@ def _largest_face(faces, name):
     return max(faces, key=lambda face: max(0.0, float(face["bbox_xyxy"][2] - face["bbox_xyxy"][0])) * max(0.0, float(face["bbox_xyxy"][3] - face["bbox_xyxy"][1])))
 
 
-def _mask_extents(mask):
-    points = torch.nonzero(mask > 0.5, as_tuple=False)
-    if points.numel() == 0:
-        raise ValueError("Face landmark mask is empty.")
-    y = points[:, 0].to(torch.float32)
-    x = points[:, 1].to(torch.float32)
-    center_x = x.mean().item()
-    center_y = y.mean().item()
-    return center_x, center_y, center_x - x.min().item(), x.max().item() - center_x, center_y - y.min().item(), y.max().item() - center_y
+def _similarity_transform(source_points, target_points):
+    source_points = np.asarray(source_points, dtype=np.float32)
+    target_points = np.asarray(target_points, dtype=np.float32)
+    source_center = source_points.mean(axis=0)
+    target_center = target_points.mean(axis=0)
+    centered_source = source_points - source_center
+    centered_target = target_points - target_center
+    covariance = centered_source.T @ centered_target
+    left, singular_values, right = np.linalg.svd(covariance)
+    rotation = right.T @ left.T
+    if np.linalg.det(rotation) < 0:
+        right[-1] *= -1
+        singular_values[-1] *= -1
+        rotation = right.T @ left.T
+    scale = float(singular_values.sum() / max(float((centered_source * centered_source).sum()), 1e-6))
+    translation = target_center - scale * (source_center @ rotation.T)
+    return scale, rotation.astype(np.float32), translation.astype(np.float32)
 
 
-def _place(value, target_height, target_width, x, y):
-    if value.ndim == 3:
-        output = value.new_zeros((target_height, target_width, value.shape[-1]))
-    else:
-        output = value.new_zeros((target_height, target_width))
-    x1 = max(0, x)
-    y1 = max(0, y)
-    x2 = min(target_width, x + value.shape[1])
-    y2 = min(target_height, y + value.shape[0])
-    if x2 > x1 and y2 > y1:
-        output[y1:y2, x1:x2] = value[y1 - y:y2 - y, x1 - x:x2 - x]
-    return output
+def _transform_source(source, oval, foreground, output_height, output_width, scale, rotation, translation):
+    device = source.device
+    yy, xx = torch.meshgrid(
+        torch.arange(output_height, device=device, dtype=torch.float32),
+        torch.arange(output_width, device=device, dtype=torch.float32),
+        indexing="ij",
+    )
+    output_points = torch.stack((xx, yy), dim=-1)
+    rotation = torch.as_tensor(rotation, device=device, dtype=torch.float32)
+    translation = torch.as_tensor(translation, device=device, dtype=torch.float32)
+    source_points = ((output_points - translation) @ rotation) / max(float(scale), 1e-6)
+    grid_x = (source_points[..., 0] + 0.5) * (2.0 / source.shape[1]) - 1.0
+    grid_y = (source_points[..., 1] + 0.5) * (2.0 / source.shape[0]) - 1.0
+    grid = torch.stack((grid_x, grid_y), dim=-1).unsqueeze(0)
+    layers = torch.cat((source.movedim(-1, 0), oval.unsqueeze(0), foreground.unsqueeze(0)), dim=0).unsqueeze(0)
+    transformed = F.grid_sample(layers, grid, mode="bilinear", padding_mode="zeros", align_corners=False)[0]
+    return transformed[:3].movedim(0, -1), transformed[3], transformed[4]
 
 
 def _smoothstep(value):
@@ -276,46 +289,81 @@ def _smoothstep(value):
     return value * value * (3.0 - 2.0 * value)
 
 
+def _add_control(controls, values, seen, point, value):
+    key = (round(float(point[0]), 2), round(float(point[1]), 2))
+    if key not in seen:
+        seen.add(key)
+        controls.append(point)
+        values.append(value)
+
+
 def _warp_target(target, source_oval_points, target_oval_points, strength, decay_radius):
     if strength <= 0:
         return target
     device = target.device
-    dtype = target.dtype
-    source_points = torch.as_tensor(source_oval_points, device=device, dtype=dtype)
-    target_points = torch.as_tensor(target_oval_points, device=device, dtype=dtype)
-    center = source_points.mean(dim=0)
-    vectors = source_points - center
-    angles = torch.atan2(vectors[:, 1], vectors[:, 0])
-    order = torch.argsort(angles)
-    angles = angles[order]
-    radii = vectors.norm(dim=1)[order]
-    deltas = (target_points - source_points)[order]
-    angles = torch.cat((angles, angles[:1] + 2.0 * math.pi))
-    radii = torch.cat((radii, radii[:1]))
-    deltas = torch.cat((deltas, deltas[:1]), dim=0)
-
     height, width = target.shape[:2]
-    yy, xx = torch.meshgrid(torch.arange(height, device=device, dtype=dtype), torch.arange(width, device=device, dtype=dtype), indexing="ij")
-    dx = xx - center[0]
-    dy = yy - center[1]
-    pixel_angles = torch.atan2(dy, dx)
-    pixel_angles = torch.where(pixel_angles < angles[0], pixel_angles + 2.0 * math.pi, pixel_angles)
-    upper = torch.searchsorted(angles, pixel_angles, right=True).clamp(1, angles.shape[0] - 1)
-    lower = upper - 1
-    amount = (pixel_angles - angles[lower]) / (angles[upper] - angles[lower]).clamp_min(torch.finfo(dtype).eps)
-    boundary_radius = radii[lower] + (radii[upper] - radii[lower]) * amount
-    displacement = deltas[lower] + (deltas[upper] - deltas[lower]) * amount.unsqueeze(-1)
-    radius = torch.sqrt(dx * dx + dy * dy)
-    inside = _smoothstep(radius / boundary_radius.clamp_min(1.0))
-    outside = 1.0 - _smoothstep((radius - boundary_radius) / max(float(decay_radius), 1.0))
-    weight = torch.where(radius <= boundary_radius, inside, outside)
-    edge_distance = torch.minimum(torch.minimum(xx, width - 1 - xx), torch.minimum(yy, height - 1 - yy))
-    weight = weight * _smoothstep(edge_distance / max(float(decay_radius) * 0.5, 1.0)) * float(strength)
-    sample_x = xx + displacement[..., 0] * weight
-    sample_y = yy + displacement[..., 1] * weight
-    grid_x = (sample_x + 0.5) * (2.0 / width) - 1.0
-    grid_y = (sample_y + 0.5) * (2.0 / height) - 1.0
-    grid = torch.stack((grid_x, grid_y), dim=-1).unsqueeze(0)
+    source_points = np.asarray(source_oval_points, dtype=np.float32)
+    target_points = np.asarray(target_oval_points, dtype=np.float32)
+    center = source_points.mean(axis=0)
+    controls = []
+    values = []
+    seen = set()
+    for source_point, target_point in zip(source_points, target_points):
+        _add_control(controls, values, seen, source_point, (target_point - source_point) * float(strength))
+    for source_point in source_points:
+        direction = source_point - center
+        length = np.linalg.norm(direction)
+        if length > 0:
+            fixed = source_point + direction * (float(decay_radius) / length)
+            fixed[0] = np.clip(fixed[0], 0, width - 1)
+            fixed[1] = np.clip(fixed[1], 0, height - 1)
+            _add_control(controls, values, seen, fixed, np.zeros(2, dtype=np.float32))
+    border_step = max(8, min(32, int(decay_radius) // 2))
+    for x in range(0, width, border_step):
+        _add_control(controls, values, seen, np.array([x, 0], dtype=np.float32), np.zeros(2, dtype=np.float32))
+        _add_control(controls, values, seen, np.array([x, height - 1], dtype=np.float32), np.zeros(2, dtype=np.float32))
+    for y in range(0, height, border_step):
+        _add_control(controls, values, seen, np.array([0, y], dtype=np.float32), np.zeros(2, dtype=np.float32))
+        _add_control(controls, values, seen, np.array([width - 1, y], dtype=np.float32), np.zeros(2, dtype=np.float32))
+    for point in ((width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        _add_control(controls, values, seen, np.array(point, dtype=np.float32), np.zeros(2, dtype=np.float32))
+
+    controls = torch.as_tensor(np.asarray(controls), device=device, dtype=torch.float32)
+    values = torch.as_tensor(np.asarray(values), device=device, dtype=torch.float32)
+    controls[:, 0] = (controls[:, 0] + 0.5) * (2.0 / width) - 1.0
+    controls[:, 1] = (controls[:, 1] + 0.5) * (2.0 / height) - 1.0
+    values[:, 0] *= 2.0 / width
+    values[:, 1] *= 2.0 / height
+    difference = controls[:, None] - controls[None]
+    distance_squared = (difference * difference).sum(dim=-1)
+    kernel = distance_squared * torch.log(distance_squared + 1e-6)
+    kernel.diagonal().add_(1e-4)
+    affine = torch.cat((torch.ones((controls.shape[0], 1), device=device), controls), dim=1)
+    system = torch.cat((
+        torch.cat((kernel, affine), dim=1),
+        torch.cat((affine.T, torch.zeros((3, 3), device=device)), dim=1),
+    ), dim=0)
+    coefficients = torch.linalg.solve(system, torch.cat((values, torch.zeros((3, 2), device=device)), dim=0))
+
+    grid_rows = []
+    x_coordinates = (torch.arange(width, device=device, dtype=torch.float32) + 0.5) * (2.0 / width) - 1.0
+    for start in range(0, height, 64):
+        end = min(start + 64, height)
+        y_coordinates = (torch.arange(start, end, device=device, dtype=torch.float32) + 0.5) * (2.0 / height) - 1.0
+        yy, xx = torch.meshgrid(y_coordinates, x_coordinates, indexing="ij")
+        points = torch.stack((xx, yy), dim=-1)
+        difference = points.unsqueeze(-2) - controls
+        distance_squared = (difference * difference).sum(dim=-1)
+        basis = distance_squared * torch.log(distance_squared + 1e-6)
+        point_affine = torch.cat((torch.ones((*points.shape[:-1], 1), device=device), points), dim=-1)
+        displacement = basis @ coefficients[:-3] + point_affine @ coefficients[-3:]
+        pixel_x = torch.arange(width, device=device, dtype=torch.float32)
+        pixel_y = torch.arange(start, end, device=device, dtype=torch.float32)
+        edge_x = torch.minimum(pixel_x, width - 1 - pixel_x).unsqueeze(0)
+        edge_y = torch.minimum(pixel_y, height - 1 - pixel_y).unsqueeze(1)
+        displacement *= _smoothstep(torch.minimum(edge_x, edge_y) / 2.0).unsqueeze(-1)
+        grid_rows.append(points + displacement)
+    grid = torch.cat(grid_rows, dim=0).unsqueeze(0)
     warped = F.grid_sample(target.movedim(-1, 0).unsqueeze(0), grid, mode="bilinear", padding_mode="border", align_corners=False)
     return warped.squeeze(0).movedim(0, -1)
 
@@ -391,7 +439,6 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
         source_points = source_face["landmarks_xy"][ring]
         target_points = target_face["landmarks_xy"][ring]
         source_mask = _polygon_mask(source.shape[1], source.shape[2], source_points, target.device, target.dtype)
-        target_mask = _polygon_mask(target.shape[1], target.shape[2], target_points, target.device, target.dtype)
         foreground = background_removal_model.encode_image(source)
         if foreground.shape[-2:] != source.shape[1:3]:
             foreground = _resize_mask(foreground, source.shape[2], source.shape[1], "bilinear")
@@ -404,26 +451,21 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
         source_oval = source_mask[sy1:sy2, sx1:sx2]
         source_foreground = foreground[sy1:sy2, sx1:sx2]
         target_crop = target[0, ty1:ty2, tx1:tx2]
-        target_oval = target_mask[ty1:ty2, tx1:tx2]
 
-        source_geometry = _mask_extents(source_oval)
-        target_geometry = _mask_extents(target_oval)
-        scale = max(target_geometry[index] / max(source_geometry[index], 1.0) for index in range(2, 6))
-        scaled_width = max(1, round(source_crop.shape[1] * scale))
-        scaled_height = max(1, round(source_crop.shape[0] * scale))
-        source_crop = _resize_image(source_crop.unsqueeze(0), scaled_width, scaled_height, "lanczos")[0]
-        source_oval = _resize_mask(source_oval.unsqueeze(0), scaled_width, scaled_height, "bilinear")[0]
-        source_foreground = _resize_mask(source_foreground.unsqueeze(0), scaled_width, scaled_height, "bilinear")[0]
-        source_center_x = source_geometry[0] * scale
-        source_center_y = source_geometry[1] * scale
-        place_x = round(target_geometry[0] - source_center_x)
-        place_y = round(target_geometry[1] - source_center_y)
-        placed_source = _place(source_crop, target_crop.shape[0], target_crop.shape[1], place_x, place_y)
-        placed_oval = _place(source_oval, target_crop.shape[0], target_crop.shape[1], place_x, place_y)
-        placed_foreground = _place(source_foreground, target_crop.shape[0], target_crop.shape[1], place_x, place_y)
-
-        placed_source_points = (source_points - np.array([sx1, sy1], dtype=np.float32)) * scale + np.array([place_x, place_y], dtype=np.float32)
+        local_source_points = source_points - np.array([sx1, sy1], dtype=np.float32)
         local_target_points = target_points - np.array([tx1, ty1], dtype=np.float32)
+        scale, rotation, translation = _similarity_transform(local_source_points, local_target_points)
+        placed_source, placed_oval, placed_foreground = _transform_source(
+            source_crop,
+            source_oval,
+            source_foreground,
+            target_crop.shape[0],
+            target_crop.shape[1],
+            scale,
+            rotation,
+            translation,
+        )
+        placed_source_points = scale * (local_source_points @ rotation.T) + translation
         warped_target = _warp_target(target_crop, placed_source_points, local_target_points, options["target_warp_strength"], options["warp_decay_radius"])
 
         mask_expansion = options["mask_expansion"]
