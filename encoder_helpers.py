@@ -314,6 +314,26 @@ def _qwen3vl_image_span(token) -> int | None:
     return (resized_height // 16) * (resized_width // 16) // 4
 
 
+def qwen3vl_visual_grid(image) -> tuple[int, int]:
+    """Return the exact post-patch, post-merge Qwen visual token grid."""
+    if not torch.is_tensor(image) or image.ndim != 4:
+        raise ValueError("Visual token layout error: processed image must have shape [batch, height, width, channels].")
+    resized_height, resized_width = _qwen3vl_resized_dimensions(*image.shape[1:3])
+    return resized_height // 32, resized_width // 32
+
+
+def visual_fusion_grid(image, visual_length: int, legacy_flat: bool = False) -> tuple[int, int]:
+    """Describe the usable visual layout without inventing legacy spatial coordinates."""
+    if visual_length < 1:
+        raise ValueError("Visual token layout error: visual range must contain at least one token.")
+    if legacy_flat:
+        return 1, visual_length
+    grid = qwen3vl_visual_grid(image)
+    if grid[0] * grid[1] != visual_length:
+        raise ValueError(f"Visual token layout error: grid {grid} does not match range length {visual_length}.")
+    return grid
+
+
 def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, int]]:
     """Map raw tokenizer entries to conditioning spans, validating all inferred lengths."""
     cond_len = cond_tensor.shape[1]
@@ -499,7 +519,7 @@ SPATIAL_FUSION_METHODS = {"spatial-checkerboard", "spatial-block-interleave", "s
 VISUAL_FUSION_METHODS = SPATIAL_FUSION_METHODS | {"linear"}
 
 
-def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_size: int = 2, dither_ratio: float = 0.5, device: str = "cpu", seed: int = 0) -> torch.Tensor:
+def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_size: int = 2, dither_ratio: float = 0.5, device: str = "cpu", seed: int = 0, grid_shape=None, dither_secondary_pattern: str = "checkerboard", dither_mask_cleanup: bool = False) -> torch.Tensor:
     """
     Generates a seeded 1D token index mapping array corresponding to a source image index.
     """
@@ -518,7 +538,9 @@ def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_si
     if num_sources == 1:
         return torch.zeros(N, dtype=torch.long, device=device)
 
-    h, w = reconstruct_2d_grid(N)
+    h, w = grid_shape if grid_shape is not None else reconstruct_2d_grid(N)
+    if h < 1 or w < 1 or h * w != N:
+        raise ValueError(f"Visual token layout error: grid {grid_shape} does not contain {N} tokens.")
     rows = torch.arange(h, device=device).unsqueeze(1)
     columns = torch.arange(w, device=device).unsqueeze(0)
 
@@ -527,24 +549,48 @@ def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_si
     if method == "spatial-block-interleave":
         return ((rows // block_size + columns // block_size) % num_sources).flatten()
 
+    if dither_secondary_pattern not in {"checkerboard", "block-interleave"}:
+        raise ValueError(f"Unsupported dither secondary pattern: {dither_secondary_pattern}")
+    if block_size < 1:
+        raise ValueError("Visual block size must be at least 1.")
     generator = torch.Generator(device=device).manual_seed(seed)
     random = torch.rand(N, generator=generator, device=device)
-    other_sources = 1 + ((rows + columns) % (num_sources - 1)).flatten()
-    return torch.where(random < dither_ratio, 0, other_sources)
+    if dither_secondary_pattern == "block-interleave":
+        secondary = rows // block_size + columns // block_size
+    else:
+        secondary = rows + columns
+    other_sources = 1 + (secondary % (num_sources - 1)).flatten()
+    mask = torch.where(random < dither_ratio, 0, other_sources).reshape(h, w)
+    if dither_mask_cleanup and 0.0 < dither_ratio < 1.0:
+        primary = mask.eq(0)
+        padded = F.pad(primary, (1, 1, 1, 1))
+        neighbors = torch.stack([
+            padded[row:row + h, column:column + w]
+            for row in range(3)
+            for column in range(3)
+            if (row, column) != (1, 1)
+        ])
+        isolated = primary & ~neighbors.any(dim=0)
+        holes = ~primary & neighbors.all(dim=0)
+        mask = torch.where(isolated, other_sources.reshape(h, w), mask)
+        mask = torch.where(holes, torch.zeros_like(mask), mask)
+    return mask.flatten()
 
 
-def _visual_fusion_mask(config, N, num_sources, mask_device, output_device, mask_cache):
+def _visual_fusion_mask(config, grid_shape, num_sources, mask_device, output_device, mask_cache):
     method = config.get("visual_fusion_method", "spatial-checkerboard")
     block_size = config.get("visual_block_size", 2)
     dither_ratio = config.get("dither_ratio", 0.5)
     seed = config.get("seed", 0)
-    key = (N, num_sources, method, block_size, dither_ratio, seed)
+    secondary = config.get("dither_secondary_pattern", "checkerboard")
+    cleanup = config.get("dither_mask_cleanup", False)
+    key = (tuple(grid_shape), num_sources, method, secondary, cleanup, block_size, dither_ratio, seed)
     if key not in mask_cache:
-        mask_cache[key] = generate_spatial_fusion_mask(N, num_sources, method, block_size, dither_ratio, mask_device, seed)
+        mask_cache[key] = generate_spatial_fusion_mask(grid_shape[0] * grid_shape[1], num_sources, method, block_size, dither_ratio, mask_device, seed, grid_shape, secondary, cleanup)
     return mask_cache[key].to(output_device)
 
 
-def fuse_visual_token_sources(sources, visual_fusion_config, mask_device, mask_cache=None, expected_length=None):
+def fuse_visual_token_sources(sources, visual_fusion_config, mask_device, mask_cache=None, expected_length=None, source_grids=None):
     if not sources:
         raise ValueError("Visual fusion requires at least one visual token source.")
 
@@ -557,18 +603,24 @@ def fuse_visual_token_sources(sources, visual_fusion_config, mask_device, mask_c
         raise ValueError("Visual fusion sources must have matching embedding dimensions.")
     if any(source.device != sources[0].device for source in sources[1:]):
         raise ValueError("Visual fusion sources must be on the same device.")
-
-    max_length = max(source.shape[0] for source in sources)
-    if expected_length is not None and max_length != expected_length:
-        raise ValueError(f"Visual token layout mismatch: expected {expected_length} tokens, received {max_length}.")
+    if source_grids is None or len(source_grids) != len(sources):
+        raise ValueError("Visual token layout error: every fusion source requires an explicit grid.")
+    grids = [tuple(grid) for grid in source_grids]
+    for source, grid in zip(sources, grids):
+        if len(grid) != 2 or grid[0] < 1 or grid[1] < 1 or grid[0] * grid[1] != source.shape[0]:
+            raise ValueError(f"Visual token layout error: grid {grid} is inconsistent with {source.shape[0]} tokens.")
+    canonical_grid = grids[0]
+    canonical_length = canonical_grid[0] * canonical_grid[1]
+    if expected_length is not None and canonical_length != expected_length:
+        raise ValueError(f"Visual token layout mismatch: expected {expected_length} tokens, received canonical grid {canonical_grid}.")
 
     output_dtype = sources[0].dtype
-    compute_float = method == "linear" or any(source.shape[0] != max_length for source in sources)
+    compute_float = method == "linear"
     aligned = []
-    for source in sources:
+    for source, grid in zip(sources, grids):
         value = source.to(dtype=torch.float32) if compute_float else source
-        if value.shape[0] != max_length:
-            value = F.interpolate(value.transpose(0, 1).unsqueeze(0), size=max_length, mode="linear", align_corners=False).squeeze(0).transpose(0, 1)
+        if grid != canonical_grid:
+            value = F.interpolate(value.reshape(grid[0], grid[1], -1).permute(2, 0, 1)[None], size=canonical_grid, mode="nearest")[0].permute(1, 2, 0).reshape(canonical_length, -1)
         aligned.append(value)
 
     stacked = torch.stack(aligned, dim=1)
@@ -577,12 +629,12 @@ def fuse_visual_token_sources(sources, visual_fusion_config, mask_device, mask_c
 
     if mask_cache is None:
         mask_cache = {}
-    mask = _visual_fusion_mask(visual_fusion_config, max_length, len(sources), mask_device, stacked.device, mask_cache)
+    mask = _visual_fusion_mask(visual_fusion_config, canonical_grid, len(sources), mask_device, stacked.device, mask_cache)
     fused = torch.take_along_dim(stacked, mask[:, None, None], dim=1).squeeze(1)
     return fused.to(dtype=output_dtype)
 
 
-def fuse_deepstack_layers(deepstack_tensors, visual_fusion_config, device, mask_cache, expected_length):
+def fuse_deepstack_layers(deepstack_tensors, visual_fusion_config, device, mask_cache, expected_length, source_grids):
     active_keys = sorted(deepstack_tensors)
     if not active_keys:
         return None
@@ -594,7 +646,7 @@ def fuse_deepstack_layers(deepstack_tensors, visual_fusion_config, device, mask_
     blended = []
     for layer in range(num_layers):
         sources = [deepstack_tensors[key][layer].to(device=device) for key in active_keys]
-        blended.append(fuse_visual_token_sources(sources, visual_fusion_config, device, mask_cache, expected_length))
+        blended.append(fuse_visual_token_sources(sources, visual_fusion_config, device, mask_cache, expected_length, source_grids))
     return blended
 
 
@@ -682,6 +734,7 @@ def evaluate_conditioning_consensus_blend(
     clip = None,
     tokens_dict: dict = None,
     mask_cache: dict = None,
+    visual_grids: dict = None,
 ) -> tuple:
     """
     Decoupled blending engine focused entirely on isolated visual token spatial fusion.
@@ -696,6 +749,8 @@ def evaluate_conditioning_consensus_blend(
         raise ValueError(f"Unsupported visual fusion method: {visual_method}")
     if visual_ranges is None:
         raise ValueError("Visual token ranges are required for visual fusion.")
+    if visual_grids is None:
+        raise ValueError("Visual token layout error: visual grids are required for fusion.")
     if mask_cache is None:
         mask_cache = {}
 
@@ -705,7 +760,10 @@ def evaluate_conditioning_consensus_blend(
         return None, None
 
     B = tensors_list[0].shape[0]
-    expected_visual_length = max(end - start for start, end in (visual_ranges.get(key, (0, 0)) for key in active_keys))
+    if any(key not in visual_grids for key in active_keys):
+        raise ValueError("Visual token layout error: every fusion source requires a grid.")
+    source_grids = [visual_grids[key] for key in active_keys]
+    expected_visual_length = source_grids[0][0] * source_grids[0][1]
     if expected_visual_length <= 0 or any(visual_ranges.get(key, (0, 0)) == (0, 0) for key in active_keys):
         raise ValueError("Every visual fusion source must have a valid visual token range.")
 
@@ -726,7 +784,7 @@ def evaluate_conditioning_consensus_blend(
             suffixes[k] = t[v_end:, :]
 
         sources = [visuals[key] for key in active_keys]
-        blended_vis_2d = fuse_visual_token_sources(sources, visual_fusion_config, device, mask_cache, expected_visual_length)
+        blended_vis_2d = fuse_visual_token_sources(sources, visual_fusion_config, device, mask_cache, expected_visual_length, source_grids)
 
         # Surrounding text (prefixes & suffixes) are kept 100% pure from the reference pass
         blended_prefix = prefixes[ref_key]
@@ -761,7 +819,7 @@ def evaluate_conditioning_consensus_blend(
             v_start, v_end = visual_ranges[key]
             raw_visuals.append(embeds[0, v_start:v_end, :].clone().cpu())
 
-        blended_raw = fuse_visual_token_sources(raw_visuals, visual_fusion_config, device, mask_cache, expected_visual_length)
+        blended_raw = fuse_visual_token_sources(raw_visuals, visual_fusion_config, device, mask_cache, expected_visual_length, source_grids)
         save_blended_visual_embeddings([blended_raw], visual_fusion_config, embedding_key)
 
     # Pooled output is kept pure from reference pass since text is identical

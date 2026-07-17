@@ -396,7 +396,7 @@ class UC_TextGenerateQwen35SystemPrompt(io.ComfyNode):
     """
     TextGenerate variant for Qwen3.5 models with custom system message support.
     Builds the chat template via string concatenation (never .format()) so any
-    characters in user input — including { } \\ and control sequences — are safe.
+    characters in user input, including { } \\ and control sequences, are safe.
     """
 
     @classmethod
@@ -428,7 +428,7 @@ class UC_TextGenerateQwen35SystemPrompt(io.ComfyNode):
             inputs=[
                 io.Clip.Input("clip"),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=False, default="",
-                    tooltip="User message. All characters including { } are safe — template uses concatenation not .format()."),
+                    tooltip="User message. All characters including { } are safe; the template uses concatenation, not .format()."),
                 io.String.Input("system_message", multiline=True, dynamic_prompts=False, default="",
                     tooltip="System message injected before the user turn. Leave empty to skip the system block entirely."),
                 io.Image.Input("image", optional=True),
@@ -446,7 +446,7 @@ class UC_TextGenerateQwen35SystemPrompt(io.ComfyNode):
     def _build_prompt(cls, prompt: str, system_message: str, has_image: bool, thinking: bool) -> str:
         """
         Build the full Qwen3.5 chat-template string using concatenation only.
-        No .format() / %-formatting — user-supplied strings are never interpolated,
+        No .format() / %-formatting; user-supplied strings are never interpolated,
         so { } and any other characters are completely safe.
 
         Template structure (matches qwen35.py Qwen35ImageTokenizer):
@@ -467,7 +467,7 @@ class UC_TextGenerateQwen35SystemPrompt(io.ComfyNode):
                 + "<|im_end|>\n"
             )
 
-        # User block — image token placed before text per qwen35.py:761
+        # User block: image token placed before text per qwen35.py:761
         result += "<|im_start|>user\n"
         if has_image:
             result += "<|vision_start|><|image_pad|><|vision_end|>"

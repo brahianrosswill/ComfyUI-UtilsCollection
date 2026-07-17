@@ -35,6 +35,7 @@ from .encoder_helpers import(
     prepare_image_placeholder_prompt,
     extract_and_flatten_images,
     resolve_embedding_output_path,
+    visual_fusion_grid,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -290,7 +291,9 @@ class UC_VisualFusionConfig(io.ComfyNode):
                     options=["grid-deepstack", "legacy-flat"],
                     default="grid-deepstack",
                     tooltip="Qwen3-VL encoder route used by visual fusion. grid-deepstack uses current Core grid MRoPE and DeepStack injection; legacy-flat reproduces the pre-d0008a89 flat 1D route."
-                )
+                ),
+                io.Combo.Input("dither_secondary_pattern", options=["checkerboard", "block-interleave"], default="checkerboard", tooltip="Layout used for images 2+ in spatial-dither-random."),
+                io.Boolean.Input("dither_mask_cleanup", default=False, tooltip="Remove isolated one-token image-1 islands and holes with a deterministic 3x3 pass."),
             ],
             outputs=[
                 VisualFusionConfig.Output("visual_fusion_config")
@@ -307,6 +310,8 @@ class UC_VisualFusionConfig(io.ComfyNode):
         save_path: str = "blended_visual_embeds.safetensors",
         seed: int = 0,
         visual_encoder_path: str = "grid-deepstack",
+        dither_secondary_pattern: str = "checkerboard",
+        dither_mask_cleanup: bool = False,
     ) -> io.NodeOutput:
         config = {
             "visual_fusion_method": visual_fusion_method,
@@ -314,6 +319,8 @@ class UC_VisualFusionConfig(io.ComfyNode):
             "dither_ratio": dither_ratio,
             "seed": seed,
             "visual_encoder_path": visual_encoder_path,
+            "dither_secondary_pattern": dither_secondary_pattern,
+            "dither_mask_cleanup": dither_mask_cleanup,
             "save_blended_embeds": save_blended_embeds,
             "save_path": save_path
         }
@@ -1999,6 +2006,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         sequence_tensors = {}
         pooled_tensors = {}
         visual_ranges = {}
+        visual_grids = {}
         tokens_dict = {}
         reference_cond_dict = None
 
@@ -2118,6 +2126,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                         legacy_krea_spatial=visual_encoder_path == "legacy-flat",
                     )
                     visual_ranges[letter] = (vis_start, vis_end)
+                    visual_grids[letter] = visual_fusion_grid(processed_img, vis_end - vis_start, visual_encoder_path == "legacy-flat")
                 except Exception as e:
                     raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
@@ -2134,7 +2143,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 key_name = next(iter(tokens.keys()))
 
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -2269,6 +2278,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         sequence_tensors = {}
         pooled_tensors = {}
         visual_ranges = {}
+        visual_grids = {}
         tokens_dict = {}
         reference_cond_dict = None
 
@@ -2336,6 +2346,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                         legacy_krea_spatial=visual_encoder_path == "legacy-flat",
                     )
                     visual_ranges[letter] = (vis_start, vis_end)
+                    visual_grids[letter] = visual_fusion_grid(processed_img, vis_end - vis_start, visual_encoder_path == "legacy-flat")
                 except Exception as e:
                     raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
@@ -2352,7 +2363,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 key_name = next(iter(tokens.keys()))
 
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -3026,6 +3037,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             sequence_tensors = {}
             pooled_tensors = {}
             visual_ranges = {}
+            visual_grids = {}
             tokens_dict = {}
             reference_cond_dict = None
 
@@ -3062,6 +3074,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                             legacy_krea_spatial=visual_encoder_path == "legacy-flat",
                         )
                         visual_ranges[letter] = (vis_start, vis_end)
+                        visual_grids[letter] = visual_fusion_grid(processed_img, vis_end - vis_start, visual_encoder_path == "legacy-flat")
                     except Exception as e:
                         raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
 
@@ -3077,7 +3090,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     key_name = next(iter(tokens.keys()))
 
                 C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache
+                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
                 )
             else:
                 C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
