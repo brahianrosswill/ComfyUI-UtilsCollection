@@ -137,6 +137,14 @@ def test_legacy_flat_visual_range_preserves_pre_refactor_spatial_mapping():
     ) == (7, 18)
 
 
+def test_legacy_flat_fusion_layout_uses_retained_visual_span():
+    image = torch.zeros(1, 896, 1184, 3)
+    assert encoder_helpers.qwen3vl_visual_grid(image) == (28, 37)
+    assert encoder_helpers.visual_fusion_grid(image, 1002, legacy_flat=True) == (1, 1002)
+    with pytest.raises(ValueError, match="does not match range length"):
+        encoder_helpers.visual_fusion_grid(image, 1002)
+
+
 def test_unknown_visual_expansion_is_rejected_when_length_has_no_solution():
     tokens = [({"type": "image"}, 1.0), (10, 1.0), ({"type": "image"}, 1.0)]
     conditioning = torch.zeros(1, 8, 16)
