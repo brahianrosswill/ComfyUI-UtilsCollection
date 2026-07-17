@@ -15,11 +15,12 @@ from .composite_nodes import *
 
 from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
+from .node_metadata import enrich_node_list
 
 class SamplingUtils(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [
+        return enrich_node_list([
             UC_AdjustedResolutionParameters,
             UC_ResolutionSelectorExtended,
             UC_ImageScaleAndResolutionPicker,
@@ -81,6 +82,7 @@ class SamplingUtils(ComfyExtension):
             UC_TextOverlayNode,
             UC_RandInt,
             UC_StaticInt,
+            UC_StaticFloat,
             UC_RandIntRange,
             UC_TextConsensusBlendConfig,
             UC_VisualFusionConfig,
@@ -160,7 +162,7 @@ class SamplingUtils(ComfyExtension):
             ColorConvertNode,
             EncoderNodesGuide,
             Ideogram4SchedulerPreset,
-        ]
+        ])
 
     @override
     async def on_load(self) -> None:

@@ -395,24 +395,23 @@ class UC_ConditioningConsensusBlend(io.ComfyNode):
             return result
 
         device = comfy.model_management.get_torch_device()
+        compute_dtype = comfy.model_management.intermediate_dtype()
         blended_conditioning = []
         for schedule_index in range(next(iter(schedule_lengths))):
             entries = [conditioning[schedule_index] for conditioning in active_conds]
-            dtype = entries[0][0].dtype
             sequence_tensors = {}
             pooled_tensors = {}
             for index, (tensor, metadata) in enumerate(entries):
                 key = chr(97 + index)
-                sequence_tensors[key] = comfy.model_management.cast_to_device(tensor, device, dtype)
+                sequence_tensors[key] = tensor
                 pooled = metadata.get("pooled_output") if metadata else None
-                pooled_tensors[key] = (
-                    comfy.model_management.cast_to_device(pooled, device, dtype) if pooled is not None else None
-                )
+                pooled_tensors[key] = pooled
             C_blended, P_blended = blend_text_vectors(
                 sequence_tensors,
                 text_blend_config,
                 pooled_tensors=pooled_tensors,
-                device=str(device),
+                device=device,
+                compute_dtype=compute_dtype,
             )
             metadata = compatible_metadata([entry[1] for entry in entries])
             if P_blended is not None:

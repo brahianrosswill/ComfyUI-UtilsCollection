@@ -64,6 +64,7 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_IntegerRangeRandom`
 - `UC_RandInt`
 - `UC_StaticInt`
+- `UC_StaticFloat`
 - `UC_RandIntRange`
 - `UC_ColorConvertNode`
 - `UC_ExtractBoundingBox`

@@ -23,6 +23,7 @@ try:
         TextEncodeKrea2SysEditScaledAdvAttn,
         UC_AdvancedVisualConditioningEncode,
         UC_AttentionBiasTextEncode,
+        UC_ConditioningConsensusBlend,
         UC_Krea2TokenAttentionWeight,
         UC_Qwen3VLInputEmbeds,
         UC_VisualFusionConfig,
@@ -169,6 +170,83 @@ def test_consensus_off_returns_reference_and_fractional_weights_stay_finite():
         },
     )
     assert torch.isfinite(blended).all()
+
+
+def test_consensus_blend_restores_sequence_and_pooled_reference_dtype():
+    sequences = {
+        "a": torch.tensor([[[1.0, 0.0]]], dtype=torch.float64),
+        "b": torch.tensor([[[0.0, 1.0]]]),
+    }
+    pooled = {
+        "a": torch.tensor([[1.0, 0.0]], dtype=torch.float16),
+        "b": torch.tensor([[0.0, 1.0]]),
+    }
+
+    blended, blended_pooled = encoder_helpers.blend_text_vectors(
+        sequences,
+        {"blend_preset": "baseline"},
+        pooled_tensors=pooled,
+        device=sequences["a"].device,
+        compute_dtype=torch.float32,
+    )
+
+    assert blended.device == sequences["a"].device
+    assert blended.dtype == sequences["a"].dtype
+    assert blended_pooled.device == pooled["a"].device
+    assert blended_pooled.dtype == pooled["a"].dtype
+
+
+def test_consensus_node_passes_original_tensors_to_blender(monkeypatch):
+    first = torch.ones(1, 2, 3, dtype=torch.float64)
+    second = torch.zeros(1, 2, 3)
+    first_pooled = torch.ones(1, 3, dtype=torch.float16)
+    seen = {}
+
+    def fake_blend(sequence_tensors, config, pooled_tensors, device, compute_dtype):
+        seen["sequence"] = sequence_tensors["a"]
+        seen["pooled"] = pooled_tensors["a"]
+        return sequence_tensors["a"], pooled_tensors["a"]
+
+    monkeypatch.setattr(encoder_helpers.comfy.model_management, "get_torch_device", lambda: first.device)
+    monkeypatch.setattr(encoder_helpers.comfy.model_management, "intermediate_dtype", lambda: torch.float32)
+    monkeypatch.setattr("utils_collection_encoder_test.encoder_nodes.blend_text_vectors", fake_blend)
+
+    output = UC_ConditioningConsensusBlend.execute(
+        {
+            "conditioning_1": [[first, {"pooled_output": first_pooled}]],
+            "conditioning_2": [[second, {"pooled_output": torch.zeros(1, 3)}]],
+        },
+        {"blend_preset": "baseline"},
+    ).result[0]
+
+    assert seen["sequence"] is first
+    assert seen["pooled"] is first_pooled
+    assert output[0][0] is first
+    assert output[0][1]["pooled_output"] is first_pooled
+
+
+@pytest.mark.skipif(
+    encoder_helpers.comfy.model_management.is_device_cpu(
+        encoder_helpers.comfy.model_management.get_torch_device()
+    ),
+    reason="No accelerator backend is selected",
+)
+def test_consensus_accelerator_compute_does_not_change_cpu_output_placement():
+    sequences = {"a": torch.ones(1, 2, 3), "b": torch.zeros(1, 2, 3)}
+    pooled = {"a": torch.ones(1, 3), "b": torch.zeros(1, 3)}
+    compute_device = encoder_helpers.comfy.model_management.get_torch_device()
+    compute_dtype = encoder_helpers.comfy.model_management.intermediate_dtype()
+
+    blended, blended_pooled = encoder_helpers.blend_text_vectors(
+        sequences,
+        {"blend_preset": "baseline"},
+        pooled_tensors=pooled,
+        device=compute_device,
+        compute_dtype=compute_dtype,
+    )
+
+    assert blended.device == sequences["a"].device
+    assert blended_pooled.device == pooled["a"].device
 
 
 def test_contextual_weighting_does_not_scale_pooled_output():

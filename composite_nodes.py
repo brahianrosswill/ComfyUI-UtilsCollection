@@ -403,18 +403,20 @@ class UC_MediaPipeFaceCompositeOptions(io.ComfyNode):
                 io.Int.Input("feather_radius", default=8, min=-512, max=512, step=1),
                 io.Float.Input("target_warp_strength", default=1.0, min=0.0, max=2.0, step=0.01),
                 io.Int.Input("warp_decay_radius", default=64, min=1, max=MAX_RESOLUTION, step=1),
+                io.Float.Input("score_thresh", default=0.25, min=0.0, max=1.0, step=0.01),
             ],
             outputs=[FaceCompositeOptionsType.Output()],
         )
 
     @classmethod
-    def execute(cls, bbox_expansion, mask_expansion, feather_radius, target_warp_strength, warp_decay_radius):
+    def execute(cls, bbox_expansion, mask_expansion, feather_radius, target_warp_strength, warp_decay_radius, score_thresh):
         return io.NodeOutput({
             "bbox_expansion": int(bbox_expansion),
             "mask_expansion": int(mask_expansion),
             "feather_radius": int(feather_radius),
             "target_warp_strength": float(target_warp_strength),
             "warp_decay_radius": int(warp_decay_radius),
+            "score_thresh": float(score_thresh),
         })
 
 
@@ -425,6 +427,7 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
         "feather_radius": 8,
         "target_warp_strength": 1.0,
         "warp_decay_radius": 64,
+        "score_thresh": 0.25,
     }
 
     @classmethod
@@ -449,12 +452,13 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
         if source.shape[0] != 1 or target.shape[0] != 1:
             raise ValueError("MediaPipe Face Composite currently requires one source and one target image.")
         options = cls.DEFAULT_OPTIONS | (options or {})
+        score_thresh = options["score_thresh"]
         source = source[..., :3]
         target = target[..., :3]
         source_uint8 = source.mul(255.0).add(0.5).clamp(0, 255).to(torch.uint8).cpu().numpy()[0]
         target_uint8 = target.mul(255.0).add(0.5).clamp(0, 255).to(torch.uint8).cpu().numpy()[0]
-        source_face = _largest_face(face_detection_model.detect_batch([source_uint8], num_faces=0, score_thresh=0.5, variant="full")[0], "source")
-        target_face = _largest_face(face_detection_model.detect_batch([target_uint8], num_faces=0, score_thresh=0.5, variant="full")[0], "target")
+        source_face = _largest_face(face_detection_model.detect_batch([source_uint8], num_faces=1, score_thresh=score_thresh, variant="full")[0], "source")
+        target_face = _largest_face(face_detection_model.detect_batch([target_uint8], num_faces=1, score_thresh=score_thresh, variant="full")[0], "target")
         ring = _ordered_ring(face_detection_model.connection_sets["face_oval"])
 
         source = source.to(target)

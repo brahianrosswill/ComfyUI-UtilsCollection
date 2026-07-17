@@ -236,6 +236,30 @@ class UC_StaticInt(io.ComfyNode):
         return io.NodeOutput(value)
 
 
+class UC_StaticFloat(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_StaticFloat",
+            display_name="StaticFloat",
+            category="utils/primitive",
+            inputs=[
+                io.Float.Input(
+                    "value",
+                    default=1.0,
+                    min=-sys.float_info.max,
+                    max=sys.float_info.max,
+                    step=0.01,
+                ),
+            ],
+            outputs=[io.Float.Output()],
+        )
+
+    @classmethod
+    def execute(cls, value: float) -> io.NodeOutput:
+        return io.NodeOutput(value)
+
+
 class UC_RandIntRange(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:

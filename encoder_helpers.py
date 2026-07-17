@@ -829,7 +829,7 @@ def evaluate_conditioning_consensus_blend(
     return C_blended, P_blended
 
 
-def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensors: dict = None, device: str = "cpu") -> tuple:
+def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensors: dict = None, device=None, compute_dtype=None) -> tuple:
     """
     Consensus-Weighted Blending math engine for language space sequences and pooled embeddings.
     Used ONLY post-encoder inside UC_ConditioningConsensusBlend.
@@ -842,6 +842,10 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
         raise ValueError("Every sequence tensor must have [batch, tokens, channels] shape.")
     if len({(t.shape[0], t.shape[2]) for t in tensors_list}) != 1:
         raise ValueError("All sequence tensors must have matching batch and channel dimensions.")
+    if device is None:
+        device = tensors_list[0].device
+    if compute_dtype is None:
+        compute_dtype = tensors_list[0].dtype
 
     B = tensors_list[0].shape[0]
     D = tensors_list[0].shape[2]
@@ -900,14 +904,14 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
 
     C_blended_list = []
     for b in range(B):
-        batch_tensors = [t[b].to(device=device, dtype=torch.float32) for t in tensors_list]
+        batch_tensors = [comfy.model_management.cast_to_device(t[b], device, compute_dtype) for t in tensors_list]
 
         if blend_method == "linear":
             max_len = max(t.shape[0] for t in batch_tensors)
             padded = []
             for t in batch_tensors:
                 if t.shape[0] < max_len:
-                    padding = torch.zeros((max_len - t.shape[0], D), device=device, dtype=t.dtype)
+                    padding = t.new_zeros((max_len - t.shape[0], D))
                     t = torch.cat([t, padding], dim=0)
                 padded.append(t)
             stacked = torch.stack(padded, dim=0)
@@ -958,7 +962,7 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
                     if matched_c != -1:
                         aligned_groups[r_idx].append(t[matched_c])
 
-            merged_seq = torch.zeros((N_ref, D), dtype=torch.float32, device=device)
+            merged_seq = ref_tensor.new_zeros((N_ref, D))
             for r_idx in range(N_ref):
                 row_tensors = aligned_groups[r_idx]
                 if not row_tensors:
@@ -1017,7 +1021,7 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
         else:
             # Index-Based Sequential Matching
             max_len = max(t.shape[0] for t in batch_tensors)
-            merged_seq = torch.zeros((max_len, D), dtype=torch.float32, device=device)
+            merged_seq = batch_tensors[0].new_zeros((max_len, D))
             for i in range(max_len):
                 row_tensors = []
                 for t in batch_tensors:
@@ -1066,16 +1070,21 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
                 merged_seq[i] = merged_vec
             C_blended_list.append(merged_seq)
 
-    C_blended = torch.stack(C_blended_list, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
+    C_blended = comfy.model_management.cast_to_device(
+        torch.stack(C_blended_list, dim=0), tensors_list[0].device, tensors_list[0].dtype
+    )
 
     # Blend metadata pooled outputs
     P_blended = None
     if pooled_tensors and any(p is not None for p in pooled_tensors.values()):
         pooled_list_active = [pooled_tensors[k] for k in active_keys if pooled_tensors.get(k) is not None]
-        stacked_pooled = torch.stack(pooled_list_active, dim=1)
+        pooled_reference = pooled_list_active[0]
         P_blended_batches = []
         for b in range(B):
-            stacked_p = stacked_pooled[b]
+            stacked_p = torch.stack([
+                comfy.model_management.cast_to_device(pooled[b], device, compute_dtype)
+                for pooled in pooled_list_active
+            ])
             if consensus_type == "median":
                 consensus_p = torch.median(stacked_p, dim=0).values
             else:
@@ -1118,7 +1127,9 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
             if global_scale != 1.0:
                 merged_p *= global_scale
             P_blended_batches.append(merged_p)
-        P_blended = torch.stack(P_blended_batches, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
+        P_blended = comfy.model_management.cast_to_device(
+            torch.stack(P_blended_batches, dim=0), pooled_reference.device, pooled_reference.dtype
+        )
 
     return C_blended, P_blended
 
