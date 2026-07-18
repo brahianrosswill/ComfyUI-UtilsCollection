@@ -31,6 +31,7 @@ def _config(method="spatial-dither-random", ratio=0.5, seed=0):
         "seed": seed,
         "dither_secondary_pattern": "checkerboard",
         "dither_mask_cleanup": False,
+        "spatial_perturbation": 0.0,
     }
 
 
@@ -147,13 +148,14 @@ def test_config_seed_and_legacy_call_compatibility():
     legacy = UC_VisualFusionConfig.execute("spatial-dither-random", 2, 0.5, False, "legacy.safetensors").args[0]
     seeded = UC_VisualFusionConfig.execute("spatial-dither-random", 2, 0.5, seed=123).args[0]
 
-    assert [value.id for value in schema_inputs][-2:] == ["dither_secondary_pattern", "dither_mask_cleanup"]
+    assert [value.id for value in schema_inputs][-3:] == ["dither_secondary_pattern", "dither_mask_cleanup", "spatial_perturbation"]
     assert inputs["seed"].control_after_generate is True
     assert "index-consensus" not in inputs["visual_fusion_method"].options
     assert "similarity-consensus" not in inputs["visual_fusion_method"].options
     assert legacy["seed"] == 0
     assert legacy["save_path"] == "legacy.safetensors"
     assert seeded["seed"] == 123
+    assert legacy["spatial_perturbation"] == 0.0
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
@@ -203,7 +205,96 @@ def test_block_secondary_cleanup_endpoints_and_cache_separation():
     encoder_helpers.fuse_visual_token_sources(sources, _config(seed=1), "cpu", cache, source_grids=[(4, 4)] * 2)
     changed = {**_config(seed=1), "dither_mask_cleanup": True}
     encoder_helpers.fuse_visual_token_sources(sources, changed, "cpu", cache, source_grids=[(4, 4)] * 2)
-    assert len(cache) == 2
+    perturbed = {**_config(seed=1), "spatial_perturbation": 0.5}
+    encoder_helpers.fuse_visual_token_sources(sources, perturbed, "cpu", cache, source_grids=[(4, 4)] * 2)
+    assert len(cache) == 3
+
+
+@pytest.mark.parametrize("method", ["spatial-checkerboard", "spatial-block-interleave", "spatial-dither-random"])
+def test_spatial_perturbation_is_seeded_and_preserves_source_counts(method):
+    kwargs = {"grid_shape": (8, 8), "seed": 19, "spatial_perturbation": 0.5}
+    base = encoder_helpers.generate_spatial_fusion_mask(64, 3, method, grid_shape=(8, 8), seed=19)
+    first = encoder_helpers.generate_spatial_fusion_mask(64, 3, method, **kwargs)
+    repeated = encoder_helpers.generate_spatial_fusion_mask(64, 3, method, **kwargs)
+    changed_seed = encoder_helpers.generate_spatial_fusion_mask(64, 3, method, **{**kwargs, "seed": 20})
+
+    assert torch.equal(first, repeated)
+    assert not torch.equal(first, base)
+    assert not torch.equal(first, changed_seed)
+    assert torch.equal(torch.bincount(first, minlength=3), torch.bincount(base, minlength=3))
+    assert first.ne(base).sum().item() == 32
+
+
+def test_spatial_perturbation_saturates_without_ratio_drift():
+    mask = torch.tensor([0] * 9 + [1])
+    changed = encoder_helpers._perturb_spatial_assignments(mask, 1.0, seed=7)
+
+    assert changed.ne(mask).sum().item() == 2
+    assert torch.equal(torch.bincount(changed), torch.bincount(mask))
+    assert torch.equal(encoder_helpers._perturb_spatial_assignments(mask, 0.0, seed=7), mask)
+
+
+def test_spatial_perturbation_selects_only_exact_source_tokens():
+    config = {**_config(method="spatial-checkerboard", seed=29), "spatial_perturbation": 0.75}
+    sources = [torch.full((16, 2), float(index), dtype=torch.float16) for index in range(3)]
+    mask = encoder_helpers.generate_spatial_fusion_mask(
+        16, 3, "spatial-checkerboard", seed=29, grid_shape=(4, 4), spatial_perturbation=0.75,
+    )
+    output = encoder_helpers.fuse_visual_token_sources(sources, config, "cpu", source_grids=[(4, 4)] * 3)
+
+    assert output.dtype == torch.float16
+    assert torch.equal(output[:, 0], mask.to(dtype=output.dtype))
+    assert torch.equal(output[:, 0], output[:, 1])
+
+
+def test_cleanup_swaps_only_complementary_pairs_and_preserves_each_source():
+    mask = torch.ones((7, 7), dtype=torch.long)
+    mask[0, 0] = 0
+    mask[3:6, 3:6] = 0
+    mask[4, 4] = 2
+    before_counts = torch.bincount(mask.flatten(), minlength=3)
+
+    cleaned = encoder_helpers._cleanup_primary_pairs(mask)
+
+    assert cleaned[0, 0].item() == 2
+    assert cleaned[4, 4].item() == 0
+    assert torch.equal(torch.bincount(cleaned.flatten(), minlength=3), before_counts)
+    assert cleaned.ne(mask).sum().item() == 2
+
+
+def test_cleanup_leaves_unpaired_sparse_islands_unchanged():
+    sparse = torch.ones((8, 8), dtype=torch.long)
+    sparse[1, 1] = 0
+    sparse[6, 6] = 0
+
+    assert torch.equal(encoder_helpers._cleanup_primary_pairs(sparse), sparse)
+
+
+def test_combined_perturbation_and_cleanup_is_deterministic_and_balanced():
+    kwargs = {
+        "grid_shape": (12, 12),
+        "seed": 37,
+        "dither_ratio": 0.25,
+        "spatial_perturbation": 0.4,
+    }
+    before = encoder_helpers.generate_spatial_fusion_mask(144, 4, "spatial-dither-random", **kwargs)
+    cleaned = encoder_helpers.generate_spatial_fusion_mask(
+        144, 4, "spatial-dither-random", dither_mask_cleanup=True, **kwargs,
+    )
+    repeated = encoder_helpers.generate_spatial_fusion_mask(
+        144, 4, "spatial-dither-random", dither_mask_cleanup=True, **kwargs,
+    )
+
+    assert torch.equal(cleaned, repeated)
+    assert torch.equal(torch.bincount(cleaned, minlength=4), torch.bincount(before, minlength=4))
+
+
+@pytest.mark.parametrize("amount", [-0.01, 1.01])
+def test_spatial_perturbation_rejects_invalid_amount(amount):
+    with pytest.raises(ValueError, match="Spatial perturbation"):
+        encoder_helpers.generate_spatial_fusion_mask(
+            4, 2, "spatial-checkerboard", grid_shape=(2, 2), spatial_perturbation=amount,
+        )
 
 
 def test_missing_and_malformed_grids_rejected():

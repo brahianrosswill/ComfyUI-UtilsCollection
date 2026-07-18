@@ -1,5 +1,6 @@
 import ast
 from contextlib import contextmanager
+import hashlib
 import operator
 import os
 import math
@@ -539,7 +540,71 @@ SPATIAL_FUSION_METHODS = {"spatial-checkerboard", "spatial-block-interleave", "s
 VISUAL_FUSION_METHODS = SPATIAL_FUSION_METHODS | {"linear"}
 
 
-def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_size: int = 2, dither_ratio: float = 0.5, device: str = "cpu", seed: int = 0, grid_shape=None, dither_secondary_pattern: str = "checkerboard", dither_mask_cleanup: bool = False) -> torch.Tensor:
+def _spatial_perturbation_seed(seed: int) -> int:
+    payload = f"utils-collection-spatial-perturbation:{seed}".encode("utf-8")
+    return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+
+
+def _perturb_spatial_assignments(mask: torch.Tensor, amount: float, seed: int) -> torch.Tensor:
+    """Exchange differently labelled cells without changing any source count."""
+    if amount <= 0.0 or mask.numel() < 2:
+        return mask
+
+    flat = mask.flatten().clone()
+    requested_pairs = int(flat.numel() * amount) // 2
+    if requested_pairs < 1:
+        return mask
+
+    generator = torch.Generator(device=flat.device).manual_seed(_spatial_perturbation_seed(seed))
+    randomized = torch.randperm(flat.numel(), generator=generator, device=flat.device).tolist()
+    labels = flat.tolist()
+    buckets = {}
+    for index in randomized:
+        buckets.setdefault(labels[index], []).append(index)
+
+    changed_pairs = 0
+    while changed_pairs < requested_pairs:
+        available = [label for label, indices in buckets.items() if indices]
+        if len(available) < 2:
+            break
+        available.sort(key=lambda label: (-len(buckets[label]), label))
+        first_label, second_label = available[:2]
+        first_index = buckets[first_label].pop()
+        second_index = buckets[second_label].pop()
+        first_value = flat[first_index].clone()
+        flat[first_index] = flat[second_index]
+        flat[second_index] = first_value
+        changed_pairs += 1
+    return flat.reshape(mask.shape)
+
+
+def _cleanup_primary_pairs(mask: torch.Tensor) -> torch.Tensor:
+    """Swap complementary primary islands and holes while preserving source counts."""
+    h, w = mask.shape
+    primary = mask.eq(0)
+    padded = F.pad(primary, (1, 1, 1, 1))
+    neighbors = torch.stack([
+        padded[row:row + h, column:column + w]
+        for row in range(3)
+        for column in range(3)
+        if (row, column) != (1, 1)
+    ])
+    isolated = (primary & ~neighbors.any(dim=0)).flatten().nonzero().flatten()
+    holes = (~primary & neighbors.all(dim=0)).flatten().nonzero().flatten()
+    pair_count = min(isolated.numel(), holes.numel())
+    if pair_count == 0:
+        return mask
+
+    flat = mask.flatten().clone()
+    island_indices = isolated[:pair_count]
+    hole_indices = holes[:pair_count]
+    hole_values = flat[hole_indices].clone()
+    flat[hole_indices] = flat[island_indices]
+    flat[island_indices] = hole_values
+    return flat.reshape(mask.shape)
+
+
+def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_size: int = 2, dither_ratio: float = 0.5, device: str = "cpu", seed: int = 0, grid_shape=None, dither_secondary_pattern: str = "checkerboard", dither_mask_cleanup: bool = False, spatial_perturbation: float = 0.0) -> torch.Tensor:
     """
     Generates a seeded 1D token index mapping array corresponding to a source image index.
     """
@@ -553,6 +618,8 @@ def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_si
         raise ValueError("Visual block size must be at least 1.")
     if method == "spatial-dither-random" and not 0.0 <= dither_ratio <= 1.0:
         raise ValueError("Dither ratio must be between 0.0 and 1.0.")
+    if not 0.0 <= spatial_perturbation <= 1.0:
+        raise ValueError("Spatial perturbation must be between 0.0 and 1.0.")
     if not 0 <= seed <= 0xffffffffffffffff:
         raise ValueError("Visual fusion seed must be between 0 and 18446744073709551615.")
     if num_sources == 1:
@@ -565,35 +632,26 @@ def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_si
     columns = torch.arange(w, device=device).unsqueeze(0)
 
     if method == "spatial-checkerboard":
-        return ((rows + columns) % num_sources).flatten()
-    if method == "spatial-block-interleave":
-        return ((rows // block_size + columns // block_size) % num_sources).flatten()
-
-    if dither_secondary_pattern not in {"checkerboard", "block-interleave"}:
-        raise ValueError(f"Unsupported dither secondary pattern: {dither_secondary_pattern}")
-    if block_size < 1:
-        raise ValueError("Visual block size must be at least 1.")
-    generator = torch.Generator(device=device).manual_seed(seed)
-    random = torch.rand(N, generator=generator, device=device)
-    if dither_secondary_pattern == "block-interleave":
-        secondary = rows // block_size + columns // block_size
+        mask = (rows + columns) % num_sources
+    elif method == "spatial-block-interleave":
+        mask = (rows // block_size + columns // block_size) % num_sources
     else:
-        secondary = rows + columns
-    other_sources = 1 + (secondary % (num_sources - 1)).flatten()
-    mask = torch.where(random < dither_ratio, 0, other_sources).reshape(h, w)
-    if dither_mask_cleanup and 0.0 < dither_ratio < 1.0:
-        primary = mask.eq(0)
-        padded = F.pad(primary, (1, 1, 1, 1))
-        neighbors = torch.stack([
-            padded[row:row + h, column:column + w]
-            for row in range(3)
-            for column in range(3)
-            if (row, column) != (1, 1)
-        ])
-        isolated = primary & ~neighbors.any(dim=0)
-        holes = ~primary & neighbors.all(dim=0)
-        mask = torch.where(isolated, other_sources.reshape(h, w), mask)
-        mask = torch.where(holes, torch.zeros_like(mask), mask)
+        if dither_secondary_pattern not in {"checkerboard", "block-interleave"}:
+            raise ValueError(f"Unsupported dither secondary pattern: {dither_secondary_pattern}")
+        if block_size < 1:
+            raise ValueError("Visual block size must be at least 1.")
+        generator = torch.Generator(device=device).manual_seed(seed)
+        random = torch.rand(N, generator=generator, device=device)
+        if dither_secondary_pattern == "block-interleave":
+            secondary = rows // block_size + columns // block_size
+        else:
+            secondary = rows + columns
+        other_sources = 1 + (secondary % (num_sources - 1)).flatten()
+        mask = torch.where(random < dither_ratio, 0, other_sources).reshape(h, w)
+
+    mask = _perturb_spatial_assignments(mask, spatial_perturbation, seed)
+    if method == "spatial-dither-random" and dither_mask_cleanup and 0.0 < dither_ratio < 1.0:
+        mask = _cleanup_primary_pairs(mask)
     return mask.flatten()
 
 
@@ -604,9 +662,10 @@ def _visual_fusion_mask(config, grid_shape, num_sources, mask_device, output_dev
     seed = config.get("seed", 0)
     secondary = config.get("dither_secondary_pattern", "checkerboard")
     cleanup = config.get("dither_mask_cleanup", False)
-    key = (tuple(grid_shape), num_sources, method, secondary, cleanup, block_size, dither_ratio, seed)
+    perturbation = config.get("spatial_perturbation", 0.0)
+    key = (tuple(grid_shape), num_sources, method, secondary, cleanup, perturbation, block_size, dither_ratio, seed)
     if key not in mask_cache:
-        mask_cache[key] = generate_spatial_fusion_mask(grid_shape[0] * grid_shape[1], num_sources, method, block_size, dither_ratio, mask_device, seed, grid_shape, secondary, cleanup)
+        mask_cache[key] = generate_spatial_fusion_mask(grid_shape[0] * grid_shape[1], num_sources, method, block_size, dither_ratio, mask_device, seed, grid_shape, secondary, cleanup, perturbation)
     return mask_cache[key].to(output_device)
 
 
@@ -849,6 +908,21 @@ def evaluate_conditioning_consensus_blend(
     return C_blended, P_blended
 
 
+POWER_BLEND_PRESET = {
+    "method": "consensus",
+    "type": "median",
+    "align": "similarity",
+    "alignment_threshold": 0.9,
+    "thresh": 0.75,
+    "alpha": 8.0,
+    "beta": 0.0,
+    "norm": True,
+    "scale": 1.0,
+    "dsc": True,
+    "soft_comfort": False,
+}
+
+
 def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensors: dict = None, device=None, compute_dtype=None) -> tuple:
     """
     Consensus-Weighted Blending math engine for language space sequences and pooled embeddings.
@@ -896,7 +970,8 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
         "dsc_smooth": {"method": "consensus", "type": "mean", "align": "similarity", "alpha": 1.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
         "dsc_varied_merge": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.5, "thresh": 0.0, "beta": 0.0, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
         "dsc_diverse_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 1.5, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
-        "dsc_high_diversity_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 3.0, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True}
+        "dsc_high_diversity_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 3.0, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
+        "power_blend": POWER_BLEND_PRESET,
     }
 
     dsc_enabled = False
@@ -907,6 +982,7 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
         blend_method = p["method"]
         consensus_type = p["type"]
         alignment_method = p["align"]
+        alignment_threshold = p.get("alignment_threshold", alignment_threshold)
         power_alpha = p["alpha"]
         similarity_threshold = p["thresh"]
         diversity_beta = p["beta"]

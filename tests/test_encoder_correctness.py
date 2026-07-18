@@ -24,6 +24,7 @@ try:
         UC_AdvancedVisualConditioningEncode,
         UC_AttentionBiasTextEncode,
         UC_ConditioningConsensusBlend,
+        UC_TextConsensusBlendConfig,
         UC_Krea2TokenAttentionWeight,
         UC_Qwen3VLInputEmbeds,
         UC_VisualFusionConfig,
@@ -45,6 +46,25 @@ VAE_MULTIPLE_ENCODERS = (
     "TextEncodeEditScaledAdv",
     "TextEncodeKrea2SysEditScaledAdvAttn",
 )
+
+
+def test_power_blend_preset_matches_declared_widget_values():
+    preset_input = next(value for value in UC_TextConsensusBlendConfig.define_schema().inputs if value.id == "blend_preset")
+
+    assert "power_blend" in preset_input.options
+    assert encoder_helpers.POWER_BLEND_PRESET == {
+        "method": "consensus",
+        "type": "median",
+        "align": "similarity",
+        "alignment_threshold": 0.9,
+        "thresh": 0.75,
+        "alpha": 8.0,
+        "beta": 0.0,
+        "norm": True,
+        "scale": 1.0,
+        "dsc": True,
+        "soft_comfort": False,
+    }
 
 
 def test_vae_reference_image_uses_configurable_dimension_multiple():

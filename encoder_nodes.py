@@ -191,7 +191,7 @@ class UC_TextConsensusBlendConfig(io.ComfyNode):
                 io.Combo.Input(
                     "blend_preset",
                     options=[
-                        "off", "custom", "baseline", "high_clarity", "smooth", "varied_merge", "diverse_concept", "high_diversity_concept",
+                        "off", "custom", "baseline", "power_blend", "high_clarity", "smooth", "varied_merge", "diverse_concept", "high_diversity_concept",
                         "dsc_baseline", "dsc_high_clarity", "dsc_smooth", "dsc_varied_merge", "dsc_diverse_concept", "dsc_high_diversity_concept"
                     ],
                     default="baseline",
@@ -294,7 +294,8 @@ class UC_VisualFusionConfig(io.ComfyNode):
                     tooltip="Qwen3-VL encoder route used by visual fusion. grid-deepstack uses current Core grid MRoPE and DeepStack injection; legacy-flat reproduces the pre-d0008a89 flat 1D route."
                 ),
                 io.Combo.Input("dither_secondary_pattern", options=["checkerboard", "block-interleave"], default="checkerboard", tooltip="Layout used for images 2+ in spatial-dither-random."),
-                io.Boolean.Input("dither_mask_cleanup", default=False, tooltip="Remove isolated one-token image-1 islands and holes with a deterministic 3x3 pass."),
+                io.Boolean.Input("dither_mask_cleanup", default=False, tooltip="Swap paired one-token image-1 islands and holes with a deterministic 3x3 pass while preserving every source's token count."),
+                io.Float.Input("spatial_perturbation", default=0.0, min=0.0, max=1.0, step=0.01, tooltip="Seeded spatial variation for hard fusion methods. Exchanges cells between sources without changing any source's token count; higher values may reduce spatial coherence."),
             ],
             outputs=[
                 VisualFusionConfig.Output("visual_fusion_config")
@@ -313,6 +314,7 @@ class UC_VisualFusionConfig(io.ComfyNode):
         visual_encoder_path: str = "grid-deepstack",
         dither_secondary_pattern: str = "checkerboard",
         dither_mask_cleanup: bool = False,
+        spatial_perturbation: float = 0.0,
     ) -> io.NodeOutput:
         config = {
             "visual_fusion_method": visual_fusion_method,
@@ -322,6 +324,7 @@ class UC_VisualFusionConfig(io.ComfyNode):
             "visual_encoder_path": visual_encoder_path,
             "dither_secondary_pattern": dither_secondary_pattern,
             "dither_mask_cleanup": dither_mask_cleanup,
+            "spatial_perturbation": spatial_perturbation,
             "save_blended_embeds": save_blended_embeds,
             "save_path": save_path
         }
