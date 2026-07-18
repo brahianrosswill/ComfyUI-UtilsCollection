@@ -24,7 +24,7 @@ from comfy.utils import common_upscale
 
 from comfy.ldm.flux.math import apply_rope
 from comfy.ldm.modules.attention import optimized_attention
-from comfy.sd1_clip import token_weights
+from comfy.sd1_clip import token_weights, escape_important, unescape_important
 
 
 _VISUAL_ENCODER_PATH_LOCK = threading.RLock()
@@ -1268,7 +1268,7 @@ def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, visu
 
     clean_text = ""
     biases_to_apply = []
-    for segment, strength in token_weights(text, 1.0):
+    for segment, strength in _contextual_token_weights(text):
         start_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
         key_name = next(iter(start_tokens.keys()))
         start_count = len(start_tokens[key_name][0])
@@ -1326,7 +1326,12 @@ def strip_contextual_weight_syntax(text: str) -> str:
     """Return the exact clean text consumed by contextual vector scaling."""
     if "(" not in text or ")" not in text:
         return text
-    return "".join(segment for segment, _ in token_weights(text, 1.0))
+    return "".join(segment for segment, _ in _contextual_token_weights(text))
+
+
+def _contextual_token_weights(text: str):
+    """Parse weights with the same backslash escaping contract as Core's tokenizer."""
+    return [(unescape_important(segment), weight) for segment, weight in token_weights(escape_important(text), 1.0)]
 
 def load_vlm_image_tensor(path_str):
     if not path_str:

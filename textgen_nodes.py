@@ -329,6 +329,12 @@ class UC_TextGenerate(io.ComfyNode):
                     tooltip="Optional mathematical formula to blend image inputs at pixel-tensor level before encoding. Use variables a, b, c, d... to reference active connected image inputs. If empty, connected images are treated as separate inputs."
                 ),
                 io.Boolean.Input("thinking", optional=True, default=False, tooltip="Preserves chain-of-thought blocks if the model supports reasoning."),
+                io.Boolean.Input(
+                    "escape_parentheses",
+                    optional=True,
+                    default=False,
+                    tooltip="Backslash-escape generated parentheses as the final step, preserving them as literal text for downstream contextual-weight parsing.",
+                ),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
                 VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional pre-generation Qwen3-VL visual and DeepStack fusion configuration."),
             ],
@@ -338,7 +344,7 @@ class UC_TextGenerate(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, max_length, sampling_mode, formula="", thinking=False, image_inputs=None, visual_fusion_config=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, max_length, sampling_mode, formula="", thinking=False, escape_parentheses=False, image_inputs=None, visual_fusion_config=None) -> io.NodeOutput:
         if clip is None:
             raise RuntimeError("ERROR: CLIP/TextEncoder input is invalid: None")
 
@@ -512,6 +518,8 @@ class UC_TextGenerate(io.ComfyNode):
             generated_ids = clip.generate(tokens, **generation_args)
 
         generated_text = clip.decode(generated_ids, skip_special_tokens=True)
+        if escape_parentheses:
+            generated_text = generated_text.replace("(", r"\(").replace(")", r"\)")
         return io.NodeOutput(generated_text)
 
 

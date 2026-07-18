@@ -336,6 +336,12 @@ def test_contextual_weight_syntax_clean_text_matches_encoder_input():
     assert encoder_helpers.strip_contextual_weight_syntax("a (painting:-1) and ((light:2):0.5)") == "a painting and light"
 
 
+def test_contextual_weight_syntax_preserves_backslash_escaped_parentheses():
+    assert encoder_helpers.strip_contextual_weight_syntax(r"pop culture \(Overwatch\) and \(banana\)") == (
+        "pop culture (Overwatch) and (banana)"
+    )
+
+
 def test_advanced_visual_text_only_path_preserves_custom_system_prompt():
     class Clip:
         tokenized_text = None

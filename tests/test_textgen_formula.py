@@ -97,6 +97,17 @@ def test_text_generate_appends_optional_visual_fusion_config():
     assert "visual_fusion_config" in inspect.signature(textgen_nodes.UC_TextGenerate.execute).parameters
 
 
+def test_text_generate_parenthesis_escaping_is_optional_and_final():
+    clip = _GenerateClip()
+    clip.decode = lambda *args, **kwargs: "plain (Overwatch), (banana)"
+    common = (clip, "hello", "", "Original", 12, {"sampling_mode": "off"})
+
+    assert textgen_nodes.UC_TextGenerate.execute(*common).args == ("plain (Overwatch), (banana)",)
+    assert textgen_nodes.UC_TextGenerate.execute(*common, escape_parentheses=True).args == (
+        r"plain \(Overwatch\), \(banana\)",
+    )
+
+
 class _GenerateClip:
     def __init__(self, family="qwen3vl_4b"):
         self.tokenizer = types.SimpleNamespace(clip_name=family)
