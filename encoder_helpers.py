@@ -19,6 +19,7 @@ import numpy as np
 import folder_paths
 import node_helpers
 import comfy
+from comfy.utils import common_upscale
 
 from comfy.ldm.flux.math import apply_rope
 from comfy.ldm.modules.attention import optimized_attention
@@ -26,6 +27,25 @@ from comfy.sd1_clip import token_weights
 
 
 _VISUAL_ENCODER_PATH_LOCK = threading.RLock()
+
+
+def prepare_vae_reference_image(samples, target_size, dimension_multiple, upscale_method="bicubic"):
+    """Resize BCHW image samples for VAE encoding with configurable alignment."""
+    multiple = int(dimension_multiple)
+    if multiple < 4:
+        raise ValueError("VAE dimension multiple must be at least 4.")
+    height, width = samples.shape[-2:]
+    if target_size is None:
+        target_width = width
+        target_height = height
+    else:
+        total_pixels = int(target_size) ** 2
+        scale = math.sqrt(total_pixels / (width * height))
+        target_width = width * scale
+        target_height = height * scale
+    aligned_width = max(multiple, round(target_width / multiple) * multiple)
+    aligned_height = max(multiple, round(target_height / multiple) * multiple)
+    return common_upscale(samples, aligned_width, aligned_height, upscale_method, "disabled")
 
 
 def _resolve_clip_transformer(clip):

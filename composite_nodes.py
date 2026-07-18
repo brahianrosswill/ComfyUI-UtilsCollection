@@ -158,6 +158,14 @@ class UC_CropByMask(io.ComfyNode):
                 io.Image.Input("image"),
                 io.Mask.Input("mask"),
                 io.Int.Input("padding", default=64, min=0, max=MAX_RESOLUTION, step=8),
+                io.Int.Input(
+                    "multiple",
+                    default=8,
+                    min=4,
+                    max=256,
+                    step=4,
+                    tooltip="Expand the crop dimensions to this pixel multiple without resizing the image or mask.",
+                ),
             ],
             outputs=[
                 io.Image.Output("image"),
@@ -170,11 +178,11 @@ class UC_CropByMask(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, mask, padding):
+    def execute(cls, image, mask, padding, multiple=8):
         if mask.shape[-2:] != image.shape[1:3]:
             mask = _resize_mask(mask, image.shape[2], image.shape[1], "nearest-exact")
         mask = _broadcast_batch(mask, image.shape[0], "Mask")
-        x, y, width, height = _crop_bounds(mask, int(padding))
+        x, y, width, height = _crop_bounds(mask, int(padding), int(multiple))
         return io.NodeOutput(image[:, y:y + height, x:x + width], mask[:, y:y + height, x:x + width], x, y, width, height)
 
 
@@ -553,6 +561,11 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
             elif background_height > background_width:
                 offset_y = round((background_height - placed_height) * long_shift)
                 offset_x = round((background_width - placed_width) * short_shift)
+            else:
+                # A square canvas has no intrinsic long or short axis. Keep both
+                # controls useful by mapping long to horizontal and short to vertical.
+                offset_x = round((background_width - placed_width) * long_shift)
+                offset_y = round((background_height - placed_height) * short_shift)
             destination_top = max(0, offset_y)
             destination_bottom = min(background_height, offset_y + placed_height)
             destination_left = max(0, offset_x)

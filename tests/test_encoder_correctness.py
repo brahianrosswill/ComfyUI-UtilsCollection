@@ -18,7 +18,7 @@ from comfy.cli_args import args as cli_args
 prior_cpu = cli_args.cpu
 cli_args.cpu = True
 try:
-    from utils_collection_encoder_test import encoder_helpers
+    from utils_collection_encoder_test import encoder_helpers, encoder_nodes
     from utils_collection_encoder_test.encoder_nodes import (
         TextEncodeKrea2SysEditScaledAdvAttn,
         UC_AdvancedVisualConditioningEncode,
@@ -31,6 +31,49 @@ try:
     )
 finally:
     cli_args.cpu = prior_cpu
+
+
+VAE_MULTIPLE_ENCODERS = (
+    "UC_ScaledBiasTextEncodeLtxv2SystemPrompt",
+    "TextEncodeSystemEditPlus",
+    "TextEncodeSystemEditPlusAdvanced",
+    "TextEncodeKrea2SystemEditPlusAdvanced",
+    "TextEncodeEditPlusAdvanced",
+    "TextEncodeGemmaSystemEditPlusAdvanced",
+    "UC_TextEncodeLtxv2SystemPrompt",
+    "TextEncodeKrea2SystemEditScaledAdv",
+    "TextEncodeEditScaledAdv",
+    "TextEncodeKrea2SysEditScaledAdvAttn",
+)
+
+
+def test_vae_reference_image_uses_configurable_dimension_multiple():
+    samples = torch.zeros(1, 3, 101, 205)
+
+    original = encoder_helpers.prepare_vae_reference_image(samples, None, 32)
+    targeted = encoder_helpers.prepare_vae_reference_image(samples, 1024, 64)
+
+    assert original.shape[-2:] == (96, 192)
+    assert targeted.shape[-2] % 64 == 0
+    assert targeted.shape[-1] % 64 == 0
+    with pytest.raises(ValueError, match="at least 4"):
+        encoder_helpers.prepare_vae_reference_image(samples, None, 3)
+
+
+def test_reference_latent_encoders_append_configurable_multiple():
+    for class_name in VAE_MULTIPLE_ENCODERS:
+        schema = getattr(encoder_nodes, class_name).define_schema()
+        control = next(value for value in schema.inputs if value.id == "vae_dimension_multiple")
+        assert schema.inputs[-1] is control
+        assert control.default == 8
+        assert control.min == 4
+        assert control.step == 4
+        assert control.advanced
+
+
+def test_encoder_nodes_have_no_hardcoded_eight_pixel_vae_alignment():
+    source = (CUSTOM_NODE_ROOT / "encoder_nodes.py").read_text(encoding="utf-8")
+    assert "/ 8.0) * 8" not in source
 
 
 def test_expression_grammar_and_nonfinite_rejection():

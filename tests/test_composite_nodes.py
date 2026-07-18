@@ -69,6 +69,35 @@ def test_crop_by_mask_uses_batch_union_and_rejects_empty_masks():
         composite_nodes.UC_CropByMask.execute(image[:1], torch.zeros(1, 32, 32), 0)
 
 
+def test_crop_by_mask_exposes_dimension_multiple_without_resizing():
+    image = torch.arange(64 * 64 * 3, dtype=torch.float32).reshape(1, 64, 64, 3)
+    mask = torch.zeros(1, 64, 64)
+    mask[:, 20:29, 22:31] = 1.0
+
+    output = composite_nodes.UC_CropByMask.execute(image, mask, padding=2, multiple=16)
+    cropped_image, cropped_mask, crop_x, crop_y, width, height = output.result
+
+    assert (width, height) == (16, 16)
+    assert cropped_image.shape == (1, 16, 16, 3)
+    assert cropped_mask.shape == (1, 16, 16)
+    assert torch.equal(cropped_image, image[:, crop_y:crop_y + height, crop_x:crop_x + width])
+    assert cropped_mask.sum() == 81
+
+
+def test_crop_by_mask_multiple_defaults_to_legacy_eight_pixels():
+    schema = composite_nodes.UC_CropByMask.define_schema()
+    multiple = next(value for value in schema.inputs if value.id == "multiple")
+    mask = torch.zeros(1, 64, 64)
+    mask[:, 20:29, 22:31] = 1.0
+
+    output = composite_nodes.UC_CropByMask.execute(torch.zeros(1, 64, 64, 3), mask, 2)
+
+    assert multiple.default == 8
+    assert multiple.min == 4
+    assert multiple.step == 4
+    assert output.result[4:] == (16, 16)
+
+
 def test_crop_merge_supports_mask_and_singleton_broadcast():
     original = torch.zeros(2, 8, 8, 3)
     crop = torch.ones(1, 4, 4, 3)
@@ -267,6 +296,23 @@ def test_unified_background_shifts_along_background_short_axis(background_shape,
     top, bottom, left, right = expected_bounds
     assert masks[0, top:bottom, left:right].all()
     assert masks.sum() == (bottom - top) * (right - left)
+
+
+def test_unified_background_square_canvas_uses_both_axis_shifts():
+    background = torch.zeros(1, 100, 100, 3)
+    foreground = torch.ones(1, 8, 8, 3)
+    model = _QueuedBackgroundModel([torch.ones(1, 8, 8)])
+
+    _, masks = _replace_background(
+        model,
+        background,
+        {"foreground_0": foreground},
+        long_axis_shift=-1.0,
+        short_axis_shift=1.0,
+    )
+
+    assert masks[0, 10:100, 0:90].all()
+    assert masks.sum() == 90 * 90
 
 
 def test_unified_background_validates_background_and_empty_masks():

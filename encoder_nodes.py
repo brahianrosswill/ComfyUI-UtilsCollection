@@ -36,6 +36,7 @@ from .encoder_helpers import(
     extract_and_flatten_images,
     resolve_embedding_output_path,
     visual_fusion_grid,
+    prepare_vae_reference_image,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -517,6 +518,7 @@ class UC_ScaledBiasTextEncodeLtxv2SystemPrompt(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Image.Input("image", optional=True),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -524,7 +526,7 @@ class UC_ScaledBiasTextEncodeLtxv2SystemPrompt(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt="", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, image=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt="", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, image=None, vae_dimension_multiple=8) -> io.NodeOutput:
         # Build template with string concat (ComfyUI pattern)
         if image is not None:
             llama_template = (
@@ -553,20 +555,9 @@ class UC_ScaledBiasTextEncodeLtxv2SystemPrompt(io.ComfyNode):
                 "Detailed (1536)": 1536
             }
             samples = image.movedim(-1, 1)
-            if vae_resolution == "Original":
-                width_vae = round(samples.shape[3] / 8.0) * 8
-                height_vae = round(samples.shape[2] / 8.0) * 8
-                s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-            else:
-                vae_size = VAE_RESOLUTIONS[vae_resolution]
-                total_vae = vae_size * vae_size
-                scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+            target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+            s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+            ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
 
@@ -839,6 +830,7 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
                 io.Image.Input("image1", optional=True),
                 io.Image.Input("image2", optional=True),
                 io.Image.Input("image3", optional=True),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -846,7 +838,7 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, vae_resolution, ref_latent_mode="off", vae=None, image1=None, image2=None, image3=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, vae_resolution, ref_latent_mode="off", vae=None, image1=None, image2=None, image3=None, vae_dimension_multiple=8) -> io.NodeOutput:
         ref_latents = []
         images = [image1, image2, image3]
         images_vl = []
@@ -889,20 +881,9 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
                 # 2. Structural Path Scaling (VAE)
                 if vae is not None and ref_latent_mode != "off":
                     if "multi" in ref_latent_mode or len(ref_latents) == 0:
-                        if vae_resolution == "Original":
-                            width_vae = round(samples.shape[3] / 8.0) * 8
-                            height_vae = round(samples.shape[2] / 8.0) * 8
-                            s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                            ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-                        else:
-                            vae_size = VAE_RESOLUTIONS[vae_resolution]
-                            total_vae = vae_size * vae_size
-                            scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                            width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                            height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                            s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                            ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                        target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+                        s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
                 image_prompt += "Picture {}: <|vision_start|><|image_pad|><|vision_end|>".format(i + 1)
 
@@ -964,6 +945,7 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -971,7 +953,7 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all autogrow keys (including batched images)
         raw_images, flat_images, is_zero_indexed = extract_and_flatten_images(image_inputs)
 
@@ -1084,20 +1066,9 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                 image = raw_images[num]
                 if image is not None:
                     samples = image.movedim(-1, 1)
-                    if vae_resolution == "Original":
-                        width_vae = round(samples.shape[3] / 8.0) * 8
-                        height_vae = round(samples.shape[2] / 8.0) * 8
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-                    else:
-                        vae_size = VAE_RESOLUTIONS[vae_resolution]
-                        total_vae = vae_size * vae_size
-                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+                    s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+                    ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
@@ -1149,6 +1120,7 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1156,7 +1128,7 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all autogrow keys (including batched images)
         raw_images, flat_images, is_zero_indexed = extract_and_flatten_images(image_inputs)
 
@@ -1269,20 +1241,9 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                 image = raw_images[num]
                 if image is not None:
                     samples = image.movedim(-1, 1)
-                    if vae_resolution == "Original":
-                        width_vae = round(samples.shape[3] / 8.0) * 8
-                        height_vae = round(samples.shape[2] / 8.0) * 8
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-                    else:
-                        vae_size = VAE_RESOLUTIONS[vae_resolution]
-                        total_vae = vae_size * vae_size
-                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+                    s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+                    ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
@@ -1333,6 +1294,7 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1340,7 +1302,7 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all autogrow keys (including batched images)
         raw_images, flat_images, is_zero_indexed = extract_and_flatten_images(image_inputs)
 
@@ -1437,20 +1399,9 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                 image = raw_images[num]
                 if image is not None:
                     samples = image.movedim(-1, 1)
-                    if vae_resolution == "Original":
-                        width_vae = round(samples.shape[3] / 8.0) * 8
-                        height_vae = round(samples.shape[2] / 8.0) * 8
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-                    else:
-                        vae_size = VAE_RESOLUTIONS[vae_resolution]
-                        total_vae = vae_size * vae_size
-                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+                    s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+                    ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
@@ -1493,6 +1444,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1500,7 +1452,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all autogrow keys (including batched images)
         raw_images, flat_images, is_zero_indexed = extract_and_flatten_images(image_inputs)
 
@@ -1607,20 +1559,9 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                     break
                 if image is not None:
                     samples = image.movedim(-1, 1)
-                    if vae_resolution == "Original":
-                        width_vae = round(samples.shape[3] / 8.0) * 8
-                        height_vae = round(samples.shape[2] / 8.0) * 8
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-                    else:
-                        vae_size = VAE_RESOLUTIONS[vae_resolution]
-                        total_vae = vae_size * vae_size
-                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+                    s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+                    ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
@@ -1651,6 +1592,7 @@ class UC_TextEncodeLtxv2SystemPrompt(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Image.Input("image", optional=True),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1658,7 +1600,7 @@ class UC_TextEncodeLtxv2SystemPrompt(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt="", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, image=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt="", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, image=None, vae_dimension_multiple=8) -> io.NodeOutput:
         # Build template with string concat (ComfyUI pattern)
         if image is not None:
             llama_template = (
@@ -1691,20 +1633,9 @@ class UC_TextEncodeLtxv2SystemPrompt(io.ComfyNode):
                 "Detailed (1536)": 1536
             }
             samples = image.movedim(-1, 1)
-            if vae_resolution == "Original":
-                width_vae = round(samples.shape[3] / 8.0) * 8
-                height_vae = round(samples.shape[2] / 8.0) * 8
-                s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-            else:
-                vae_size = VAE_RESOLUTIONS[vae_resolution]
-                total_vae = vae_size * vae_size
-                scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+            target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+            s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+            ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
 
@@ -1960,6 +1891,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1967,7 +1899,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
@@ -2178,20 +2110,9 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     break
                 if image is not None:
                     samples = image.movedim(-1, 1)
-                    if vae_resolution == "Original":
-                        width_vae = round(samples.shape[3] / 8.0) * 8
-                        height_vae = round(samples.shape[2] / 8.0) * 8
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-                    else:
-                        vae_size = VAE_RESOLUTIONS[vae_resolution]
-                        total_vae = vae_size * vae_size
-                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+                    s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+                    ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
@@ -2257,6 +2178,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -2264,7 +2186,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0) -> io.NodeOutput:
+    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
@@ -2398,20 +2320,9 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                     break
                 if image is not None:
                     samples = image.movedim(-1, 1)
-                    if vae_resolution == "Original":
-                        width_vae = round(samples.shape[3] / 8.0) * 8
-                        height_vae = round(samples.shape[2] / 8.0) * 8
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-                    else:
-                        vae_size = VAE_RESOLUTIONS[vae_resolution]
-                        total_vae = vae_size * vae_size
-                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+                    s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+                    ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
@@ -2870,6 +2781,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
             ],
             outputs=[
                 io.Model.Output(),
@@ -2879,7 +2791,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: str, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0) -> io.NodeOutput:
+    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: str, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
@@ -3132,20 +3044,9 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     break
                 if image is not None:
                     samples = image.movedim(-1, 1)
-                    if vae_resolution == "Original":
-                        width_vae = round(samples.shape[3] / 8.0) * 8
-                        height_vae = round(samples.shape[2] / 8.0) * 8
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
-                    else:
-                        vae_size = VAE_RESOLUTIONS[vae_resolution]
-                        total_vae = vae_size * vae_size
-                        scale_by_vae = math.sqrt(total_vae / (samples.shape[3] * samples.shape[2]))
-                        width_vae = round(samples.shape[3] * scale_by_vae / 8.0) * 8
-                        height_vae = round(samples.shape[2] * scale_by_vae / 8.0) * 8
-
-                        s_vae = common_upscale(samples, width_vae, height_vae, "bicubic", "disabled")
-                        ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
+                    target_size = None if vae_resolution == "Original" else VAE_RESOLUTIONS[vae_resolution]
+                    s_vae = prepare_vae_reference_image(samples, target_size, vae_dimension_multiple)
+                    ref_latents.append(vae.encode(s_vae.movedim(1, -1)[:, :, :, :3]))
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
 

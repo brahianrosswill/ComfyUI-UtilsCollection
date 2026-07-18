@@ -146,7 +146,7 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
             category="utils",
             inputs=[
                 io.Image.Input("image", optional=True),
-                io.Combo.Input("upscale_method", options=cls.upscale_methods),
+                io.Combo.Input("upscale_method", options=cls.upscale_methods, default="lanczos"),
                 io.Combo.Input("crop_method", options=cls.crop_methods, tooltip="If cropping is enabled, the image will be cropped to the target aspect ratio before resizing. Center cropping is used, so the center of the image will be preserved and equal amounts will be cropped from either side."),
                 io.Combo.Input(
                     "aspect_ratio",
@@ -155,11 +155,18 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
                     tooltip="The aspect ratio for the output dimensions and cropping.",
                 ),
                 io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0, step=0.01),
-                io.Int.Input("resolution_steps", default=1, min=1, max=256, advanced=True),
+                io.Int.Input(
+                    "resolution_steps",
+                    default=1,
+                    min=1,
+                    max=256,
+                    advanced=True,
+                    tooltip="Legacy workflow compatibility. Output alignment is controlled by multiple.",
+                ),
                 io.Float.Input(
                     id="scale_by",
                     default=1.0,
-                    min=0.0,
+                    min=0.01,
                     max=10.0,
                     step=0.01,
                     tooltip="How much to upscale initial resolution by for the upscaled one.",
@@ -187,6 +194,11 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
     def execute(cls, image, upscale_method: str, crop_method: str, aspect_ratio: AspectRatio, megapixels: float, resolution_steps: int, scale_by: float, multiple: int) -> io.NodeOutput:
         total = megapixels * 1024 * 1024
 
+        # Retained in the schema so existing serialized workflows keep their
+        # widget layout. The final resolution has one source of alignment:
+        # ``multiple``.
+        _ = resolution_steps
+
         if image is not None:
             # B, H, W, C
             samples = image.movedim(-1, 1) # B, C, H, W
@@ -195,26 +207,31 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
             if crop_method == "center":
                 target_ratio_w, target_ratio_h = ASPECT_RATIOS[aspect_ratio]
                 base_scale = math.sqrt(total / (target_ratio_w * target_ratio_h))
-                width = round((target_ratio_w * base_scale) / resolution_steps) * resolution_steps
-                height = round((target_ratio_h * base_scale) / resolution_steps) * resolution_steps
+                width = target_ratio_w * base_scale
+                height = target_ratio_h * base_scale
             else:
-                scale_by = math.sqrt(total / (img_w * img_h))
-                width = round(img_w * scale_by / resolution_steps) * resolution_steps
-                height = round(img_h * scale_by / resolution_steps) * resolution_steps
+                megapixel_scale = math.sqrt(total / (img_w * img_h))
+                width = img_w * megapixel_scale
+                height = img_h * megapixel_scale
         else:
             target_ratio_w, target_ratio_h = ASPECT_RATIOS[aspect_ratio]
             base_scale = math.sqrt(total / (target_ratio_w * target_ratio_h))
-            width = round((target_ratio_w * base_scale) / resolution_steps) * resolution_steps
-            height = round((target_ratio_h * base_scale) / resolution_steps) * resolution_steps
+            width = target_ratio_w * base_scale
+            height = target_ratio_h * base_scale
+
+            adjusted_width = max(multiple, round_to_nearest(width, multiple))
+            adjusted_height = max(multiple, round_to_nearest(height, multiple))
 
             device = mm.intermediate_device()
             dtype = mm.intermediate_dtype()
-            samples = torch.zeros([1, 3, height, width], dtype=dtype, device=device) # B, C, H, W
+            samples = torch.zeros(
+                [1, 3, adjusted_height, adjusted_width], dtype=dtype, device=device
+            )  # B, C, H, W
 
-        adjusted_width = round_to_nearest(width, multiple)
-        adjusted_height = round_to_nearest(height, multiple)
-        upscaled_width = round_to_nearest(width * scale_by, multiple)
-        upscaled_height = round_to_nearest(height * scale_by, multiple)
+        adjusted_width = max(multiple, round_to_nearest(width, multiple))
+        adjusted_height = max(multiple, round_to_nearest(height, multiple))
+        upscaled_width = max(multiple, round_to_nearest(adjusted_width * scale_by, multiple))
+        upscaled_height = max(multiple, round_to_nearest(adjusted_height * scale_by, multiple))
 
         adjusted_samples = comfy.utils.common_upscale(samples, int(adjusted_width), int(adjusted_height), upscale_method, crop_method)
         upscaled_samples = comfy.utils.common_upscale(adjusted_samples, int(upscaled_width), int(upscaled_height), upscale_method, "disabled")
