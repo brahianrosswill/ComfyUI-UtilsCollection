@@ -113,6 +113,7 @@ def _replace_background(model, background, foregrounds, **overrides):
     options = {
         "foreground_scale": 0.9,
         "long_axis_shift": 0.0,
+        "short_axis_shift": 0.0,
         "mask_threshold": 0.5,
         "border_cleanup_width": 0,
         "artifact_cleanup_radius": 0,
@@ -156,7 +157,7 @@ def test_unified_background_flattens_inputs_and_centers_foreground_bounds():
     assert masks[1].sum() == 45 * 90
     assert masks[2].sum() == 45 * 90
     assert masks[0, 5:95, 35:125].all()
-    assert masks[1, 27:72, 35:125].all()
+    assert masks[1, 28:73, 35:125].all()
     assert masks[2, 5:95, 58:103].all()
 
 
@@ -239,6 +240,33 @@ def test_unified_background_overscale_crops_to_canvas_perimeter():
     assert masks.shape == background.shape[:3]
     assert masks.all()
     assert images.all()
+
+
+@pytest.mark.parametrize(
+    ("background_shape", "shift", "expected_bounds"),
+    [
+        ((60, 100), -1.0, (0, 54, 23, 77)),
+        ((60, 100), 1.0, (6, 60, 23, 77)),
+        ((100, 60), -1.0, (23, 77, 0, 54)),
+        ((100, 60), 1.0, (23, 77, 6, 60)),
+    ],
+)
+def test_unified_background_shifts_along_background_short_axis(background_shape, shift, expected_bounds):
+    height, width = background_shape
+    background = torch.zeros(1, height, width, 3)
+    foreground = torch.ones(1, 8, 8, 3)
+    model = _QueuedBackgroundModel([torch.ones(1, 8, 8)])
+
+    _, masks = _replace_background(
+        model,
+        background,
+        {"foreground_0": foreground},
+        short_axis_shift=shift,
+    )
+
+    top, bottom, left, right = expected_bounds
+    assert masks[0, top:bottom, left:right].all()
+    assert masks.sum() == (bottom - top) * (right - left)
 
 
 def test_unified_background_validates_background_and_empty_masks():

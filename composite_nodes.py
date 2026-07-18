@@ -461,6 +461,7 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
                 io.Autogrow.Input("foreground_images", template=foreground_template, tooltip="Images to isolate, resize, center, and composite in socket order."),
                 io.Float.Input("foreground_scale", default=0.90, min=0.05, max=10.0, step=0.01, tooltip="Fraction of the background's shortest side occupied by the foreground's longest bound. Values above 1 overscale and crop at the canvas edges."),
                 io.Float.Input("long_axis_shift", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Position along the background's longest axis: -1 is left/up, 0 is centered, and 1 is right/down."),
+                io.Float.Input("short_axis_shift", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Position along the background's shortest axis: -1 is up/left, 0 is centered, and 1 is down/right."),
                 io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01, tooltip="Minimum model confidence retained as solid foreground."),
                 io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True, tooltip="Width of the source-edge strip where weak foreground predictions are removed."),
                 io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Opening radius used to remove small and thin mask artifacts."),
@@ -481,6 +482,7 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
         foreground_images,
         foreground_scale,
         long_axis_shift,
+        short_axis_shift,
         mask_threshold,
         border_cleanup_width,
         artifact_cleanup_radius,
@@ -543,11 +545,14 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
 
             offset_y = (background_height - placed_height) // 2
             offset_x = (background_width - placed_width) // 2
-            shift = (float(long_axis_shift) + 1.0) / 2.0
+            long_shift = (float(long_axis_shift) + 1.0) / 2.0
+            short_shift = (float(short_axis_shift) + 1.0) / 2.0
             if background_width > background_height:
-                offset_x = round((background_width - placed_width) * shift)
+                offset_x = round((background_width - placed_width) * long_shift)
+                offset_y = round((background_height - placed_height) * short_shift)
             elif background_height > background_width:
-                offset_y = round((background_height - placed_height) * shift)
+                offset_y = round((background_height - placed_height) * long_shift)
+                offset_x = round((background_width - placed_width) * short_shift)
             destination_top = max(0, offset_y)
             destination_bottom = min(background_height, offset_y + placed_height)
             destination_left = max(0, offset_x)
