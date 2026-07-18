@@ -99,6 +99,157 @@ def test_mask_expansion_and_feather_support_contraction():
     assert inward[:, :2].sum() == 0
 
 
+class _QueuedBackgroundModel:
+    def __init__(self, masks):
+        self.masks = list(masks)
+        self.colors = []
+
+    def encode_image(self, image):
+        self.colors.append(image[0, 0, 0].clone())
+        return self.masks.pop(0).to(image)
+
+
+def _replace_background(model, background, foregrounds, **overrides):
+    options = {
+        "foreground_scale": 0.9,
+        "long_axis_shift": 0.0,
+        "mask_threshold": 0.5,
+        "border_cleanup_width": 0,
+        "artifact_cleanup_radius": 0,
+        "gap_fill_radius": 0,
+        "feather_radius": 0,
+    }
+    options.update(overrides)
+    return composite_nodes.UC_UnifiedBackgroundReplace.execute(
+        model, background, foregrounds, **options
+    ).result
+
+
+def test_unified_background_flattens_inputs_and_centers_foreground_bounds():
+    background = torch.zeros(1, 100, 160, 3, dtype=torch.float64)
+    first = torch.zeros(1, 10, 10, 3)
+    first[..., 0] = 1.0
+    second = torch.zeros(2, 8, 12, 3)
+    second[0, ..., 1] = 1.0
+    second[1, ..., 2] = 1.0
+    square_mask = torch.zeros(1, 5, 5)
+    square_mask[:, 1:4, 1:4] = 1.0
+    wide_mask = torch.zeros(1, 8, 12)
+    wide_mask[:, 2:6, 2:10] = 1.0
+    tall_mask = torch.zeros(1, 8, 12)
+    tall_mask[:, :, 4:8] = 1.0
+    model = _QueuedBackgroundModel([square_mask, wide_mask, tall_mask])
+
+    images, masks = _replace_background(
+        model,
+        background,
+        {"foreground_10": second, "foreground_2": first},
+    )
+
+    assert images.shape == (3, 100, 160, 3)
+    assert masks.shape == (3, 100, 160)
+    assert images.dtype == background.dtype
+    assert images.device == background.device
+    assert [color.argmax().item() for color in model.colors] == [0, 1, 2]
+    assert set(masks.unique().tolist()) == {0.0, 1.0}
+    assert masks[0].sum() == 90 * 90
+    assert masks[1].sum() == 45 * 90
+    assert masks[2].sum() == 45 * 90
+    assert masks[0, 5:95, 35:125].all()
+    assert masks[1, 27:72, 35:125].all()
+    assert masks[2, 5:95, 58:103].all()
+
+
+def test_unified_background_refines_weak_edges_gaps_and_artifacts():
+    raw = torch.zeros(12, 12)
+    raw[3:10, 3:10] = 0.9
+    raw[6, 6] = 0.0
+    raw[0, 0:3] = 0.6
+    raw[1, 11] = 0.9
+
+    refined = composite_nodes._refine_foreground_mask(raw, 0.5, 2, 1, 1)
+
+    assert refined[0, 0:3].sum() == 0
+    assert refined[1, 11] == 0
+    assert refined[6, 6] == 1
+    assert refined[4:9, 4:9].all()
+
+
+def test_unified_background_keeps_strong_edge_subject_and_feathers_only_boundary():
+    background = torch.zeros(1, 64, 80, 3)
+    foreground = torch.ones(1, 16, 16, 3)
+    raw = torch.zeros(1, 16, 16)
+    raw[:, 0:14, 3:13] = 0.95
+    model = _QueuedBackgroundModel([raw])
+
+    _, masks = _replace_background(
+        model,
+        background,
+        {"foreground_0": foreground},
+        border_cleanup_width=2,
+        feather_radius=2,
+    )
+
+    assert masks.max() == 1
+    assert masks.min() == 0
+    assert ((masks > 0) & (masks < 1)).any()
+    assert masks[0, 32, 40] == 1
+
+
+@pytest.mark.parametrize(
+    ("background_shape", "shift", "expected_bounds"),
+    [
+        ((60, 100), -1.0, (3, 57, 0, 54)),
+        ((60, 100), 1.0, (3, 57, 46, 100)),
+        ((100, 60), -1.0, (0, 54, 3, 57)),
+        ((100, 60), 1.0, (46, 100, 3, 57)),
+    ],
+)
+def test_unified_background_shifts_along_background_long_axis(background_shape, shift, expected_bounds):
+    height, width = background_shape
+    background = torch.zeros(1, height, width, 3)
+    foreground = torch.ones(1, 8, 8, 3)
+    model = _QueuedBackgroundModel([torch.ones(1, 8, 8)])
+
+    _, masks = _replace_background(
+        model,
+        background,
+        {"foreground_0": foreground},
+        long_axis_shift=shift,
+    )
+
+    top, bottom, left, right = expected_bounds
+    assert masks[0, top:bottom, left:right].all()
+    assert masks.sum() == (bottom - top) * (right - left)
+
+
+def test_unified_background_overscale_crops_to_canvas_perimeter():
+    background = torch.zeros(1, 40, 60, 3)
+    foreground = torch.ones(1, 8, 8, 3)
+    model = _QueuedBackgroundModel([torch.ones(1, 8, 8)])
+
+    images, masks = _replace_background(
+        model,
+        background,
+        {"foreground_0": foreground},
+        foreground_scale=2.0,
+    )
+
+    assert images.shape == background.shape
+    assert masks.shape == background.shape[:3]
+    assert masks.all()
+    assert images.all()
+
+
+def test_unified_background_validates_background_and_empty_masks():
+    foreground = torch.ones(1, 8, 8, 3)
+    model = _QueuedBackgroundModel([torch.zeros(1, 4, 4)])
+    with pytest.raises(ValueError, match="exactly one background"):
+        _replace_background(model, torch.zeros(2, 16, 16, 3), {"foreground_0": foreground})
+    with pytest.raises(ValueError, match="empty foreground mask for image 1"):
+        _replace_background(model, torch.zeros(1, 16, 16, 3), {"foreground_0": foreground})
+
+
 def test_face_foreground_solidification_matches_composite_operation():
     foreground = torch.tensor([0.25, 0.5, 0.625, 0.75, 1.0])
     inverted = 1.0 - foreground

@@ -45,6 +45,7 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_ImageCropMerge`
 - `UC_ImageAndMaskResize`
 - `UC_ResizeMask`
+- `UC_UnifiedBackgroundReplace`
 - `UC_MediaPipeFaceCompositeOptions`
 - `UC_MediaPipeFaceComposite`
 - `UC_ListToImageBatch`

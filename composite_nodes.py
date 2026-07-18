@@ -72,6 +72,61 @@ def _feather_mask(mask, radius):
     return torch.minimum(mask, blurred)
 
 
+def _binary_dilate(mask, radius):
+    radius = max(0, int(radius))
+    if radius == 0:
+        return mask
+    kernel = radius * 2 + 1
+    padded = F.pad(mask[None, None], (radius, radius, radius, radius), value=0.0)
+    return F.max_pool2d(padded, kernel, stride=1)[0, 0]
+
+
+def _binary_erode(mask, radius):
+    radius = max(0, int(radius))
+    if radius == 0:
+        return mask
+    kernel = radius * 2 + 1
+    padded = F.pad(mask[None, None], (radius, radius, radius, radius), value=0.0)
+    return 1.0 - F.max_pool2d(1.0 - padded, kernel, stride=1)[0, 0]
+
+
+def _refine_foreground_mask(raw_mask, threshold, border_cleanup_width, artifact_cleanup_radius, gap_fill_radius):
+    raw_mask = raw_mask.clamp(0.0, 1.0)
+    mask = (raw_mask >= threshold).to(raw_mask)
+    border_width = min(max(0, int(border_cleanup_width)), min(mask.shape) // 2)
+    if border_width:
+        height, width = mask.shape
+        rows = torch.arange(height, device=mask.device)
+        columns = torch.arange(width, device=mask.device)
+        border = (
+            (rows[:, None] < border_width)
+            | (rows[:, None] >= height - border_width)
+            | (columns[None, :] < border_width)
+            | (columns[None, :] >= width - border_width)
+        )
+        strong_threshold = min(1.0, float(threshold) + 0.25)
+        mask = mask * (~(border & (raw_mask < strong_threshold))).to(mask)
+    if artifact_cleanup_radius:
+        mask = _binary_dilate(_binary_erode(mask, artifact_cleanup_radius), artifact_cleanup_radius)
+    if gap_fill_radius:
+        mask = _binary_erode(_binary_dilate(mask, gap_fill_radius), gap_fill_radius)
+    return (mask >= 0.5).to(raw_mask)
+
+
+def _flatten_autogrow_images(image_inputs):
+    images = []
+    for key in sorted(image_inputs or {}, key=lambda value: int("".join(filter(str.isdigit, value)) or 0)):
+        value = image_inputs[key]
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if item is None:
+                continue
+            if not torch.is_tensor(item) or item.ndim != 4:
+                raise ValueError(f"Foreground input {key} must have shape [batch, height, width, channels].")
+            images.extend(item[index:index + 1] for index in range(item.shape[0]))
+    return images
+
+
 def _crop_bounds(mask, padding, multiple=8):
     points = torch.nonzero(mask > 0, as_tuple=False)
     if points.numel() == 0:
@@ -388,6 +443,132 @@ def _warp_target(target, source_oval_points, target_oval_points, strength, decay
     grid = torch.cat(grid_rows, dim=0).unsqueeze(0)
     warped = F.grid_sample(target.movedim(-1, 0).unsqueeze(0), grid, mode="bilinear", padding_mode="border", align_corners=False)
     return warped.squeeze(0).movedim(0, -1)
+
+
+class UC_UnifiedBackgroundReplace(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        foreground_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("foreground"), prefix="foreground_", min=1, max=50
+        )
+        return io.Schema(
+            node_id="UC_UnifiedBackgroundReplace",
+            display_name="Unified Background Replace",
+            category="utils/image",
+            inputs=[
+                io.BackgroundRemoval.Input("background_removal_model", tooltip="Core background-removal model used to isolate every foreground."),
+                io.Image.Input("background", tooltip="Single image used as the shared output canvas."),
+                io.Autogrow.Input("foreground_images", template=foreground_template, tooltip="Images to isolate, resize, center, and composite in socket order."),
+                io.Float.Input("foreground_scale", default=0.90, min=0.05, max=10.0, step=0.01, tooltip="Fraction of the background's shortest side occupied by the foreground's longest bound. Values above 1 overscale and crop at the canvas edges."),
+                io.Float.Input("long_axis_shift", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Position along the background's longest axis: -1 is left/up, 0 is centered, and 1 is right/down."),
+                io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01, tooltip="Minimum model confidence retained as solid foreground."),
+                io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True, tooltip="Width of the source-edge strip where weak foreground predictions are removed."),
+                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Opening radius used to remove small and thin mask artifacts."),
+                io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Closing radius used to fill small cracks and holes in the foreground."),
+                io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Inward edge softness; the foreground interior remains fully opaque."),
+            ],
+            outputs=[
+                io.Image.Output("images"),
+                io.Mask.Output("masks"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        background_removal_model,
+        background,
+        foreground_images,
+        foreground_scale,
+        long_axis_shift,
+        mask_threshold,
+        border_cleanup_width,
+        artifact_cleanup_radius,
+        gap_fill_radius,
+        feather_radius,
+    ):
+        if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
+            raise ValueError("Unified Background Replace requires exactly one background image.")
+        if background.shape[-1] < 3:
+            raise ValueError("Background image must have at least three channels.")
+        foregrounds = _flatten_autogrow_images(foreground_images)
+        if not foregrounds:
+            raise ValueError("Unified Background Replace requires at least one foreground image.")
+
+        background = background[..., :3]
+        background_height, background_width = background.shape[1:3]
+        target_longest = max(1, round(min(background_height, background_width) * float(foreground_scale)))
+        composites = []
+        masks = []
+
+        for index, foreground in enumerate(foregrounds, start=1):
+            if foreground.shape[-1] < 3:
+                raise ValueError(f"Foreground image {index} must have at least three channels.")
+            foreground = foreground[..., :3]
+            raw_mask = background_removal_model.encode_image(foreground)
+            if not torch.is_tensor(raw_mask):
+                raise ValueError(f"Background removal model returned an invalid mask for foreground image {index}.")
+            if raw_mask.ndim == 4 and raw_mask.shape[1] == 1:
+                raw_mask = raw_mask[:, 0]
+            elif raw_mask.ndim == 4 and raw_mask.shape[-1] == 1:
+                raw_mask = raw_mask[..., 0]
+            if raw_mask.ndim != 3 or raw_mask.shape[0] != 1:
+                raise ValueError(f"Background removal model must return one [batch, height, width] mask for foreground image {index}.")
+            if raw_mask.shape[-2:] != foreground.shape[1:3]:
+                raw_mask = _resize_mask(raw_mask, foreground.shape[2], foreground.shape[1], "bilinear")
+            refined = _refine_foreground_mask(
+                raw_mask[0],
+                float(mask_threshold),
+                border_cleanup_width,
+                artifact_cleanup_radius,
+                gap_fill_radius,
+            )
+            points = torch.nonzero(refined > 0, as_tuple=False)
+            if points.numel() == 0:
+                raise ValueError(f"Background removal produced an empty foreground mask for image {index}.")
+            top = int(points[:, 0].min())
+            bottom = int(points[:, 0].max()) + 1
+            left = int(points[:, 1].min())
+            right = int(points[:, 1].max()) + 1
+            crop = foreground[:, top:bottom, left:right]
+            crop_mask = refined[None, top:bottom, left:right]
+            crop_height, crop_width = crop.shape[1:3]
+            scale = target_longest / max(crop_height, crop_width)
+            placed_height = max(1, round(crop_height * scale))
+            placed_width = max(1, round(crop_width * scale))
+            resized_foreground = _resize_image(crop, placed_width, placed_height, "bicubic").to(background)
+            resized_mask = _resize_mask(crop_mask, placed_width, placed_height, "nearest-exact").to(background)
+            resized_mask = (resized_mask[0] >= 0.5).to(background)
+            alpha = _feather_mask(resized_mask, -int(feather_radius)) if feather_radius else resized_mask
+
+            offset_y = (background_height - placed_height) // 2
+            offset_x = (background_width - placed_width) // 2
+            shift = (float(long_axis_shift) + 1.0) / 2.0
+            if background_width > background_height:
+                offset_x = round((background_width - placed_width) * shift)
+            elif background_height > background_width:
+                offset_y = round((background_height - placed_height) * shift)
+            destination_top = max(0, offset_y)
+            destination_bottom = min(background_height, offset_y + placed_height)
+            destination_left = max(0, offset_x)
+            destination_right = min(background_width, offset_x + placed_width)
+            source_top = destination_top - offset_y
+            source_bottom = source_top + destination_bottom - destination_top
+            source_left = destination_left - offset_x
+            source_right = source_left + destination_right - destination_left
+            composite = background.clone()
+            placed_alpha = alpha[source_top:source_bottom, source_left:source_right]
+            placed_foreground = resized_foreground[0, source_top:source_bottom, source_left:source_right]
+            region = composite[0, destination_top:destination_bottom, destination_left:destination_right]
+            composite[0, destination_top:destination_bottom, destination_left:destination_right] = (
+                region * (1.0 - placed_alpha.unsqueeze(-1)) + placed_foreground * placed_alpha.unsqueeze(-1)
+            )
+            canvas_mask = background.new_zeros((1, background_height, background_width))
+            canvas_mask[0, destination_top:destination_bottom, destination_left:destination_right] = placed_alpha
+            composites.append(composite)
+            masks.append(canvas_mask)
+
+        return io.NodeOutput(torch.cat(composites, dim=0), torch.cat(masks, dim=0))
 
 
 class UC_MediaPipeFaceCompositeOptions(io.ComfyNode):
