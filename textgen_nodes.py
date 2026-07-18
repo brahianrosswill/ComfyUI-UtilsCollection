@@ -1,12 +1,16 @@
 import re
 import math
+import logging
 import torch
 from enum import Enum
 
 from comfy_api.latest import ComfyExtension, io
 from comfy.utils import common_upscale
+from comfy import model_management
 
-from .encoder_helpers import evaluate_tensor_expression
+from .encoder_helpers import evaluate_tensor_expression, fuse_visual_token_sources, fuse_deepstack_layers
+
+VisualFusionConfig = io.Custom("VISUAL_FUSION_CONFIG")
 
 # -----------------------------------------------------------------------------
 # 1. Helper classes, mappings and functions
@@ -60,6 +64,118 @@ def process_vlm_image(image, res):
 
         s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
         return s_vlm.movedim(1, -1)
+
+
+def _aligned_image_values(images):
+    """Return temporary common-sized copies for pixel arithmetic only."""
+    if not images:
+        return images
+    height = max(value.shape[1] for value in images.values())
+    width = max(value.shape[2] for value in images.values())
+    aligned = {}
+    for key, value in images.items():
+        if value.shape[1:3] == (height, width):
+            aligned[key] = value
+        else:
+            aligned[key] = torch.nn.functional.interpolate(
+                value.movedim(-1, 1), size=(height, width), mode="bicubic", align_corners=False
+            ).movedim(1, -1)
+    return aligned
+
+
+def _qwen3vl_clip_model(clip):
+    stage = getattr(clip, "cond_stage_model", None)
+    if stage is None:
+        return None
+    for name in (getattr(stage, "clip", None), getattr(stage, "clip_name", None)):
+        candidate = getattr(stage, name, None) if isinstance(name, str) else None
+        if candidate is not None and hasattr(candidate, "process_tokens") and hasattr(candidate, "transformer"):
+            return candidate
+    if hasattr(stage, "process_tokens") and hasattr(stage, "transformer"):
+        return stage
+    return None
+
+
+def _token_rows(tokens):
+    if isinstance(tokens, dict):
+        tokens = next(iter(tokens.values()))
+    return [[item[0] for item in batch] for batch in tokens]
+
+
+def _merged_grid(info):
+    grid = info.get("extra", {}).get("grid")
+    if grid is None:
+        raise ValueError("Qwen3-VL visual fusion source is missing its exact visual grid metadata.")
+    values = grid.reshape(-1).tolist() if torch.is_tensor(grid) else list(grid)
+    if len(values) < 3:
+        raise ValueError(f"Qwen3-VL visual fusion received a malformed grid: {grid!r}.")
+    shape = (int(values[-2]) // 2, int(values[-1]) // 2)
+    if shape[0] * shape[1] != info["size"]:
+        raise ValueError(f"Qwen3-VL visual grid {shape} does not match its {info['size']} embeddings.")
+    return shape
+
+
+def generate_fused_qwen3vl(clip, full_prompt, images, config, generation_args, thinking=False):
+    """Encode isolated Qwen3-VL images, fuse primary/DeepStack blocks, then generate."""
+    model = _qwen3vl_clip_model(clip)
+    if model is None or not hasattr(model.transformer, "build_image_inputs"):
+        raise ValueError("Active visual fusion requires a Core Qwen3-VL model wrapper with DeepStack support.")
+    if config.get("save_blended_embeds", False):
+        logging.warning("UC_TextGenerate ignores save_blended_embeds: a primary block alone cannot save the complete DeepStack generation state.")
+
+    # Match ComfyUI CLIP.generate's loading/device policy.
+    if hasattr(clip, "load_model"):
+        clip.load_model()
+    device = getattr(getattr(clip, "patcher", None), "load_device", None) or getattr(model, "execution_device", None)
+    if device is None:
+        device = model.transformer.get_input_embeddings().weight.device
+    if hasattr(model, "reset_clip_options"):
+        model.reset_clip_options()
+        model.set_clip_options({"layer": None, "execution_device": device})
+
+    passes = []
+    for image in images:
+        tokens = clip.tokenize(full_prompt, skip_template=True, min_length=1, thinking=thinking, images=[image], image=image)
+        embeds, _, _, info = model.process_tokens(_token_rows(tokens), device)
+        visual = [entry for entry in info if entry.get("type") == "image"]
+        if len(visual) != 1:
+            raise ValueError(f"Qwen3-VL visual fusion expected one visual block per source pass, received {len(visual)}.")
+        entry = visual[0]
+        deepstack = entry.get("extra", {}).get("deepstack")
+        if not deepstack:
+            raise ValueError("Qwen3-VL visual fusion source is missing DeepStack tensors.")
+        passes.append((embeds, entry, _merged_grid(entry), deepstack))
+
+    canonical, canonical_info, canonical_grid, _ = passes[0]
+    start, size = canonical_info["index"], canonical_info["size"]
+    primary = []
+    deepstacks = {}
+    grids = []
+    for index, (embeds, info, grid, deepstack) in enumerate(passes):
+        source_start, source_size = info["index"], info["size"]
+        if source_start != start or embeds.shape[1] - source_start - source_size != canonical.shape[1] - start - size:
+            raise ValueError("Qwen3-VL fusion source prompts produced incompatible text layouts.")
+        if embeds.shape[-1] != canonical.shape[-1]:
+            raise ValueError("Qwen3-VL fusion source prompts produced incompatible embedding dimensions.")
+        primary.append(embeds[0, source_start:source_start + source_size].to(device))
+        deepstacks[index] = deepstack
+        grids.append(grid)
+
+    mask_cache = {}
+    fused = fuse_visual_token_sources(primary, config, device, mask_cache, size, grids)
+    fused_deepstack = fuse_deepstack_layers(deepstacks, config, device, mask_cache, size, grids)
+    canonical = canonical.clone()
+    canonical[0, start:start + size] = fused
+    fused_info = dict(canonical_info)
+    fused_info["extra"] = dict(canonical_info["extra"])
+    fused_info["extra"]["deepstack"] = fused_deepstack
+    position_ids, visual_mask, rebuilt_deepstack = model.transformer.build_image_inputs(canonical, [fused_info])
+    context = model_management.cuda_device_context(device) if hasattr(model_management, "cuda_device_context") else __import__("contextlib").nullcontext()
+    with context:
+        return model.transformer.generate(
+            canonical, **generation_args, position_ids=position_ids,
+            visual_pos_masks=visual_mask, deepstack_embeds=rebuilt_deepstack
+        )
 
 # -----------------------------------------------------------------------------
 # 2. Template Definitions for Unified Text Generation
@@ -214,6 +330,7 @@ class UC_TextGenerate(io.ComfyNode):
                 ),
                 io.Boolean.Input("thinking", optional=True, default=False, tooltip="Preserves chain-of-thought blocks if the model supports reasoning."),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
+                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional pre-generation Qwen3-VL visual and DeepStack fusion configuration."),
             ],
             outputs=[
                 io.String.Output(display_name="generated_text"),
@@ -221,7 +338,7 @@ class UC_TextGenerate(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, max_length, sampling_mode, formula="", thinking=False, image_inputs=None) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, max_length, sampling_mode, formula="", thinking=False, image_inputs=None, visual_fusion_config=None) -> io.NodeOutput:
         if clip is None:
             raise RuntimeError("ERROR: CLIP/TextEncoder input is invalid: None")
 
@@ -249,24 +366,9 @@ class UC_TextGenerate(io.ComfyNode):
             letter = chr(97 + idx) # 0 -> 'a', 1 -> 'b', 2 -> 'c'...
             processed_images[letter] = scaled_img
 
-        # Ensure all image tensors are aligned to the same height and width if we have more than one image
-        if len(raw_images) > 1:
-            max_h = max(img.shape[1] for img in processed_images.values())
-            max_w = max(img.shape[2] for img in processed_images.values())
-
-            for key, img in list(processed_images.items()):
-                if img.shape[1] != max_h or img.shape[2] != max_w:
-                    # Move dimensions to [B, C, H, W] for interpolate
-                    samples = img.movedim(-1, 1)
-                    rescaled = torch.nn.functional.interpolate(
-                        samples, size=(max_h, max_w), mode="bicubic", align_corners=False
-                    )
-                    # Move back to [B, H, W, C]
-                    processed_images[key] = rescaled.movedim(1, -1)
-
         if formula and formula.strip():
             try:
-                blended_image = evaluate_formula(formula.strip(), processed_images)
+                blended_image = evaluate_formula(formula.strip(), _aligned_image_values(processed_images))
                 # Override raw_images and processed_images to contain only this single blended image
                 raw_images = {1: blended_image}
                 processed_images = {
@@ -295,7 +397,7 @@ class UC_TextGenerate(io.ComfyNode):
                 return match.group(0)
 
             try:
-                result_tensor = evaluate_formula(expression, processed_images)
+                result_tensor = evaluate_formula(expression, _aligned_image_values(processed_images))
                 images_vl.append(result_tensor)
                 return v_token
             except Exception:
@@ -330,6 +432,22 @@ class UC_TextGenerate(io.ComfyNode):
                 image_prompt_prefix += v_token
             modified_prompt = image_prompt_prefix + modified_prompt
 
+        # A batch is a sequence of independent visual fusion sources.
+        if images_vl:
+            images_vl = [item[i:i + 1] for item in images_vl for i in range(item.shape[0])]
+
+        fusion_method = (visual_fusion_config or {}).get("visual_fusion_method", "off")
+        fusion_active = fusion_method != "off"
+        if fusion_active:
+            if template_name != "qwen3vl":
+                raise ValueError(f"Active visual fusion is supported only by Core Qwen3-VL, not {template_name}.")
+            if not images_vl:
+                raise ValueError("Active visual fusion requires at least one resolved image source.")
+            first = modified_prompt.find(v_token)
+            if first < 0:
+                raise ValueError("Active visual fusion could not locate the resolved visual marker in the prompt.")
+            modified_prompt = modified_prompt[:first] + v_token + modified_prompt[first + len(v_token):].replace(v_token, "")
+
         # 5. Build Safe Non-Formatting Chat Template
         # We completely avoid standard formatting or f-strings which fail if prompts contain { } braces.
         full_prompt = ""
@@ -356,13 +474,15 @@ class UC_TextGenerate(io.ComfyNode):
                 kwargs["image"] = images_vl[0]
 
         # Use skip_template=True because we have assembled perfect, model-specific delimiters ourselves.
-        tokens = clip.tokenize(
-            full_prompt,
-            skip_template=True,
-            min_length=1,
-            thinking=thinking,
-            **kwargs
-        )
+        tokens = None
+        if not fusion_active:
+            tokens = clip.tokenize(
+                full_prompt,
+                skip_template=True,
+                min_length=1,
+                thinking=thinking,
+                **kwargs
+            )
 
         # 7. Extract Parameters from sampling_mode dynamic combo
         do_sample = sampling_mode.get("sampling_mode") == "on"
@@ -375,8 +495,7 @@ class UC_TextGenerate(io.ComfyNode):
         presence_penalty = sampling_mode.get("presence_penalty", 0.0)
 
         # 8. Generation & Decoding
-        generated_ids = clip.generate(
-            tokens,
+        generation_args = dict(
             do_sample=do_sample,
             max_length=max_length,
             temperature=temperature,
@@ -387,6 +506,10 @@ class UC_TextGenerate(io.ComfyNode):
             presence_penalty=presence_penalty,
             seed=seed
         )
+        if fusion_active:
+            generated_ids = generate_fused_qwen3vl(clip, full_prompt, images_vl, visual_fusion_config, generation_args, thinking)
+        else:
+            generated_ids = clip.generate(tokens, **generation_args)
 
         generated_text = clip.decode(generated_ids, skip_special_tokens=True)
         return io.NodeOutput(generated_text)

@@ -91,6 +91,54 @@ def test_text_generate_schema_has_no_obsolete_blend_config():
     assert not hasattr(textgen_nodes, "evaluate_image_consensus_blend")
 
 
+def test_text_generate_appends_optional_visual_fusion_config():
+    inputs = textgen_nodes.UC_TextGenerate.define_schema().inputs
+    assert inputs[-1].id == "visual_fusion_config"
+    assert "visual_fusion_config" in inspect.signature(textgen_nodes.UC_TextGenerate.execute).parameters
+
+
+class _GenerateClip:
+    def __init__(self, family="qwen3vl_4b"):
+        self.tokenizer = types.SimpleNamespace(clip_name=family)
+        self.tokenize_calls = []
+        self.generate_calls = []
+
+    def tokenize(self, prompt, **kwargs):
+        self.tokenize_calls.append((prompt, kwargs))
+        return {"qwen": [[(1, 1.0)]]}
+
+    def generate(self, tokens, **kwargs):
+        self.generate_calls.append((tokens, kwargs))
+        return [7]
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        return "decoded"
+
+
+@pytest.mark.parametrize("config", [None, {"visual_fusion_method": "off"}])
+def test_text_generate_disconnected_or_off_uses_original_generation_path(config):
+    clip = _GenerateClip()
+    result = textgen_nodes.UC_TextGenerate.execute(
+        clip, "hello", "", "Original", 12, {"sampling_mode": "off"},
+        image_inputs={}, visual_fusion_config=config,
+    )
+    assert result.args == ("decoded",)
+    assert len(clip.tokenize_calls) == len(clip.generate_calls) == 1
+    assert clip.generate_calls[0][1]["max_length"] == 12
+
+
+def test_active_visual_fusion_rejects_non_qwen3vl_without_tokenizing():
+    clip = _GenerateClip("gemma3_12b")
+    image = torch.zeros((1, 2, 3, 3))
+    with pytest.raises(ValueError, match="only by Core Qwen3-VL"):
+        textgen_nodes.UC_TextGenerate.execute(
+            clip, "describe", "", "Original", 12, {"sampling_mode": "off"},
+            image_inputs={"image1": image},
+            visual_fusion_config={"visual_fusion_method": "linear"},
+        )
+    assert clip.tokenize_calls == []
+
+
 @pytest.mark.parametrize("clip_name,expected", [
     ("qwen35_2b", "qwen35"),
     ("qwen3vl_4b", "qwen3vl"),
