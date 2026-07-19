@@ -138,16 +138,74 @@ def test_text_generate_disconnected_or_off_uses_original_generation_path(config)
     assert clip.generate_calls[0][1]["max_length"] == 12
 
 
-def test_active_visual_fusion_rejects_non_qwen3vl_without_tokenizing():
+def test_active_visual_fusion_rejects_unsupported_model_without_tokenizing():
     clip = _GenerateClip("gemma3_12b")
     image = torch.zeros((1, 2, 3, 3))
-    with pytest.raises(ValueError, match="only by Core Qwen3-VL"):
+    with pytest.raises(ValueError, match="only by Core Qwen3-VL and Qwen3.5"):
         textgen_nodes.UC_TextGenerate.execute(
             clip, "describe", "", "Original", 12, {"sampling_mode": "off"},
             image_inputs={"image1": image},
             visual_fusion_config={"visual_fusion_method": "linear"},
         )
     assert clip.tokenize_calls == []
+
+
+def test_qwen35_fused_generation_uses_primary_visual_block_and_mrope():
+    class Transformer:
+        generated = None
+
+        def generate(self, embeds, **kwargs):
+            self.generated = (embeds, kwargs)
+            return [9]
+
+    class Model:
+        def __init__(self):
+            self.transformer = Transformer()
+            self.execution_device = torch.device("cpu")
+
+        def reset_clip_options(self):
+            pass
+
+        def set_clip_options(self, options):
+            self.execution_device = options["execution_device"]
+
+        def process_tokens(self, rows, device):
+            image = next(value for value in rows[0] if isinstance(value, dict))
+            source = float(image["data"].flatten()[0])
+            embeds = torch.zeros((1, 6, 2), device=device)
+            embeds[0, 1:5] = source
+            info = [{"type": "image", "index": 1, "size": 4, "extra": torch.tensor([[1, 4, 4]])}]
+            return embeds, None, None, info
+
+    model = Model()
+    stage = types.SimpleNamespace(clip="qwen35_2b", qwen35_2b=model)
+
+    class Clip:
+        cond_stage_model = stage
+        patcher = types.SimpleNamespace(load_device=torch.device("cpu"))
+
+        @staticmethod
+        def load_model():
+            pass
+
+        @staticmethod
+        def tokenize(prompt, images, **kwargs):
+            return {"qwen35": [[(10, 1.0), ({"type": "image", "data": images[0]}, 1.0), (11, 1.0)]]}
+
+    images = [torch.zeros((1, 2, 2, 3)), torch.ones((1, 2, 2, 3))]
+    args = {"do_sample": False, "max_length": 4, "temperature": 1.0, "top_k": 50,
+            "top_p": 1.0, "min_p": 0.0, "repetition_penalty": 1.0,
+            "presence_penalty": 0.0, "seed": None}
+    result = textgen_nodes.generate_fused_qwen35(
+        Clip(), "prompt", images, {"visual_fusion_method": "spatial-checkerboard"}, args
+    )
+
+    assert result == [9]
+    embeds, forwarded = model.transformer.generated
+    assert embeds[0, 1:5, 0].tolist() == [0.0, 1.0, 1.0, 0.0]
+    assert forwarded["position_ids"].shape == (3, 6)
+    assert forwarded["max_length"] == 4
+    assert "deepstack_embeds" not in forwarded
 
 
 @pytest.mark.parametrize("clip_name,expected", [

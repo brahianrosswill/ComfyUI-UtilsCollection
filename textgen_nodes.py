@@ -7,6 +7,7 @@ from enum import Enum
 from comfy_api.latest import ComfyExtension, io
 from comfy.utils import common_upscale
 from comfy import model_management
+from comfy.text_encoders.qwen_vl import qwen2vl_mrope_position_ids
 
 from .encoder_helpers import evaluate_tensor_expression, fuse_visual_token_sources, fuse_deepstack_layers
 
@@ -83,7 +84,7 @@ def _aligned_image_values(images):
     return aligned
 
 
-def _qwen3vl_clip_model(clip):
+def _qwen_clip_model(clip):
     stage = getattr(clip, "cond_stage_model", None)
     if stage is None:
         return None
@@ -102,28 +103,24 @@ def _token_rows(tokens):
     return [[item[0] for item in batch] for batch in tokens]
 
 
-def _merged_grid(info):
-    grid = info.get("extra", {}).get("grid")
+def _visual_grid_metadata(info):
+    extra = info.get("extra")
+    grid = extra.get("grid") if isinstance(extra, dict) else extra
     if grid is None:
-        raise ValueError("Qwen3-VL visual fusion source is missing its exact visual grid metadata.")
+        raise ValueError("Qwen visual fusion source is missing its exact visual grid metadata.")
     values = grid.reshape(-1).tolist() if torch.is_tensor(grid) else list(grid)
     if len(values) < 3:
-        raise ValueError(f"Qwen3-VL visual fusion received a malformed grid: {grid!r}.")
+        raise ValueError(f"Qwen visual fusion received a malformed grid: {grid!r}.")
     shape = (int(values[-2]) // 2, int(values[-1]) // 2)
     if shape[0] * shape[1] != info["size"]:
-        raise ValueError(f"Qwen3-VL visual grid {shape} does not match its {info['size']} embeddings.")
-    return shape
+        raise ValueError(f"Qwen visual grid {shape} does not match its {info['size']} embeddings.")
+    return grid, shape
 
 
-def generate_fused_qwen3vl(clip, full_prompt, images, config, generation_args, thinking=False):
-    """Encode isolated Qwen3-VL images, fuse primary/DeepStack blocks, then generate."""
-    model = _qwen3vl_clip_model(clip)
-    if model is None or not hasattr(model.transformer, "build_image_inputs"):
-        raise ValueError("Active visual fusion requires a Core Qwen3-VL model wrapper with DeepStack support.")
-    if config.get("save_blended_embeds", False):
-        logging.warning("UC_TextGenerate ignores save_blended_embeds: a primary block alone cannot save the complete DeepStack generation state.")
-
-    # Match ComfyUI CLIP.generate's loading/device policy.
+def _load_qwen_generation_model(clip):
+    model = _qwen_clip_model(clip)
+    if model is None:
+        raise ValueError("Active visual fusion requires a supported Core Qwen multimodal model wrapper.")
     if hasattr(clip, "load_model"):
         clip.load_model()
     device = getattr(getattr(clip, "patcher", None), "load_device", None) or getattr(model, "execution_device", None)
@@ -132,40 +129,61 @@ def generate_fused_qwen3vl(clip, full_prompt, images, config, generation_args, t
     if hasattr(model, "reset_clip_options"):
         model.reset_clip_options()
         model.set_clip_options({"layer": None, "execution_device": device})
+    return model, device
 
+
+def _encode_qwen_visual_sources(clip, model, device, full_prompt, images, thinking):
     passes = []
     for image in images:
         tokens = clip.tokenize(full_prompt, skip_template=True, min_length=1, thinking=thinking, images=[image], image=image)
         embeds, _, _, info = model.process_tokens(_token_rows(tokens), device)
         visual = [entry for entry in info if entry.get("type") == "image"]
         if len(visual) != 1:
-            raise ValueError(f"Qwen3-VL visual fusion expected one visual block per source pass, received {len(visual)}.")
+            raise ValueError(f"Qwen visual fusion expected one visual block per source pass, received {len(visual)}.")
         entry = visual[0]
+        grid, merged_grid = _visual_grid_metadata(entry)
+        passes.append((embeds, entry, grid, merged_grid))
+    return passes
+
+
+def _fuse_qwen_primary_sources(passes, config, device, mask_cache):
+    canonical, canonical_info, _, _ = passes[0]
+    start, size = canonical_info["index"], canonical_info["size"]
+    primary = []
+    grids = []
+    for embeds, info, _, grid in passes:
+        source_start, source_size = info["index"], info["size"]
+        if source_start != start or embeds.shape[1] - source_start - source_size != canonical.shape[1] - start - size:
+            raise ValueError("Qwen fusion source prompts produced incompatible text layouts.")
+        if embeds.shape[-1] != canonical.shape[-1]:
+            raise ValueError("Qwen fusion source prompts produced incompatible embedding dimensions.")
+        primary.append(embeds[0, source_start:source_start + source_size].to(device))
+        grids.append(grid)
+    fused = fuse_visual_token_sources(primary, config, device, mask_cache, size, grids)
+    canonical = canonical.clone()
+    canonical[0, start:start + size] = fused
+    return canonical, canonical_info, grids, size
+
+
+def generate_fused_qwen3vl(clip, full_prompt, images, config, generation_args, thinking=False):
+    """Encode isolated Qwen3-VL images, fuse primary/DeepStack blocks, then generate."""
+    model, device = _load_qwen_generation_model(clip)
+    if model is None or not hasattr(model.transformer, "build_image_inputs"):
+        raise ValueError("Active visual fusion requires a Core Qwen3-VL model wrapper with DeepStack support.")
+    if config.get("save_blended_embeds", False):
+        logging.warning("UC_TextGenerate ignores save_blended_embeds: a primary block alone cannot save the complete DeepStack generation state.")
+
+    passes = _encode_qwen_visual_sources(clip, model, device, full_prompt, images, thinking)
+    deepstacks = {}
+    for index, (_, entry, _, _) in enumerate(passes):
         deepstack = entry.get("extra", {}).get("deepstack")
         if not deepstack:
             raise ValueError("Qwen3-VL visual fusion source is missing DeepStack tensors.")
-        passes.append((embeds, entry, _merged_grid(entry), deepstack))
-
-    canonical, canonical_info, canonical_grid, _ = passes[0]
-    start, size = canonical_info["index"], canonical_info["size"]
-    primary = []
-    deepstacks = {}
-    grids = []
-    for index, (embeds, info, grid, deepstack) in enumerate(passes):
-        source_start, source_size = info["index"], info["size"]
-        if source_start != start or embeds.shape[1] - source_start - source_size != canonical.shape[1] - start - size:
-            raise ValueError("Qwen3-VL fusion source prompts produced incompatible text layouts.")
-        if embeds.shape[-1] != canonical.shape[-1]:
-            raise ValueError("Qwen3-VL fusion source prompts produced incompatible embedding dimensions.")
-        primary.append(embeds[0, source_start:source_start + source_size].to(device))
         deepstacks[index] = deepstack
-        grids.append(grid)
 
     mask_cache = {}
-    fused = fuse_visual_token_sources(primary, config, device, mask_cache, size, grids)
+    canonical, canonical_info, grids, size = _fuse_qwen_primary_sources(passes, config, device, mask_cache)
     fused_deepstack = fuse_deepstack_layers(deepstacks, config, device, mask_cache, size, grids)
-    canonical = canonical.clone()
-    canonical[0, start:start + size] = fused
     fused_info = dict(canonical_info)
     fused_info["extra"] = dict(canonical_info["extra"])
     fused_info["extra"]["deepstack"] = fused_deepstack
@@ -176,6 +194,27 @@ def generate_fused_qwen3vl(clip, full_prompt, images, config, generation_args, t
             canonical, **generation_args, position_ids=position_ids,
             visual_pos_masks=visual_mask, deepstack_embeds=rebuilt_deepstack
         )
+
+
+def generate_fused_qwen35(clip, full_prompt, images, config, generation_args, thinking=False):
+    """Encode and fuse Qwen3.5's primary visual blocks, then generate with rebuilt MRoPE."""
+    model, device = _load_qwen_generation_model(clip)
+    if hasattr(model.transformer, "build_image_inputs"):
+        raise ValueError("Qwen3.5 visual fusion received a Qwen3-VL model wrapper.")
+    if config.get("save_blended_embeds", False):
+        logging.warning("UC_TextGenerate ignores save_blended_embeds in the fused text-generation path.")
+    logging.info("UC_TextGenerate: Qwen3.5 visual fusion uses the primary visual block only; this model has no configured DeepStack outputs.")
+
+    passes = _encode_qwen_visual_sources(clip, model, device, full_prompt, images, thinking)
+    canonical, canonical_info, _, _ = _fuse_qwen_primary_sources(passes, config, device, {})
+    fused_info = dict(canonical_info)
+    fused_info["extra"] = passes[0][2]
+    position_ids = qwen2vl_mrope_position_ids([fused_info], canonical.shape[1], canonical.device)
+    if position_ids is None:
+        raise ValueError("Qwen3.5 visual fusion could not rebuild multimodal MRoPE positions.")
+    context = model_management.cuda_device_context(device) if hasattr(model_management, "cuda_device_context") else __import__("contextlib").nullcontext()
+    with context:
+        return model.transformer.generate(canonical, **generation_args, position_ids=position_ids)
 
 # -----------------------------------------------------------------------------
 # 2. Template Definitions for Unified Text Generation
@@ -445,8 +484,8 @@ class UC_TextGenerate(io.ComfyNode):
         fusion_method = (visual_fusion_config or {}).get("visual_fusion_method", "off")
         fusion_active = fusion_method != "off"
         if fusion_active:
-            if template_name != "qwen3vl":
-                raise ValueError(f"Active visual fusion is supported only by Core Qwen3-VL, not {template_name}.")
+            if template_name not in {"qwen3vl", "qwen35"}:
+                raise ValueError(f"Active visual fusion is supported only by Core Qwen3-VL and Qwen3.5, not {template_name}.")
             if not images_vl:
                 raise ValueError("Active visual fusion requires at least one resolved image source.")
             first = modified_prompt.find(v_token)
@@ -513,7 +552,10 @@ class UC_TextGenerate(io.ComfyNode):
             seed=seed
         )
         if fusion_active:
-            generated_ids = generate_fused_qwen3vl(clip, full_prompt, images_vl, visual_fusion_config, generation_args, thinking)
+            if template_name == "qwen3vl":
+                generated_ids = generate_fused_qwen3vl(clip, full_prompt, images_vl, visual_fusion_config, generation_args, thinking)
+            else:
+                generated_ids = generate_fused_qwen35(clip, full_prompt, images_vl, visual_fusion_config, generation_args, thinking)
         else:
             generated_ids = clip.generate(tokens, **generation_args)
 
