@@ -67,6 +67,19 @@ def test_power_blend_preset_matches_declared_widget_values():
     }
 
 
+def test_text_blend_config_exposes_position_and_prefix_controls():
+    inputs = {value.id: value for value in UC_TextConsensusBlendConfig.define_schema().inputs}
+    assert inputs["position_weight"].default == 0.0
+    assert inputs["preserve_common_prefix"].default is False
+    config = UC_TextConsensusBlendConfig.execute(
+        "power_blend", "consensus", "median", "similarity", 0.4, 0.0,
+        2.0, 0.0, True, 1.0, position_weight=0.75,
+        preserve_common_prefix=True,
+    ).args[0]
+    assert config["position_weight"] == 0.75
+    assert config["preserve_common_prefix"] is True
+
+
 def test_vae_reference_image_uses_configurable_dimension_multiple():
     samples = torch.zeros(1, 3, 101, 205)
 
@@ -257,6 +270,75 @@ def test_consensus_blend_restores_sequence_and_pooled_reference_dtype():
     assert blended.dtype == sequences["a"].dtype
     assert blended_pooled.device == pooled["a"].device
     assert blended_pooled.dtype == pooled["a"].dtype
+
+
+def test_common_prefix_is_preserved_before_power_blend():
+    prefix = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    first = torch.cat([prefix, torch.tensor([[1.0, 0.0], [0.0, 1.0]])])[None]
+    second = torch.cat([prefix, torch.tensor([[0.8, 0.2], [0.2, 0.8]])])[None]
+    blended, _ = encoder_helpers.blend_text_vectors(
+        {"a": first, "b": second},
+        {"blend_preset": "power_blend", "preserve_common_prefix": True},
+        device=first.device,
+        compute_dtype=torch.float32,
+    )
+    assert torch.equal(blended[0, :2], prefix)
+    assert not torch.equal(blended[0, 2:], first[0, 2:])
+
+
+def test_common_prefix_is_not_scaled_in_linear_mode():
+    first = torch.tensor([[[2.0, 3.0], [1.0, 0.0]]])
+    second = torch.tensor([[[2.0, 3.0], [3.0, 2.0]]])
+    blended, _ = encoder_helpers.blend_text_vectors(
+        {"a": first, "b": second},
+        {"blend_preset": "custom", "blend_method": "linear", "global_scale": 2.0,
+         "preserve_common_prefix": True},
+        device=first.device,
+        compute_dtype=torch.float32,
+    )
+    assert torch.equal(blended[0, 0], first[0, 0])
+    assert torch.equal(blended[0, 1], torch.tensor([4.0, 2.0]))
+
+
+def test_position_bias_prefers_nearby_normalized_positions():
+    similarities = torch.tensor([[0.8, 0.9], [0.9, 0.8]])
+    unbiased = encoder_helpers._position_biased_similarity_scores(similarities, 0.0)
+    biased = encoder_helpers._position_biased_similarity_scores(similarities, 1.0)
+    assert torch.equal(unbiased, similarities)
+    assert biased[0, 0] > biased[0, 1]
+    assert biased[1, 1] > biased[1, 0]
+
+
+def test_position_bias_does_not_bypass_cosine_alignment_threshold():
+    first = torch.tensor([[[1.0, 0.0], [0.0, 1.0]]])
+    second = torch.tensor([[[0.0, 1.0], [1.0, 0.0]]])
+    blended, _ = encoder_helpers.blend_text_vectors(
+        {"a": first, "b": second},
+        {"blend_preset": "custom", "blend_method": "consensus", "consensus_type": "mean",
+         "alignment_method": "similarity", "alignment_threshold": 0.9,
+         "similarity_threshold": -1.0, "power_alpha": 1.0, "position_weight": 1.0,
+         "rescale_norm": False, "global_scale": 1.0},
+        device=first.device,
+        compute_dtype=torch.float32,
+    )
+    assert torch.equal(blended, first)
+
+
+def test_zero_position_weight_matches_legacy_similarity_alignment():
+    sequences = {
+        "a": torch.tensor([[[1.0, 0.0], [0.2, 0.8]]]),
+        "b": torch.tensor([[[0.9, 0.1], [0.0, 1.0]]]),
+    }
+    config = {"blend_preset": "baseline"}
+    legacy, _ = encoder_helpers.blend_text_vectors(sequences, config)
+    explicit_zero, _ = encoder_helpers.blend_text_vectors(sequences, {**config, "position_weight": 0.0})
+    assert torch.equal(legacy, explicit_zero)
+
+
+def test_position_weight_validation_rejects_out_of_range_values():
+    sequences = {"a": torch.ones(1, 1, 2), "b": torch.ones(1, 1, 2)}
+    with pytest.raises(ValueError, match="Position weight"):
+        encoder_helpers.blend_text_vectors(sequences, {"blend_preset": "baseline", "position_weight": 1.1})
 
 
 def test_consensus_node_passes_original_tensors_to_blender(monkeypatch):

@@ -222,7 +222,9 @@ class UC_TextConsensusBlendConfig(io.ComfyNode):
                 io.Boolean.Input("rescale_norm", default=True, tooltip="Norm Rescaling. Keeps activation energy high to prevent washed-out colors."),
                 io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Global scale multiplier applied to the blended outputs."),
                 io.Boolean.Input("dynamic_similarity_contrast", default=False, tooltip="Stretches similarities to soft [0.7, 1.0] band to boost contrast."),
-                io.Boolean.Input("soft_comfort_bandpass", default=False, tooltip="Softens the diversity bandpass ceiling to prevent clipping.")
+                io.Boolean.Input("soft_comfort_bandpass", default=False, tooltip="Softens the diversity bandpass ceiling to prevent clipping."),
+                io.Float.Input("position_weight", default=0.0, min=0.0, max=1.0, step=0.01, tooltip="Bias similarity alignment toward nearby normalized token positions. Zero preserves current behavior."),
+                io.Boolean.Input("preserve_common_prefix", default=False, tooltip="Keep the longest numerically identical conditioning prefix exactly from the first input."),
             ],
             outputs=[
                 TextBlendConfig.Output("text_blend_config")
@@ -244,7 +246,9 @@ class UC_TextConsensusBlendConfig(io.ComfyNode):
         rescale_norm: bool,
         global_scale: float,
         dynamic_similarity_contrast: bool = False,
-        soft_comfort_bandpass: bool = False
+        soft_comfort_bandpass: bool = False,
+        position_weight: float = 0.0,
+        preserve_common_prefix: bool = False,
     ) -> io.NodeOutput:
         config = {
             "blend_preset": blend_preset,
@@ -258,7 +262,9 @@ class UC_TextConsensusBlendConfig(io.ComfyNode):
             "rescale_norm": rescale_norm,
             "global_scale": global_scale,
             "dynamic_similarity_contrast": dynamic_similarity_contrast,
-            "soft_comfort_bandpass": soft_comfort_bandpass
+            "soft_comfort_bandpass": soft_comfort_bandpass,
+            "position_weight": position_weight,
+            "preserve_common_prefix": preserve_common_prefix,
         }
         return io.NodeOutput(config)
 
