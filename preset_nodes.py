@@ -1,8 +1,14 @@
 import sys
+import re
 
 from comfy_api.latest import ComfyExtension, io
 from . import presets_collection
 from .helper_functions import to_video_prompt
+
+
+def escape_prompt_parentheses(text, enabled=False):
+    """Backslash-escape unescaped parentheses for downstream prompt-weight parsers."""
+    return re.sub(r"(?<!\\)([()])", r"\\\1", text) if enabled else text
 
 class UC_SystemMessagePresets(io.ComfyNode):
     @classmethod
@@ -35,6 +41,7 @@ class UC_SystemMessagePresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default="F2_SYSTEM_MESSAGE" if "F2_SYSTEM_MESSAGE" in presets else sorted(list(presets.keys()))[0],
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="system_prompt"),
@@ -42,10 +49,10 @@ class UC_SystemMessagePresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         system_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(system_prompt)
+        return io.NodeOutput(escape_prompt_parentheses(system_prompt, escape_parentheses))
 
 
 class UC_InstructPromptPresets(io.ComfyNode):
@@ -72,6 +79,7 @@ class UC_InstructPromptPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="instruct_prompt"),
@@ -79,10 +87,10 @@ class UC_InstructPromptPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         instruct_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(instruct_prompt)
+        return io.NodeOutput(escape_prompt_parentheses(instruct_prompt, escape_parentheses))
 
 
 class UC_BonusPromptPresets(io.ComfyNode):
@@ -109,6 +117,7 @@ class UC_BonusPromptPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="bonus_prompt"),
@@ -116,10 +125,10 @@ class UC_BonusPromptPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         bonus_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(bonus_prompt)
+        return io.NodeOutput(escape_prompt_parentheses(bonus_prompt, escape_parentheses))
 
 
 class UC_LegacyPromptPresets(io.ComfyNode):
@@ -146,6 +155,7 @@ class UC_LegacyPromptPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="legacy_prompt"),
@@ -153,10 +163,10 @@ class UC_LegacyPromptPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         legacy_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(legacy_prompt)
+        return io.NodeOutput(escape_prompt_parentheses(legacy_prompt, escape_parentheses))
 
 
 class UC_SystemMessageVideoPresets(io.ComfyNode):
@@ -177,6 +187,7 @@ class UC_SystemMessageVideoPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default="F2_SYSTEM_MESSAGE" if "F2_SYSTEM_MESSAGE" in presets else sorted(list(presets.keys()))[0],
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="system_prompt"),
@@ -184,10 +195,10 @@ class UC_SystemMessageVideoPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         system_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(to_video_prompt(system_prompt, is_system=True))
+        return io.NodeOutput(escape_prompt_parentheses(to_video_prompt(system_prompt, is_system=True), escape_parentheses))
 
 
 class UC_InstructPromptVideoPresets(io.ComfyNode):
@@ -208,6 +219,7 @@ class UC_InstructPromptVideoPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="instruct_prompt"),
@@ -215,10 +227,10 @@ class UC_InstructPromptVideoPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         instruct_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(to_video_prompt(instruct_prompt))
+        return io.NodeOutput(escape_prompt_parentheses(to_video_prompt(instruct_prompt), escape_parentheses))
 
 
 class UC_BonusPromptVideoPresets(io.ComfyNode):
@@ -239,6 +251,7 @@ class UC_BonusPromptVideoPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="bonus_prompt"),
@@ -246,10 +259,10 @@ class UC_BonusPromptVideoPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         bonus_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(to_video_prompt(bonus_prompt))
+        return io.NodeOutput(escape_prompt_parentheses(to_video_prompt(bonus_prompt), escape_parentheses))
 
 
 class UC_EditTargetPresets(io.ComfyNode):
@@ -276,6 +289,7 @@ class UC_EditTargetPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="edit_target_prompt"),
@@ -283,10 +297,10 @@ class UC_EditTargetPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         edit_target_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(edit_target_prompt)
+        return io.NodeOutput(escape_prompt_parentheses(edit_target_prompt, escape_parentheses))
 
 
 class UC_EditOpPresets(io.ComfyNode):
@@ -313,6 +327,7 @@ class UC_EditOpPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="edit_op_prompt"),
@@ -320,10 +335,10 @@ class UC_EditOpPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         edit_op_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(edit_op_prompt)
+        return io.NodeOutput(escape_prompt_parentheses(edit_op_prompt, escape_parentheses))
 
 
 class UC_CameraShotPresets(io.ComfyNode):
@@ -350,6 +365,7 @@ class UC_CameraShotPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
             ],
             outputs=[
                 io.String.Output(display_name="camera_shot_prompt"),
@@ -357,10 +373,10 @@ class UC_CameraShotPresets(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, preset) -> io.NodeOutput:
+    def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         camera_shot_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(camera_shot_prompt)
+        return io.NodeOutput(escape_prompt_parentheses(camera_shot_prompt, escape_parentheses))
 
 class UC_UnifiedPresets(io.ComfyNode):
     """
@@ -395,13 +411,19 @@ class UC_UnifiedPresets(io.ComfyNode):
                     options=shared_presets,
                     default=default_preset,
                 ),
+                io.Boolean.Input(
+                    "escape_parentheses",
+                    default=False,
+                    tooltip="Forward this setting to image or video preset nodes to escape literal prompt parentheses.",
+                ),
             ],
             outputs=[
                 io.AnyType.Output(display_name="preset"),
+                io.Boolean.Output(display_name="escape_parentheses"),
             ],
         )
 
     @classmethod
-    def execute(cls, preset: str) -> io.NodeOutput:
+    def execute(cls, preset: str, escape_parentheses: bool = False) -> io.NodeOutput:
         """Forward the selected preset as 'any' type"""
-        return io.NodeOutput(preset)
+        return io.NodeOutput(preset, escape_parentheses)
