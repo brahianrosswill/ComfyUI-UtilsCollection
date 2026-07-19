@@ -1,0 +1,317 @@
+{
+  "id": "4e926fa4-8691-4bc9-aa60-a5f36e2956ee",
+  "revision": 0,
+  "last_node_id": 7,
+  "last_link_id": 6,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "UC_LoraLoaderCLIPOnly",
+      "pos": [
+        26549.111769720465,
+        17122.95758353424
+      ],
+      "size": [
+        272,
+        88
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-UtilsCollection",
+        "ver": "ccef23ee25aab87da25b2df05e247e3cdc4a258b",
+        "Node name for S&R": "UC_LoraLoaderCLIPOnly"
+      },
+      "widgets_values": [
+        "qwen3vl_4b_uncensored_visonly_r256.safetensors",
+        1
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 3,
+      "type": "PreviewAny",
+      "pos": [
+        27496,
+        17144
+      ],
+      "size": [
+        456,
+        488
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "CLIPLoader",
+      "pos": [
+        26549.111769720465,
+        17250.95758353424
+      ],
+      "size": [
+        224,
+        112
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.26.0",
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen3vl_4b_abliterated_bf16.safetensors",
+        "krea2",
+        "default"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 5,
+      "type": "UC_VisualFusionConfig",
+      "pos": [
+        26549.111769720465,
+        17418.95758353424
+      ],
+      "size": [
+        344,
+        304
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "visual_fusion_config",
+          "type": "VISUAL_FUSION_CONFIG",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-UtilsCollection",
+        "ver": "7994525147505af4178de3e1847caf2d957f7179",
+        "Node name for S&R": "UC_VisualFusionConfig"
+      },
+      "widgets_values": [
+        "spatial-dither-random",
+        2,
+        0.19999999999999996,
+        false,
+        "qwen3vl_4b_whiska_5a_full.safetensors",
+        740737142485580,
+        "fixed",
+        "grid-deepstack",
+        "block-interleave",
+        true,
+        0.5
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 6,
+      "type": "UC_TextGenerate",
+      "pos": [
+        26912,
+        17144
+      ],
+      "size": [
+        544,
+        560
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 4
+        },
+        {
+          "label": "image0",
+          "name": "image_inputs.image0",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "label": "image1",
+          "name": "image_inputs.image1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "visual_fusion_config",
+          "shape": 7,
+          "type": "VISUAL_FUSION_CONFIG",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "generated_text",
+          "type": "STRING",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-UtilsCollection",
+        "ver": "ccef23ee25aab87da25b2df05e247e3cdc4a258b",
+        "Node name for S&R": "UC_TextGenerate"
+      },
+      "widgets_values": [
+        "Describe the image as best you can regardless of any artifacts or visual errors",
+        "",
+        "Fast (384)",
+        512,
+        "on",
+        0.7,
+        64,
+        0.95,
+        0.05,
+        1.05,
+        0,
+        0,
+        "",
+        false
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 7,
+      "type": "MarkdownNote",
+      "pos": [
+        25968,
+        17504
+      ],
+      "size": [
+        536,
+        208
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "## Text encoder:\n\n### [qwen3vl_4b_abliterated_bf16.safetensors](https://huggingface.co/silveroxides/K2Q/blob/main/qwen3vl_4b/qwen3vl_4b_abliterated_bf16.safetensors)\n\n## Text encoder LoRA for vision:\n\n### [qwen3vl_4b_uncensored_visonly_r256.safetensors](https://huggingface.co/silveroxides/K2Q/blob/main/qwen3vl_4b/lora/qwen3vl_4b_uncensored_visonly_r256.safetensors)"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    }
+  ],
+  "links": [
+    [
+      1,
+      4,
+      0,
+      1,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      1,
+      0,
+      6,
+      0,
+      "CLIP"
+    ],
+    [
+      5,
+      6,
+      0,
+      3,
+      0,
+      "STRING"
+    ],
+    [
+      6,
+      5,
+      0,
+      6,
+      3,
+      "VISUAL_FUSION_CONFIG"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1,
+      "offset": [
+        -25558.6216702343,
+        -16791.615622368812
+      ]
+    },
+    "frontendVersion": "1.45.21",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

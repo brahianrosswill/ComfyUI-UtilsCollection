@@ -1,0 +1,696 @@
+{
+  "id": "314457c7-72f0-45d1-8180-a0087f065a1f",
+  "revision": 0,
+  "last_node_id": 15,
+  "last_link_id": 13,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "UC_UnifiedBackgroundReplace",
+      "pos": [
+        23634.93473260443,
+        14705.526475926144
+      ],
+      "size": [
+        305.455078125,
+        286
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "background_removal_model",
+          "type": "BACKGROUND_REMOVAL",
+          "link": 1
+        },
+        {
+          "name": "background",
+          "type": "IMAGE",
+          "link": 3
+        },
+        {
+          "label": "foreground_0",
+          "name": "foreground_images.foreground_0",
+          "type": "IMAGE",
+          "link": 5
+        },
+        {
+          "label": "foreground_1",
+          "name": "foreground_images.foreground_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-UtilsCollection",
+        "ver": "ccef23ee25aab87da25b2df05e247e3cdc4a258b",
+        "Node name for S&R": "UC_UnifiedBackgroundReplace"
+      },
+      "widgets_values": [
+        0.7,
+        0.8,
+        0.8,
+        0.5,
+        2,
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadBackgroundRemovalModel",
+      "pos": [
+        23680,
+        14592
+      ],
+      "size": [
+        321.6919921875,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "bg_model",
+          "type": "BACKGROUND_REMOVAL",
+          "links": [
+            1,
+            2,
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "LoadBackgroundRemovalModel"
+      },
+      "widgets_values": [
+        "birefnet.safetensors"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "MarkdownNote",
+      "pos": [
+        23256,
+        14304
+      ],
+      "size": [
+        712,
+        160
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Background Removal models.\n\n### [huggingface.co/Comfy-Org/BiRefNet/background_removal](https://huggingface.co/Comfy-Org/BiRefNet/tree/main/background_removal)"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 4,
+      "type": "LoadImage",
+      "pos": [
+        23024,
+        14656
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "93327da35f3e52bc9c896bec8826be22.jpg",
+        "image"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "UC_UnifiedBackgroundReplace",
+      "pos": [
+        23648,
+        15096
+      ],
+      "size": [
+        305.455078125,
+        286
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "background_removal_model",
+          "type": "BACKGROUND_REMOVAL",
+          "link": 2
+        },
+        {
+          "name": "background",
+          "type": "IMAGE",
+          "link": 4
+        },
+        {
+          "label": "foreground_0",
+          "name": "foreground_images.foreground_0",
+          "type": "IMAGE",
+          "link": 6
+        },
+        {
+          "label": "foreground_1",
+          "name": "foreground_images.foreground_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-UtilsCollection",
+        "ver": "ccef23ee25aab87da25b2df05e247e3cdc4a258b",
+        "Node name for S&R": "UC_UnifiedBackgroundReplace"
+      },
+      "widgets_values": [
+        0.7,
+        -0.8,
+        0.8,
+        0.5,
+        2,
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "id": 6,
+      "type": "LoadImage",
+      "pos": [
+        23032,
+        15032
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            5
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "0005_charmeleon.png",
+        "image"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "LoadImage",
+      "pos": [
+        23328,
+        15032
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "0156_quilava.png",
+        "image"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "PreviewImage",
+      "pos": [
+        24104,
+        14784
+      ],
+      "size": [
+        696,
+        464
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 11,
+      "type": "UC_UnifiedBackgroundReplace",
+      "pos": [
+        23656,
+        15448
+      ],
+      "size": [
+        305.455078125,
+        306
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "background_removal_model",
+          "type": "BACKGROUND_REMOVAL",
+          "link": 9
+        },
+        {
+          "name": "background",
+          "type": "IMAGE",
+          "link": 10
+        },
+        {
+          "label": "foreground_0",
+          "name": "foreground_images.foreground_0",
+          "type": "IMAGE",
+          "link": 11
+        },
+        {
+          "label": "foreground_1",
+          "name": "foreground_images.foreground_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 12
+        },
+        {
+          "label": "foreground_2",
+          "name": "foreground_images.foreground_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            13
+          ]
+        },
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-UtilsCollection",
+        "ver": "ccef23ee25aab87da25b2df05e247e3cdc4a258b",
+        "Node name for S&R": "UC_UnifiedBackgroundReplace"
+      },
+      "widgets_values": [
+        0.9,
+        0,
+        0,
+        0.5,
+        2,
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "id": 12,
+      "type": "LoadImage",
+      "pos": [
+        23040,
+        15608
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            11
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "0295_exploud.png",
+        "image"
+      ]
+    },
+    {
+      "id": 13,
+      "type": "EmptyImage",
+      "pos": [
+        23040,
+        15424
+      ],
+      "size": [
+        270,
+        130
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "EmptyImage"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        1,
+        0
+      ]
+    },
+    {
+      "id": 14,
+      "type": "LoadImage",
+      "pos": [
+        23344,
+        15608
+      ],
+      "size": [
+        282.798828125,
+        314
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "0317_swalot.png",
+        "image"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "PreviewImage",
+      "pos": [
+        24160,
+        15400
+      ],
+      "size": [
+        472,
+        264
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [
+      1,
+      2,
+      0,
+      1,
+      0,
+      "BACKGROUND_REMOVAL"
+    ],
+    [
+      2,
+      2,
+      0,
+      5,
+      0,
+      "BACKGROUND_REMOVAL"
+    ],
+    [
+      3,
+      4,
+      0,
+      1,
+      1,
+      "IMAGE"
+    ],
+    [
+      4,
+      1,
+      0,
+      5,
+      1,
+      "IMAGE"
+    ],
+    [
+      5,
+      6,
+      0,
+      1,
+      2,
+      "IMAGE"
+    ],
+    [
+      6,
+      7,
+      0,
+      5,
+      2,
+      "IMAGE"
+    ],
+    [
+      7,
+      5,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      9,
+      2,
+      0,
+      11,
+      0,
+      "BACKGROUND_REMOVAL"
+    ],
+    [
+      10,
+      13,
+      0,
+      11,
+      1,
+      "IMAGE"
+    ],
+    [
+      11,
+      12,
+      0,
+      11,
+      2,
+      "IMAGE"
+    ],
+    [
+      12,
+      14,
+      0,
+      11,
+      3,
+      "IMAGE"
+    ],
+    [
+      13,
+      11,
+      0,
+      15,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.863837598531476,
+      "offset": [
+        -22493.606068486537,
+        -14666.11712106741
+      ]
+    },
+    "frontendVersion": "1.45.21",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}
