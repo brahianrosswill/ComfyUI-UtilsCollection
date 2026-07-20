@@ -46,6 +46,7 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_ImageAndMaskResize`
 - `UC_ResizeMask`
 - `UC_UnifiedBackgroundReplace`
+- `UC_LayeredBackgroundComposite`
 - `UC_MediaPipeFaceCompositeOptions`
 - `UC_MediaPipeFaceComposite`
 - `UC_ListToImageBatch`
@@ -54,6 +55,8 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_ImageInwardEdgeFill`
 - `UC_ImageIterativeStretchFill`
 - `UC_TextOverlayNode`
+
+`UC_LayeredBackgroundComposite` builds one scene from a single background and ordered foreground sockets. In LiteGraph, queue it once to obtain exact background-removed cutouts, arrange each foreground with its own box and numeric placement controls, then queue again to render the final back-to-front composite. Each foreground socket accepts one image; `foreground_0` is the backmost layer.
 
 ### Resolution and workflow parameters
 

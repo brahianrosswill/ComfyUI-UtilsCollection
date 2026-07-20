@@ -324,6 +324,107 @@ def test_unified_background_validates_background_and_empty_masks():
         _replace_background(model, torch.zeros(1, 16, 16, 3), {"foreground_0": foreground})
 
 
+def _layered_composite(model, background, foregrounds, placement_data=None, **overrides):
+    options = {
+        "placement_data": placement_data or '{"version":1,"layers":{}}',
+        "mask_threshold": 0.5,
+        "border_cleanup_width": 0,
+        "artifact_cleanup_radius": 0,
+        "gap_fill_radius": 0,
+        "feather_radius": 0,
+    }
+    options.update(overrides)
+    return composite_nodes.UC_LayeredBackgroundComposite.execute(
+        model, background, foregrounds, **options
+    )
+
+
+def test_layered_background_composites_in_socket_order(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix, longest: {"filename": prefix})
+    background = torch.zeros(1, 20, 20, 3)
+    red = torch.zeros(1, 4, 4, 3)
+    red[..., 0] = 1
+    green = torch.zeros(1, 4, 4, 3)
+    green[..., 1] = 1
+    model = _QueuedBackgroundModel([torch.ones(1, 4, 4), torch.ones(1, 4, 4)])
+
+    output = _layered_composite(
+        model,
+        background,
+        {"foreground_1": green, "foreground_0": red},
+        '{"version":1,"layers":{"foreground_0":{"scale":0.5},"foreground_1":{"scale":0.25}}}',
+    )
+    image, mask = output.result
+
+    assert image.shape == (1, 20, 20, 3)
+    assert mask.shape == (1, 20, 20)
+    assert torch.allclose(image[0, 8:13, 8:13, 1], torch.ones(5, 5))
+    assert image[0, 5:15, 5:15, 0].sum().item() == pytest.approx(75)
+    assert mask.sum() == 100
+    metadata = output.ui["uc_layered_scene_editor"][0]
+    assert [(layer["socket"], layer["crop_width"], layer["crop_height"]) for layer in metadata["layers"]] == [
+        ("foreground_0", 4, 4),
+        ("foreground_1", 4, 4),
+    ]
+
+
+def test_layered_background_uses_independent_landscape_positions(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    background = torch.zeros(1, 20, 40, 3)
+    left = torch.ones(1, 4, 4, 3)
+    right = torch.ones(1, 4, 4, 3) * 0.5
+    model = _QueuedBackgroundModel([torch.ones(1, 4, 4), torch.ones(1, 4, 4)])
+    placement = (
+        '{"version":1,"layers":{'
+        '"foreground_0":{"scale":0.5,"long_axis_shift":-1,"short_axis_shift":0},'
+        '"foreground_1":{"scale":0.5,"long_axis_shift":1,"short_axis_shift":0}}}'
+    )
+
+    image, mask = _layered_composite(
+        model, background, {"foreground_0": left, "foreground_1": right}, placement
+    ).result
+
+    assert torch.allclose(image[0, 5:15, 0:10], torch.ones(10, 10, 3))
+    assert torch.allclose(image[0, 5:15, 30:40], torch.full((10, 10, 3), 0.5))
+    assert mask.sum() == 200
+
+
+def test_layered_background_rejects_batches_and_invalid_placements(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    background = torch.zeros(1, 16, 16, 3)
+    foreground = torch.ones(2, 4, 4, 3)
+    with pytest.raises(ValueError, match="not a batch"):
+        _layered_composite(
+            _QueuedBackgroundModel([]), background, {"foreground_0": foreground}
+        )
+    with pytest.raises(ValueError, match="scale must be between"):
+        _layered_composite(
+            _QueuedBackgroundModel([]),
+            background,
+            {"foreground_0": foreground[:1]},
+            '{"version":1,"layers":{"foreground_0":{"scale":20}}}',
+        )
+
+
+def test_layered_background_preview_failure_does_not_change_result(monkeypatch):
+    def fail_preview(*args):
+        raise OSError("preview unavailable")
+
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", fail_preview)
+    background = torch.zeros(1, 12, 12, 3)
+    foreground = torch.ones(1, 4, 2, 3)
+    model = _QueuedBackgroundModel([torch.ones(1, 4, 2)])
+
+    output = _layered_composite(model, background, {"foreground_0": foreground})
+
+    assert output.result[0].max().item() == pytest.approx(1)
+    metadata = output.ui["uc_layered_scene_editor"][0]
+    assert "preview" not in metadata["background"]
+    assert "preview" not in metadata["layers"][0]
+    assert metadata["layers"][0]["crop_width"] == 2
+    assert metadata["layers"][0]["crop_height"] == 4
+
+
 def test_face_foreground_solidification_matches_composite_operation():
     foreground = torch.tensor([0.25, 0.5, 0.625, 0.75, 1.0])
     inverted = 1.0 - foreground
