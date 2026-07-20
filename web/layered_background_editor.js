@@ -71,7 +71,6 @@ class LayeredPlacementEditor {
       flexDirection: "column",
       gap: "6px",
       width: "100%",
-      height: "370px",
       padding: "4px",
       color: "var(--input-text, #ddd)",
       font: "12px sans-serif",
@@ -496,7 +495,10 @@ class LayeredPlacementEditor {
 
   canvasPoint(event) {
     const bounds = this.canvas.getBoundingClientRect();
-    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+    return {
+      x: (event.clientX - bounds.left) * (this.canvas.clientWidth / bounds.width),
+      y: (event.clientY - bounds.top) * (this.canvas.clientHeight / bounds.height),
+    };
   }
 
   backgroundPoint(canvasPoint) {
