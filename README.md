@@ -46,6 +46,8 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_ImageAndMaskResize`
 - `UC_ResizeMask`
 - `UC_UnifiedBackgroundReplace`
+- `UC_LayeredForegroundStage`
+- `UC_StagedLayeredBackgroundComposite`
 - `UC_LayeredBackgroundComposite`
 - `UC_MediaPipeFaceCompositeOptions`
 - `UC_MediaPipeFaceComposite`
@@ -57,6 +59,8 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_TextOverlayNode`
 
 `UC_LayeredBackgroundComposite` builds one scene from a single background and ordered foreground sockets. In LiteGraph, queue it once to obtain exact background-removed cutouts, arrange each foreground with its own box and numeric placement controls, then queue again to render the final back-to-front composite. Each foreground socket accepts one image; `foreground_0` is the backmost layer.
+
+The experimental staged workflow separates background removal from composition. Connect `UC_LayeredForegroundStage` to `UC_StagedLayeredBackgroundComposite`, queue once to create the cutouts, then adjust placement and queue the compositor without rerunning removal. Enable `use_staged` on the stage node to freeze its last successful cutouts even when its image inputs change. Disable it and queue again to refresh the stage. Staged cutouts live in server memory and must be recreated after restarting ComfyUI.
 
 ### Resolution and workflow parameters
 

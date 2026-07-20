@@ -425,6 +425,44 @@ def test_layered_background_preview_failure_does_not_change_result(monkeypatch):
     assert metadata["layers"][0]["crop_height"] == 4
 
 
+def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix, longest: {"filename": prefix})
+    foreground = torch.zeros(1, 6, 8, 3)
+    foreground[..., 0] = 1
+    mask = torch.zeros(1, 6, 8)
+    mask[:, 1:5, 2:6] = 1
+    model = _QueuedBackgroundModel([mask])
+
+    staged = composite_nodes._stage_layered_foregrounds(
+        model,
+        {"foreground_0": foreground},
+        0.5,
+        0,
+        0,
+        0,
+    )
+    output = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 20, 20, 3),
+        staged,
+        '{"version":1,"layers":{"foreground_0":{"scale":0.5}}}',
+        0,
+    )
+    image, placed_mask = output.result
+
+    assert len(model.masks) == 0
+    assert staged["layers"][0]["image"].shape[1:3] == (4, 4)
+    assert image[..., 0].sum().item() == pytest.approx(100)
+    assert placed_mask.sum().item() == pytest.approx(100)
+    assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["crop_width"] == 4
+
+
+def test_staged_layered_composite_rejects_missing_stage():
+    with pytest.raises(ValueError, match="missing or incompatible"):
+        composite_nodes._composite_staged_foregrounds(
+            torch.zeros(1, 20, 20, 3), None, '{"version":1,"layers":{}}', 0
+        )
+
+
 def test_face_foreground_solidification_matches_composite_operation():
     foreground = torch.tensor([0.25, 0.5, 0.625, 0.75, 1.0])
     inverted = 1.0 - foreground

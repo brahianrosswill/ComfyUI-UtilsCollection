@@ -2,7 +2,6 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
   DEFAULT_PLACEMENT,
-  clamp,
   drawRect,
   layerKeyCompare,
   moveRect,
@@ -14,7 +13,10 @@ import {
   serializePlacementData,
 } from "./placement_geometry.js";
 
-const NODE_TYPE = "UC_LayeredBackgroundComposite";
+const NODE_TYPES = new Set([
+  "UC_LayeredBackgroundComposite",
+  "UC_StagedLayeredBackgroundComposite",
+]);
 const editors = new Set();
 let latestOutputs = {};
 
@@ -229,10 +231,12 @@ class LayeredPlacementEditor {
   }
 
   connectedLayers() {
-    return (this.node.inputs || [])
+    const direct = (this.node.inputs || [])
       .filter((input) => /foreground_\d+$/.test(input.name) && input.link != null)
       .map((input) => input.name.match(/foreground_\d+$/)[0])
       .sort(layerKeyCompare);
+    if (direct.length) return direct;
+    return (this.metadata?.layers || []).map((layer) => layer.socket).sort(layerKeyCompare);
   }
 
   inputOrigin(name) {
@@ -245,7 +249,10 @@ class LayeredPlacementEditor {
   }
 
   semanticSignature() {
-    const links = ["background", ...this.connectedLayers()].map((name) => {
+    const sourceNames = (this.node.comfyClass === "UC_StagedLayeredBackgroundComposite" || this.node.type === "UC_StagedLayeredBackgroundComposite")
+      ? ["background", "staged_foregrounds"]
+      : ["background", ...this.connectedLayers()];
+    const links = sourceNames.map((name) => {
       const origin = this.inputOrigin(name);
       const preview = origin?.node?.imgs?.[0];
       const previewIdentity = preview?.currentSrc || preview?.src || "";
@@ -353,9 +360,12 @@ class LayeredPlacementEditor {
   }
 
   upstreamUpdated(nodeId) {
-    const origins = ["background", ...this.connectedLayers()].map((name) => this.inputOrigin(name));
+    const sourceNames = (this.node.comfyClass === "UC_StagedLayeredBackgroundComposite" || this.node.type === "UC_StagedLayeredBackgroundComposite")
+      ? ["background", "staged_foregrounds"]
+      : ["background", ...this.connectedLayers()];
+    const origins = sourceNames.map((name) => this.inputOrigin(name));
     if (!origins.some((origin) => String(origin?.link?.origin_id) === String(nodeId))) return;
-    if (this.connectedLayers().some((name) => String(this.inputOrigin(name)?.link?.origin_id) === String(nodeId))) {
+    if (sourceNames.slice(1).some((name) => String(this.inputOrigin(name)?.link?.origin_id) === String(nodeId))) {
       this.metadata = null;
       this.metadataSignature = null;
       this.cutouts.clear();
@@ -388,12 +398,34 @@ class LayeredPlacementEditor {
     return width > 0 && height > 0 ? { width, height } : null;
   }
 
-  viewFor(width, height, dimensions) {
+  viewFor(width, height, dimensions, layers) {
+    const basePaddingX = dimensions.width * 0.25;
+    const basePaddingY = dimensions.height * 0.25;
+    let left = -basePaddingX;
+    let top = -basePaddingY;
+    let right = dimensions.width + basePaddingX;
+    let bottom = dimensions.height + basePaddingY;
+    for (const key of layers) {
+      const rect = this.rectFor(key, dimensions);
+      left = Math.min(left, rect.x);
+      top = Math.min(top, rect.y);
+      right = Math.max(right, rect.x + rect.width);
+      bottom = Math.max(bottom, rect.y + rect.height);
+    }
+    const outerPadding = Math.max(right - left, bottom - top) * 0.04;
+    left -= outerPadding;
+    top -= outerPadding;
+    right += outerPadding;
+    bottom += outerPadding;
     const padding = 8;
-    const scale = Math.min((width - padding * 2) / dimensions.width, (height - padding * 2) / dimensions.height);
-    const drawWidth = dimensions.width * scale;
-    const drawHeight = dimensions.height * scale;
-    return { x: (width - drawWidth) / 2, y: (height - drawHeight) / 2, width: drawWidth, height: drawHeight, scale };
+    const scale = Math.min((width - padding * 2) / (right - left), (height - padding * 2) / (bottom - top));
+    return {
+      x: (width - (right - left) * scale) / 2 - left * scale,
+      y: (height - (bottom - top) * scale) / 2 - top * scale,
+      width: dimensions.width * scale,
+      height: dimensions.height * scale,
+      scale,
+    };
   }
 
   requestDraw() {
@@ -427,16 +459,14 @@ class LayeredPlacementEditor {
       this.status.hidden = false;
       return;
     }
-    this.view = this.viewFor(width, height, dimensions);
+    this.view = this.gesture?.view || this.viewFor(width, height, dimensions, layers);
     context.globalAlpha = 0.72;
     context.drawImage(this.backgroundImage, this.view.x, this.view.y, this.view.width, this.view.height);
     context.globalAlpha = 1;
-    context.save();
-    context.beginPath();
-    context.rect(this.view.x, this.view.y, this.view.width, this.view.height);
-    context.clip();
     for (const key of layers) this.drawLayer(context, key, dimensions);
-    context.restore();
+    context.lineWidth = 2;
+    context.strokeStyle = "rgba(255,255,255,.65)";
+    context.strokeRect(this.view.x, this.view.y, this.view.width, this.view.height);
     if (this.selected) this.drawHandles(context, this.selected, dimensions);
     const pending = layers.filter((key) => !this.layerMetadata(key)).length;
     this.status.textContent = pending
@@ -477,10 +507,10 @@ class LayeredPlacementEditor {
 
   handlePoints(key, dimensions) {
     const rect = this.toCanvasRect(this.rectFor(key, dimensions));
-    const left = clamp(rect.x, this.view.x + 6, this.view.x + this.view.width - 6);
-    const right = clamp(rect.x + rect.width, this.view.x + 6, this.view.x + this.view.width - 6);
-    const top = clamp(rect.y, this.view.y + 6, this.view.y + this.view.height - 6);
-    const bottom = clamp(rect.y + rect.height, this.view.y + 6, this.view.y + this.view.height - 6);
+    const left = rect.x;
+    const right = rect.x + rect.width;
+    const top = rect.y;
+    const bottom = rect.y + rect.height;
     return { nw: { x: left, y: top }, ne: { x: right, y: top }, sw: { x: left, y: bottom }, se: { x: right, y: bottom } };
   }
 
@@ -551,6 +581,7 @@ class LayeredPlacementEditor {
       originalValue: this.placementWidget.value,
       pointerId: event.pointerId,
       changed: false,
+      view: { ...this.view },
     };
     this.canvas.setPointerCapture(event.pointerId);
   }
@@ -736,10 +767,10 @@ function install(node) {
 app.registerExtension({
   name: "UtilsCollection.LayeredBackgroundEditor",
   nodeCreated(node) {
-    if (node.comfyClass === NODE_TYPE || node.type === NODE_TYPE) install(node);
+    if (NODE_TYPES.has(node.comfyClass) || NODE_TYPES.has(node.type)) install(node);
   },
   loadedGraphNode(node) {
-    if (node.comfyClass === NODE_TYPE || node.type === NODE_TYPE) install(node).ensureSize();
+    if (NODE_TYPES.has(node.comfyClass) || NODE_TYPES.has(node.type)) install(node).ensureSize();
   },
   onNodeOutputsUpdated(outputs) {
     latestOutputs = { ...latestOutputs, ...outputs };
