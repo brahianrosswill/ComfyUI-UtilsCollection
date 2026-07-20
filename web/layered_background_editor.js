@@ -111,14 +111,26 @@ class LayeredPlacementEditor {
 
     const controls = element("div", {
       display: "grid",
-      gridTemplateColumns: "minmax(110px, 1fr) repeat(4, minmax(58px, .6fr)) auto",
+      gridTemplateColumns: "repeat(4, minmax(58px, 1fr)) auto",
       gap: "5px",
       alignItems: "end",
     });
-    const layerGroup = this.labeledControl("Layer (back → front)");
-    this.layerSelect = element("select", this.controlStyle());
-    layerGroup.append(this.layerSelect);
-    controls.append(layerGroup);
+    this.layerListGroup = element("div", { display: "flex", flexDirection: "column", gap: "3px" });
+    const layerCaption = document.createElement("span");
+    layerCaption.textContent = "Layer order (back → front)";
+    layerCaption.style.opacity = ".78";
+    this.layerList = element("div", {
+      display: "flex",
+      flexDirection: "column",
+      gap: "3px",
+      maxHeight: "224px",
+      overflowY: "auto",
+      padding: "3px",
+      border: "1px solid rgba(255,255,255,.16)",
+      borderRadius: "4px",
+      background: "rgba(0,0,0,.18)",
+    });
+    this.layerListGroup.append(layerCaption, this.layerList);
     this.inputs = {};
     for (const [field, label, step] of [
       ["scale", "Scale", "0.01"],
@@ -159,9 +171,8 @@ class LayeredPlacementEditor {
     this.resetButton.textContent = "Reset";
     this.resetButton.title = "Reset the selected foreground placement";
     controls.append(this.resetButton);
-    this.root.append(this.stage, controls);
+    this.root.append(this.stage, this.layerListGroup, controls);
 
-    this.layerSelect.addEventListener("change", () => this.selectLayer(this.layerSelect.value));
     this.resetButton.addEventListener("click", () => this.resetSelected());
     for (const eventName of ["pointerdown", "pointermove", "pointerup", "wheel", "click", "dblclick"]) {
       this.root.addEventListener(eventName, (event) => event.stopPropagation());
@@ -205,7 +216,7 @@ class LayeredPlacementEditor {
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => 370,
+      getMinHeight: () => 370 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 7) * 28,
     });
     widget.serialize = false;
     const placementIndex = this.node.widgets.indexOf(this.placementWidget);
@@ -251,14 +262,21 @@ class LayeredPlacementEditor {
 
   connectedLayers() {
     if (this.isStagedComposite() && this.metadata?.layers?.length) {
-      return this.metadata.layers.map((layer) => layer.socket).sort(layerKeyCompare);
+      return this.orderLayers(this.metadata.layers.map((layer) => layer.socket));
     }
     const direct = (this.node.inputs || [])
       .filter((input) => /foreground_\d+$/.test(input.name) && input.link != null)
-      .map((input) => input.name.match(/foreground_\d+$/)[0])
-      .sort(layerKeyCompare);
-    if (direct.length) return direct;
-    return (this.metadata?.layers || []).map((layer) => layer.socket).sort(layerKeyCompare);
+      .map((input) => input.name.match(/foreground_\d+$/)[0]);
+    if (direct.length) return this.orderLayers(direct);
+    return this.orderLayers((this.metadata?.layers || []).map((layer) => layer.socket));
+  }
+
+  orderLayers(keys) {
+    const available = [...new Set(keys)].sort(layerKeyCompare);
+    const availableSet = new Set(available);
+    const ordered = (this.data.layer_order || []).filter((key) => availableSet.has(key));
+    ordered.push(...available.filter((key) => !ordered.includes(key)));
+    return ordered;
   }
 
   isStagedComposite() {
@@ -298,7 +316,11 @@ class LayeredPlacementEditor {
     if (this.disposed) return;
     const layers = this.connectedLayers();
     if (!this.selected || !layers.includes(this.selected)) this.selected = layers[0] || null;
-    this.syncLayerSelector(layers);
+    this.syncLayerList(layers);
+    if (this.lastLayerCount !== layers.length) {
+      this.lastLayerCount = layers.length;
+      this.ensureSize();
+    }
     const signature = this.semanticSignature();
     if (this.metadataSignature && signature !== this.metadataSignature) {
       this.metadata = null;
@@ -311,18 +333,68 @@ class LayeredPlacementEditor {
     this.requestDraw();
   }
 
-  syncLayerSelector(layers) {
-    const current = [...this.layerSelect.options].map((option) => option.value).join("|");
-    if (current !== layers.join("|")) {
-      this.layerSelect.replaceChildren(...layers.map((key, index) => {
-        const option = document.createElement("option");
-        option.value = key;
-        option.textContent = `${key} (${index === 0 ? "back" : index === layers.length - 1 ? "front" : index + 1})`;
-        return option;
-      }));
-    }
-    this.layerSelect.value = this.selected || "";
-    this.layerSelect.disabled = !this.selected;
+  syncLayerList(layers) {
+    const signature = `${layers.join("|")}::${this.selected || ""}`;
+    if (signature === this.layerListSignature) return;
+    this.layerListSignature = signature;
+    this.layerList.replaceChildren(...layers.map((key, index) => {
+      const selected = key === this.selected;
+      const row = element("div", {
+        display: "flex",
+        alignItems: "center",
+        gap: "7px",
+        minHeight: "24px",
+        padding: "2px 7px",
+        border: `1px solid ${selected ? "#65c9ff" : "rgba(255,255,255,.14)"}`,
+        borderRadius: "3px",
+        background: selected ? "rgba(64,180,255,.18)" : "rgba(255,255,255,.04)",
+        cursor: "pointer",
+      });
+      row.dataset.layer = key;
+      const grip = element("span", {
+        flex: "0 0 auto",
+        color: "rgba(255,255,255,.65)",
+        cursor: "grab",
+        fontSize: "16px",
+        lineHeight: "16px",
+      });
+      grip.textContent = "⠿";
+      grip.title = "Drag to change stacking order";
+      grip.draggable = true;
+      const name = element("span", { flex: "1 1 auto", overflow: "hidden", textOverflow: "ellipsis" });
+      name.textContent = key;
+      const position = element("span", { flex: "0 0 auto", opacity: ".65", fontSize: "11px" });
+      position.textContent = index === 0 ? "back" : index === layers.length - 1 ? "front" : String(index + 1);
+      row.append(grip, name, position);
+      row.addEventListener("click", () => this.selectLayer(key));
+      grip.addEventListener("dragstart", (event) => {
+        this.draggedLayer = key;
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", key);
+        row.style.opacity = ".45";
+      });
+      row.addEventListener("dragover", (event) => {
+        if (!this.draggedLayer || this.draggedLayer === key) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const bounds = row.getBoundingClientRect();
+        const edge = event.clientY > bounds.top + bounds.height / 2 ? "inset 0 -2px #65c9ff" : "inset 0 2px #65c9ff";
+        row.style.boxShadow = edge;
+      });
+      row.addEventListener("dragleave", () => { row.style.boxShadow = "none"; });
+      row.addEventListener("drop", (event) => {
+        event.preventDefault();
+        row.style.boxShadow = "none";
+        if (!this.draggedLayer || this.draggedLayer === key) return;
+        const bounds = row.getBoundingClientRect();
+        this.dropLayer(this.draggedLayer, key, event.clientY > bounds.top + bounds.height / 2);
+      });
+      grip.addEventListener("dragend", () => {
+        this.draggedLayer = null;
+        row.style.opacity = "1";
+      });
+      return row;
+    }));
   }
 
   resolveBackground(force) {
@@ -707,7 +779,8 @@ class LayeredPlacementEditor {
   selectLayer(key) {
     if (!this.connectedLayers().includes(key)) return;
     this.selected = key;
-    this.layerSelect.value = key;
+    this.layerListSignature = null;
+    this.syncLayerList(this.connectedLayers());
     this.syncNumericControls();
     this.requestDraw();
   }
@@ -722,6 +795,28 @@ class LayeredPlacementEditor {
       this.data.workspace_padding ?? DEFAULT_WORKSPACE_PADDING,
     ).toFixed(2);
     this.resetButton.disabled = !this.selected;
+  }
+
+  dropLayer(dragged, target, insertAfter) {
+    const layers = this.connectedLayers();
+    const draggedIndex = layers.indexOf(dragged);
+    if (draggedIndex < 0) return;
+    layers.splice(draggedIndex, 1);
+    let targetIndex = layers.indexOf(target);
+    if (targetIndex < 0) return;
+    if (insertAfter) targetIndex += 1;
+    layers.splice(targetIndex, 0, dragged);
+    this.node.graph?.beforeChange?.();
+    this.data.layer_order = layers;
+    this.placementWidget.value = serializePlacementData(this.data);
+    this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
+    this.node.graph?.setDirtyCanvas?.(true, true);
+    this.node.graph?.afterChange?.();
+    this.selected = dragged;
+    this.layerListSignature = null;
+    this.syncLayerList(layers);
+    this.syncNumericControls();
+    this.requestDraw();
   }
 
   paddingChanged(value) {

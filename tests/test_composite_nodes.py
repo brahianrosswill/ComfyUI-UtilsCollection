@@ -389,6 +389,27 @@ def test_layered_background_uses_independent_landscape_positions(monkeypatch):
     assert mask.sum() == 200
 
 
+def test_layered_background_uses_explicit_layer_order(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    background = torch.zeros(1, 20, 20, 3)
+    red = torch.zeros(1, 4, 4, 3)
+    red[..., 0] = 1
+    green = torch.zeros(1, 4, 4, 3)
+    green[..., 1] = 1
+    model = _QueuedBackgroundModel([torch.ones(1, 4, 4), torch.ones(1, 4, 4)])
+    placement = (
+        '{"version":1,"layer_order":["foreground_1","foreground_0"],"layers":{'
+        '"foreground_0":{"scale":0.5},"foreground_1":{"scale":0.5}}}'
+    )
+
+    image, _ = _layered_composite(
+        model, background, {"foreground_0": red, "foreground_1": green}, placement
+    ).result
+
+    assert torch.allclose(image[0, 5:15, 5:15, 0], torch.ones(10, 10))
+    assert image[0, 5:15, 5:15, 1].sum().item() == 0
+
+
 def test_layered_background_rejects_batches_and_invalid_placements(monkeypatch):
     monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
     background = torch.zeros(1, 16, 16, 3)

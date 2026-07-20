@@ -154,7 +154,7 @@ def _ordered_single_foregrounds(image_inputs):
     return foregrounds
 
 
-def _parse_layer_placements(value):
+def _parse_layer_payload(value):
     if value is None or value == "":
         value = {}
     if isinstance(value, str):
@@ -170,6 +170,14 @@ def _parse_layer_placements(value):
     layers = value.get("layers", {})
     if not isinstance(layers, dict):
         raise ValueError("Layer placement data 'layers' must be a JSON object.")
+    layer_order = value.get("layer_order", [])
+    if not isinstance(layer_order, list) or any(not isinstance(key, str) for key in layer_order):
+        raise ValueError("Layer placement data 'layer_order' must be an array of socket names.")
+    return layers, layer_order
+
+
+def _parse_layer_placements(value):
+    layers, _ = _parse_layer_payload(value)
 
     parsed = {}
     for key, placement in layers.items():
@@ -193,6 +201,18 @@ def _parse_layer_placements(value):
             result[field] = number
         parsed[key] = result
     return parsed
+
+
+def _ordered_layer_keys(value, available_keys):
+    _, requested = _parse_layer_payload(value)
+    available = list(available_keys)
+    available_set = set(available)
+    ordered = []
+    for key in requested:
+        if key in available_set and key not in ordered:
+            ordered.append(key)
+    ordered.extend(key for key in available if key not in ordered)
+    return ordered
 
 
 def _placement_offsets(background_width, background_height, placed_width, placed_height, placement):
@@ -812,6 +832,11 @@ def _composite_staged_foregrounds(
     if not isinstance(layers, list) or not layers:
         raise ValueError("Staged foreground data contains no layers.")
     placements = _parse_layer_placements(placement_data)
+    layers_by_socket = {layer["socket"]: layer for layer in layers}
+    layers = [
+        layers_by_socket[key]
+        for key in _ordered_layer_keys(placement_data, layers_by_socket)
+    ]
     scene = background[..., :3].clone()
     background_height, background_width = scene.shape[1:3]
     combined_mask = scene.new_zeros((1, background_height, background_width))
@@ -1053,6 +1078,11 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
         if not foregrounds:
             raise ValueError("Layered Background Composite requires at least one foreground image.")
         placements = _parse_layer_placements(placement_data)
+        foreground_by_socket = dict(foregrounds)
+        foregrounds = [
+            (key, foreground_by_socket[key])
+            for key in _ordered_layer_keys(placement_data, foreground_by_socket)
+        ]
 
         scene = background[..., :3].clone()
         background_height, background_width = scene.shape[1:3]

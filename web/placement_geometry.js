@@ -25,9 +25,12 @@ export function parsePlacementData(value) {
     for (const [key, placement] of Object.entries(data.layers || {})) {
       if (placement && typeof placement === "object") layers[key] = normalizePlacement(placement);
     }
-    return { version: 1, workspace_padding: normalizeWorkspacePadding(data.workspace_padding), layers };
+    const layer_order = Array.isArray(data.layer_order)
+      ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
+      : [];
+    return { version: 1, workspace_padding: normalizeWorkspacePadding(data.workspace_padding), layer_order, layers };
   } catch {
-    return { version: 1, workspace_padding: DEFAULT_WORKSPACE_PADDING, layers: {} };
+    return { version: 1, workspace_padding: DEFAULT_WORKSPACE_PADDING, layer_order: [], layers: {} };
   }
 }
 
@@ -39,6 +42,9 @@ export function serializePlacementData(data) {
   return JSON.stringify({
     version: 1,
     workspace_padding: normalizeWorkspacePadding(data.workspace_padding),
+    layer_order: Array.isArray(data.layer_order)
+      ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
+      : [],
     layers,
   });
 }
