@@ -52,7 +52,6 @@ class SamplingUtils(ComfyExtension):
             UC_ImageAndMaskResize,
             UC_ResizeMask,
             UC_UnifiedBackgroundReplace,
-            UC_LayeredForegroundStage,
             UC_StagedLayeredBackgroundComposite,
             UC_LayeredBackgroundComposite,
             UC_MediaPipeFaceCompositeOptions,

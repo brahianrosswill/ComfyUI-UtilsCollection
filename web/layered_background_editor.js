@@ -231,6 +231,9 @@ class LayeredPlacementEditor {
   }
 
   connectedLayers() {
+    if (this.isStagedComposite() && this.metadata?.layers?.length) {
+      return this.metadata.layers.map((layer) => layer.socket).sort(layerKeyCompare);
+    }
     const direct = (this.node.inputs || [])
       .filter((input) => /foreground_\d+$/.test(input.name) && input.link != null)
       .map((input) => input.name.match(/foreground_\d+$/)[0])
@@ -259,7 +262,7 @@ class LayeredPlacementEditor {
 
   semanticSignature() {
     const sourceNames = this.isStagedComposite()
-      ? ["background", "staged_foregrounds"]
+      ? ["background"]
       : ["background", ...this.connectedLayers()];
     const links = sourceNames.map((name) => {
       const origin = this.inputOrigin(name);
@@ -370,7 +373,7 @@ class LayeredPlacementEditor {
 
   upstreamUpdated(nodeId) {
     const sourceNames = this.isStagedComposite()
-      ? ["background", "staged_foregrounds"]
+      ? ["background"]
       : ["background", ...this.connectedLayers()];
     const origins = sourceNames.map((name) => this.inputOrigin(name));
     if (!origins.some((origin) => String(origin?.link?.origin_id) === String(nodeId))) return;
