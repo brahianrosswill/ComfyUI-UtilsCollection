@@ -217,6 +217,12 @@ class LayeredPlacementEditor {
   }
 
   wrapNodeLifecycle() {
+    const originalExecuted = this.node.onExecuted;
+    this.node.onExecuted = (output) => {
+      const result = originalExecuted?.call(this.node, output);
+      this.setOutput(output);
+      return result;
+    };
     const originalConnections = this.node.onConnectionsChange;
     this.node.onConnectionsChange = (...args) => {
       const result = originalConnections?.apply(this.node, args);
