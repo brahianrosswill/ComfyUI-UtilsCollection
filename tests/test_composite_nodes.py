@@ -389,6 +389,27 @@ def test_layered_background_uses_independent_landscape_positions(monkeypatch):
     assert mask.sum() == 200
 
 
+def test_layered_background_uses_explicit_layer_order(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    background = torch.zeros(1, 20, 20, 3)
+    red = torch.zeros(1, 4, 4, 3)
+    red[..., 0] = 1
+    green = torch.zeros(1, 4, 4, 3)
+    green[..., 1] = 1
+    model = _QueuedBackgroundModel([torch.ones(1, 4, 4), torch.ones(1, 4, 4)])
+    placement = (
+        '{"version":1,"layer_order":["foreground_1","foreground_0"],"layers":{'
+        '"foreground_0":{"scale":0.5},"foreground_1":{"scale":0.5}}}'
+    )
+
+    image, _ = _layered_composite(
+        model, background, {"foreground_0": red, "foreground_1": green}, placement
+    ).result
+
+    assert torch.allclose(image[0, 5:15, 5:15, 0], torch.ones(10, 10))
+    assert image[0, 5:15, 5:15, 1].sum().item() == 0
+
+
 def test_layered_background_rejects_batches_and_invalid_placements(monkeypatch):
     monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
     background = torch.zeros(1, 16, 16, 3)
@@ -423,6 +444,125 @@ def test_layered_background_preview_failure_does_not_change_result(monkeypatch):
     assert "preview" not in metadata["layers"][0]
     assert metadata["layers"][0]["crop_width"] == 2
     assert metadata["layers"][0]["crop_height"] == 4
+
+
+def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix, longest: {"filename": prefix})
+    foreground = torch.zeros(1, 6, 8, 3)
+    foreground[..., 0] = 1
+    mask = torch.zeros(1, 6, 8)
+    mask[:, 1:5, 2:6] = 1
+    model = _QueuedBackgroundModel([mask])
+
+    staged = composite_nodes._stage_layered_foregrounds(
+        model,
+        {"foreground_0": foreground},
+        0.5,
+        0,
+        0,
+        0,
+    )
+    output = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 20, 20, 3),
+        staged,
+        '{"version":1,"layers":{"foreground_0":{"scale":0.5}}}',
+        0,
+    )
+    image, placed_mask = output.result
+
+    assert len(model.masks) == 0
+    assert staged["layers"][0]["image"].shape[1:3] == (4, 4)
+    assert image[..., 0].sum().item() == pytest.approx(100)
+    assert placed_mask.sum().item() == pytest.approx(100)
+    assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["crop_width"] == 4
+
+
+def test_staged_layered_composite_rejects_missing_stage():
+    with pytest.raises(ValueError, match="missing or incompatible"):
+        composite_nodes._composite_staged_foregrounds(
+            torch.zeros(1, 20, 20, 3), None, '{"version":1,"layers":{}}', 0
+        )
+
+
+def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
+    saved = []
+
+    def capture_preview(image, prefix, longest):
+        saved.append(image.clone())
+        return {"filename": f"{prefix}.png"}
+
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", capture_preview)
+    node = composite_nodes.UC_StagedLayeredBackgroundComposite
+    node._staged_by_node.clear()
+    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="preview-compositor"))
+    foreground = torch.ones(1, 6, 8, 3)
+    mask = torch.zeros(1, 6, 8)
+    mask[:, 1:5, 3] = 1
+    mask[:, 3, 2:6] = 1
+    background = torch.zeros(1, 12, 12, 3)
+    output = node.execute(
+        _QueuedBackgroundModel([mask]),
+        background,
+        {"foreground_0": foreground},
+        False,
+        0.5,
+        0,
+        0,
+        0,
+        '{"version":1,"layers":{}}',
+        0,
+    )
+
+    assert torch.equal(output.result[0], background)
+    assert output.result[1].sum().item() == 0
+    assert output.ui["uc_layered_scene_editor"][0]["stage_mode"] == "fresh"
+    assert saved[1].shape == (1, 4, 4, 4)
+    assert saved[1][..., 3].min().item() == 0
+    assert saved[1][..., 3].max().item() == 1
+
+
+def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
+    node = composite_nodes.UC_StagedLayeredBackgroundComposite
+    schema = node.define_schema()
+    model_input = next(value for value in schema.inputs if value.id == "background_removal_model")
+    foreground_input = next(value for value in schema.inputs if value.id == "foreground_images")
+    assert schema.is_output_node is True
+    assert model_input.lazy is True
+    assert foreground_input.template.input.lazy is True
+    node._staged_by_node.clear()
+    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-a"))
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    background = torch.zeros(1, 20, 20, 3)
+
+    model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
+    foregrounds = {"foreground_0": torch.ones(1, 4, 4, 3)}
+    assert node.check_lazy_status(
+        False, None, {"foreground_0": (None, "foreground_0")}
+    ) == ["background_removal_model", "foreground_0"]
+    assert node.check_lazy_status(
+        False, model, {"foreground_0": (foregrounds["foreground_0"], "foreground_0")}
+    ) == []
+    assert node.check_lazy_status(True, None, {"foreground_0": (None, "foreground_0")}) == []
+    fresh = node.execute(
+        model, background, foregrounds, False, 0.5, 0, 0, 0,
+        '{"version":1,"layers":{}}', 0,
+    )
+    retained = node.execute(
+        None, background, {"foreground_0": None}, True, 0.5, 0, 0, 0,
+        '{"version":1,"layers":{}}', 0,
+    )
+
+    assert fresh.ui["uc_layered_scene_editor"][0]["stage_mode"] == "fresh"
+    assert retained.ui["uc_layered_scene_editor"][0]["stage_mode"] == "retained"
+    assert fresh.result[0].sum().item() == 0
+    assert retained.result[0].sum().item() > 0
+
+    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-b"))
+    with pytest.raises(ValueError, match="No retained foreground stage"):
+        node.execute(
+            None, background, {"foreground_0": None}, True, 0.5, 0, 0, 0,
+            '{"version":1,"layers":{}}', 0,
+        )
 
 
 def test_face_foreground_solidification_matches_composite_operation():

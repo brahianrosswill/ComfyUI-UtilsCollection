@@ -2,11 +2,12 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
   DEFAULT_PLACEMENT,
-  clamp,
+  DEFAULT_WORKSPACE_PADDING,
   drawRect,
   layerKeyCompare,
   moveRect,
   normalizePlacement,
+  normalizeWorkspacePadding,
   parsePlacementData,
   placementToRect,
   rectToPlacement,
@@ -14,7 +15,10 @@ import {
   serializePlacementData,
 } from "./placement_geometry.js";
 
-const NODE_TYPE = "UC_LayeredBackgroundComposite";
+const NODE_TYPES = new Set([
+  "UC_LayeredBackgroundComposite",
+  "UC_StagedLayeredBackgroundComposite",
+]);
 const editors = new Set();
 let latestOutputs = {};
 
@@ -107,14 +111,26 @@ class LayeredPlacementEditor {
 
     const controls = element("div", {
       display: "grid",
-      gridTemplateColumns: "minmax(110px, 1fr) repeat(3, minmax(58px, .6fr)) auto",
+      gridTemplateColumns: "repeat(4, minmax(58px, 1fr)) auto",
       gap: "5px",
       alignItems: "end",
     });
-    const layerGroup = this.labeledControl("Layer (back → front)");
-    this.layerSelect = element("select", this.controlStyle());
-    layerGroup.append(this.layerSelect);
-    controls.append(layerGroup);
+    this.layerListGroup = element("div", { display: "flex", flexDirection: "column", gap: "3px" });
+    const layerCaption = document.createElement("span");
+    layerCaption.textContent = "Layer order (back → front)";
+    layerCaption.style.opacity = ".78";
+    this.layerList = element("div", {
+      display: "flex",
+      flexDirection: "column",
+      gap: "3px",
+      maxHeight: "224px",
+      overflowY: "auto",
+      padding: "3px",
+      border: "1px solid rgba(255,255,255,.16)",
+      borderRadius: "4px",
+      background: "rgba(0,0,0,.18)",
+    });
+    this.layerListGroup.append(layerCaption, this.layerList);
     this.inputs = {};
     for (const [field, label, step] of [
       ["scale", "Scale", "0.01"],
@@ -134,6 +150,17 @@ class LayeredPlacementEditor {
       group.append(input);
       controls.append(group);
     }
+    const paddingGroup = this.labeledControl("Padding");
+    this.paddingInput = element("input", this.controlStyle());
+    this.paddingInput.type = "number";
+    this.paddingInput.step = "0.05";
+    this.paddingInput.min = "0";
+    this.paddingInput.max = "1";
+    this.paddingInput.title = "Workspace padding: 0 is none, 1 is the previous maximum";
+    this.paddingInput.addEventListener("change", () => this.paddingChanged(this.paddingInput.value));
+    this.paddingInput.addEventListener("keydown", (event) => event.stopPropagation());
+    paddingGroup.append(this.paddingInput);
+    controls.append(paddingGroup);
     this.resetButton = element("button", {
       ...this.controlStyle(),
       height: "24px",
@@ -144,9 +171,8 @@ class LayeredPlacementEditor {
     this.resetButton.textContent = "Reset";
     this.resetButton.title = "Reset the selected foreground placement";
     controls.append(this.resetButton);
-    this.root.append(this.stage, controls);
+    this.root.append(this.stage, this.layerListGroup, controls);
 
-    this.layerSelect.addEventListener("change", () => this.selectLayer(this.layerSelect.value));
     this.resetButton.addEventListener("click", () => this.resetSelected());
     for (const eventName of ["pointerdown", "pointermove", "pointerup", "wheel", "click", "dblclick"]) {
       this.root.addEventListener(eventName, (event) => event.stopPropagation());
@@ -190,7 +216,7 @@ class LayeredPlacementEditor {
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => 370,
+      getMinHeight: () => 370 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 7) * 28,
     });
     widget.serialize = false;
     const placementIndex = this.node.widgets.indexOf(this.placementWidget);
@@ -215,6 +241,12 @@ class LayeredPlacementEditor {
   }
 
   wrapNodeLifecycle() {
+    const originalExecuted = this.node.onExecuted;
+    this.node.onExecuted = (output) => {
+      const result = originalExecuted?.call(this.node, output);
+      this.setOutput(output);
+      return result;
+    };
     const originalConnections = this.node.onConnectionsChange;
     this.node.onConnectionsChange = (...args) => {
       const result = originalConnections?.apply(this.node, args);
@@ -229,10 +261,31 @@ class LayeredPlacementEditor {
   }
 
   connectedLayers() {
-    return (this.node.inputs || [])
+    if (this.isStagedComposite() && this.metadata?.layers?.length) {
+      return this.orderLayers(this.metadata.layers.map((layer) => layer.socket));
+    }
+    const direct = (this.node.inputs || [])
       .filter((input) => /foreground_\d+$/.test(input.name) && input.link != null)
-      .map((input) => input.name.match(/foreground_\d+$/)[0])
-      .sort(layerKeyCompare);
+      .map((input) => input.name.match(/foreground_\d+$/)[0]);
+    if (direct.length) return this.orderLayers(direct);
+    return this.orderLayers((this.metadata?.layers || []).map((layer) => layer.socket));
+  }
+
+  orderLayers(keys) {
+    const available = [...new Set(keys)].sort(layerKeyCompare);
+    const availableSet = new Set(available);
+    const ordered = (this.data.layer_order || []).filter((key) => availableSet.has(key));
+    ordered.push(...available.filter((key) => !ordered.includes(key)));
+    return ordered;
+  }
+
+  isStagedComposite() {
+    return this.node.comfyClass === "UC_StagedLayeredBackgroundComposite"
+      || this.node.type === "UC_StagedLayeredBackgroundComposite";
+  }
+
+  usesRetainedStage() {
+    return Boolean(this.node.widgets?.find((widget) => widget.name === "use_staged")?.value);
   }
 
   inputOrigin(name) {
@@ -245,7 +298,10 @@ class LayeredPlacementEditor {
   }
 
   semanticSignature() {
-    const links = ["background", ...this.connectedLayers()].map((name) => {
+    const sourceNames = this.isStagedComposite()
+      ? ["background"]
+      : ["background", ...this.connectedLayers()];
+    const links = sourceNames.map((name) => {
       const origin = this.inputOrigin(name);
       const preview = origin?.node?.imgs?.[0];
       const previewIdentity = preview?.currentSrc || preview?.src || "";
@@ -260,7 +316,11 @@ class LayeredPlacementEditor {
     if (this.disposed) return;
     const layers = this.connectedLayers();
     if (!this.selected || !layers.includes(this.selected)) this.selected = layers[0] || null;
-    this.syncLayerSelector(layers);
+    this.syncLayerList(layers);
+    if (this.lastLayerCount !== layers.length) {
+      this.lastLayerCount = layers.length;
+      this.ensureSize();
+    }
     const signature = this.semanticSignature();
     if (this.metadataSignature && signature !== this.metadataSignature) {
       this.metadata = null;
@@ -273,18 +333,68 @@ class LayeredPlacementEditor {
     this.requestDraw();
   }
 
-  syncLayerSelector(layers) {
-    const current = [...this.layerSelect.options].map((option) => option.value).join("|");
-    if (current !== layers.join("|")) {
-      this.layerSelect.replaceChildren(...layers.map((key, index) => {
-        const option = document.createElement("option");
-        option.value = key;
-        option.textContent = `${key} (${index === 0 ? "back" : index === layers.length - 1 ? "front" : index + 1})`;
-        return option;
-      }));
-    }
-    this.layerSelect.value = this.selected || "";
-    this.layerSelect.disabled = !this.selected;
+  syncLayerList(layers) {
+    const signature = `${layers.join("|")}::${this.selected || ""}`;
+    if (signature === this.layerListSignature) return;
+    this.layerListSignature = signature;
+    this.layerList.replaceChildren(...layers.map((key, index) => {
+      const selected = key === this.selected;
+      const row = element("div", {
+        display: "flex",
+        alignItems: "center",
+        gap: "7px",
+        minHeight: "24px",
+        padding: "2px 7px",
+        border: `1px solid ${selected ? "#65c9ff" : "rgba(255,255,255,.14)"}`,
+        borderRadius: "3px",
+        background: selected ? "rgba(64,180,255,.18)" : "rgba(255,255,255,.04)",
+        cursor: "pointer",
+      });
+      row.dataset.layer = key;
+      const grip = element("span", {
+        flex: "0 0 auto",
+        color: "rgba(255,255,255,.65)",
+        cursor: "grab",
+        fontSize: "16px",
+        lineHeight: "16px",
+      });
+      grip.textContent = "⠿";
+      grip.title = "Drag to change stacking order";
+      grip.draggable = true;
+      const name = element("span", { flex: "1 1 auto", overflow: "hidden", textOverflow: "ellipsis" });
+      name.textContent = key;
+      const position = element("span", { flex: "0 0 auto", opacity: ".65", fontSize: "11px" });
+      position.textContent = index === 0 ? "back" : index === layers.length - 1 ? "front" : String(index + 1);
+      row.append(grip, name, position);
+      row.addEventListener("click", () => this.selectLayer(key));
+      grip.addEventListener("dragstart", (event) => {
+        this.draggedLayer = key;
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", key);
+        row.style.opacity = ".45";
+      });
+      row.addEventListener("dragover", (event) => {
+        if (!this.draggedLayer || this.draggedLayer === key) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const bounds = row.getBoundingClientRect();
+        const edge = event.clientY > bounds.top + bounds.height / 2 ? "inset 0 -2px #65c9ff" : "inset 0 2px #65c9ff";
+        row.style.boxShadow = edge;
+      });
+      row.addEventListener("dragleave", () => { row.style.boxShadow = "none"; });
+      row.addEventListener("drop", (event) => {
+        event.preventDefault();
+        row.style.boxShadow = "none";
+        if (!this.draggedLayer || this.draggedLayer === key) return;
+        const bounds = row.getBoundingClientRect();
+        this.dropLayer(this.draggedLayer, key, event.clientY > bounds.top + bounds.height / 2);
+      });
+      grip.addEventListener("dragend", () => {
+        this.draggedLayer = null;
+        row.style.opacity = "1";
+      });
+      return row;
+    }));
   }
 
   resolveBackground(force) {
@@ -353,9 +463,12 @@ class LayeredPlacementEditor {
   }
 
   upstreamUpdated(nodeId) {
-    const origins = ["background", ...this.connectedLayers()].map((name) => this.inputOrigin(name));
+    const sourceNames = this.isStagedComposite()
+      ? ["background"]
+      : ["background", ...this.connectedLayers()];
+    const origins = sourceNames.map((name) => this.inputOrigin(name));
     if (!origins.some((origin) => String(origin?.link?.origin_id) === String(nodeId))) return;
-    if (this.connectedLayers().some((name) => String(this.inputOrigin(name)?.link?.origin_id) === String(nodeId))) {
+    if (sourceNames.slice(1).some((name) => String(this.inputOrigin(name)?.link?.origin_id) === String(nodeId))) {
       this.metadata = null;
       this.metadataSignature = null;
       this.cutouts.clear();
@@ -388,12 +501,35 @@ class LayeredPlacementEditor {
     return width > 0 && height > 0 ? { width, height } : null;
   }
 
-  viewFor(width, height, dimensions) {
-    const padding = 8;
-    const scale = Math.min((width - padding * 2) / dimensions.width, (height - padding * 2) / dimensions.height);
-    const drawWidth = dimensions.width * scale;
-    const drawHeight = dimensions.height * scale;
-    return { x: (width - drawWidth) / 2, y: (height - drawHeight) / 2, width: drawWidth, height: drawHeight, scale };
+  viewFor(width, height, dimensions, layers) {
+    const paddingLevel = normalizeWorkspacePadding(this.data.workspace_padding);
+    const basePaddingX = dimensions.width * 0.25 * paddingLevel;
+    const basePaddingY = dimensions.height * 0.25 * paddingLevel;
+    let left = -basePaddingX;
+    let top = -basePaddingY;
+    let right = dimensions.width + basePaddingX;
+    let bottom = dimensions.height + basePaddingY;
+    for (const key of layers) {
+      const rect = this.rectFor(key, dimensions);
+      left = Math.min(left, rect.x);
+      top = Math.min(top, rect.y);
+      right = Math.max(right, rect.x + rect.width);
+      bottom = Math.max(bottom, rect.y + rect.height);
+    }
+    const outerPadding = Math.max(right - left, bottom - top) * 0.04 * paddingLevel;
+    left -= outerPadding;
+    top -= outerPadding;
+    right += outerPadding;
+    bottom += outerPadding;
+    const padding = 8 * paddingLevel;
+    const scale = Math.min((width - padding * 2) / (right - left), (height - padding * 2) / (bottom - top));
+    return {
+      x: (width - (right - left) * scale) / 2 - left * scale,
+      y: (height - (bottom - top) * scale) / 2 - top * scale,
+      width: dimensions.width * scale,
+      height: dimensions.height * scale,
+      scale,
+    };
   }
 
   requestDraw() {
@@ -427,21 +563,28 @@ class LayeredPlacementEditor {
       this.status.hidden = false;
       return;
     }
-    this.view = this.viewFor(width, height, dimensions);
+    this.view = this.gesture?.view || this.viewFor(width, height, dimensions, layers);
     context.globalAlpha = 0.72;
     context.drawImage(this.backgroundImage, this.view.x, this.view.y, this.view.width, this.view.height);
     context.globalAlpha = 1;
-    context.save();
-    context.beginPath();
-    context.rect(this.view.x, this.view.y, this.view.width, this.view.height);
-    context.clip();
     for (const key of layers) this.drawLayer(context, key, dimensions);
-    context.restore();
+    context.lineWidth = 2;
+    context.strokeStyle = "rgba(255,255,255,.65)";
+    context.strokeRect(this.view.x, this.view.y, this.view.width, this.view.height);
     if (this.selected) this.drawHandles(context, this.selected, dimensions);
     const pending = layers.filter((key) => !this.layerMetadata(key)).length;
-    this.status.textContent = pending
-      ? `${pending} foreground${pending === 1 ? "" : "s"} pending removal pass`
-      : `${layers.length} layer${layers.length === 1 ? "" : "s"} • back → front`;
+    if (this.isStagedComposite() && !layers.length) {
+      this.status.textContent = this.usesRetainedStage()
+        ? "No retained stage • disable use_staged and queue"
+        : "Queue to load a fresh foreground stage";
+    } else if (pending) {
+      this.status.textContent = `${pending} foreground${pending === 1 ? "" : "s"} pending removal pass`;
+    } else {
+      const stage = this.isStagedComposite()
+        ? ` • ${this.metadata?.stage_mode === "retained" ? "retained stage" : "fresh stage"}`
+        : "";
+      this.status.textContent = `${layers.length} layer${layers.length === 1 ? "" : "s"} • back → front${stage}`;
+    }
     this.status.hidden = false;
   }
 
@@ -477,10 +620,10 @@ class LayeredPlacementEditor {
 
   handlePoints(key, dimensions) {
     const rect = this.toCanvasRect(this.rectFor(key, dimensions));
-    const left = clamp(rect.x, this.view.x + 6, this.view.x + this.view.width - 6);
-    const right = clamp(rect.x + rect.width, this.view.x + 6, this.view.x + this.view.width - 6);
-    const top = clamp(rect.y, this.view.y + 6, this.view.y + this.view.height - 6);
-    const bottom = clamp(rect.y + rect.height, this.view.y + 6, this.view.y + this.view.height - 6);
+    const left = rect.x;
+    const right = rect.x + rect.width;
+    const top = rect.y;
+    const bottom = rect.y + rect.height;
     return { nw: { x: left, y: top }, ne: { x: right, y: top }, sw: { x: left, y: bottom }, se: { x: right, y: bottom } };
   }
 
@@ -551,6 +694,7 @@ class LayeredPlacementEditor {
       originalValue: this.placementWidget.value,
       pointerId: event.pointerId,
       changed: false,
+      view: { ...this.view },
     };
     this.canvas.setPointerCapture(event.pointerId);
   }
@@ -635,7 +779,8 @@ class LayeredPlacementEditor {
   selectLayer(key) {
     if (!this.connectedLayers().includes(key)) return;
     this.selected = key;
-    this.layerSelect.value = key;
+    this.layerListSignature = null;
+    this.syncLayerList(this.connectedLayers());
     this.syncNumericControls();
     this.requestDraw();
   }
@@ -646,7 +791,43 @@ class LayeredPlacementEditor {
       input.disabled = !this.selected;
       input.value = Number(placement[field]).toFixed(4);
     }
+    this.paddingInput.value = normalizeWorkspacePadding(
+      this.data.workspace_padding ?? DEFAULT_WORKSPACE_PADDING,
+    ).toFixed(2);
     this.resetButton.disabled = !this.selected;
+  }
+
+  dropLayer(dragged, target, insertAfter) {
+    const layers = this.connectedLayers();
+    const draggedIndex = layers.indexOf(dragged);
+    if (draggedIndex < 0) return;
+    layers.splice(draggedIndex, 1);
+    let targetIndex = layers.indexOf(target);
+    if (targetIndex < 0) return;
+    if (insertAfter) targetIndex += 1;
+    layers.splice(targetIndex, 0, dragged);
+    this.node.graph?.beforeChange?.();
+    this.data.layer_order = layers;
+    this.placementWidget.value = serializePlacementData(this.data);
+    this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
+    this.node.graph?.setDirtyCanvas?.(true, true);
+    this.node.graph?.afterChange?.();
+    this.selected = dragged;
+    this.layerListSignature = null;
+    this.syncLayerList(layers);
+    this.syncNumericControls();
+    this.requestDraw();
+  }
+
+  paddingChanged(value) {
+    this.node.graph?.beforeChange?.();
+    this.data.workspace_padding = normalizeWorkspacePadding(value);
+    this.placementWidget.value = serializePlacementData(this.data);
+    this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
+    this.node.graph?.setDirtyCanvas?.(true, true);
+    this.node.graph?.afterChange?.();
+    this.syncNumericControls();
+    this.requestDraw();
   }
 
   numericChanged(field, value) {
@@ -736,10 +917,10 @@ function install(node) {
 app.registerExtension({
   name: "UtilsCollection.LayeredBackgroundEditor",
   nodeCreated(node) {
-    if (node.comfyClass === NODE_TYPE || node.type === NODE_TYPE) install(node);
+    if (NODE_TYPES.has(node.comfyClass) || NODE_TYPES.has(node.type)) install(node);
   },
   loadedGraphNode(node) {
-    if (node.comfyClass === NODE_TYPE || node.type === NODE_TYPE) install(node).ensureSize();
+    if (NODE_TYPES.has(node.comfyClass) || NODE_TYPES.has(node.type)) install(node).ensureSize();
   },
   onNodeOutputsUpdated(outputs) {
     latestOutputs = { ...latestOutputs, ...outputs };

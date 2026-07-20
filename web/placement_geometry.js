@@ -3,9 +3,11 @@ export const DEFAULT_PLACEMENT = Object.freeze({
   long_axis_shift: 0,
   short_axis_shift: 0,
 });
+export const DEFAULT_WORKSPACE_PADDING = 0.5;
 
 const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 export const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
+export const normalizeWorkspacePadding = (value) => clamp(finite(value, DEFAULT_WORKSPACE_PADDING), 0, 1);
 
 export function normalizePlacement(value = {}) {
   return {
@@ -23,9 +25,12 @@ export function parsePlacementData(value) {
     for (const [key, placement] of Object.entries(data.layers || {})) {
       if (placement && typeof placement === "object") layers[key] = normalizePlacement(placement);
     }
-    return { version: 1, layers };
+    const layer_order = Array.isArray(data.layer_order)
+      ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
+      : [];
+    return { version: 1, workspace_padding: normalizeWorkspacePadding(data.workspace_padding), layer_order, layers };
   } catch {
-    return { version: 1, layers: {} };
+    return { version: 1, workspace_padding: DEFAULT_WORKSPACE_PADDING, layer_order: [], layers: {} };
   }
 }
 
@@ -34,7 +39,14 @@ export function serializePlacementData(data) {
   for (const key of Object.keys(data.layers || {}).sort(layerKeyCompare)) {
     layers[key] = normalizePlacement(data.layers[key]);
   }
-  return JSON.stringify({ version: 1, layers });
+  return JSON.stringify({
+    version: 1,
+    workspace_padding: normalizeWorkspacePadding(data.workspace_padding),
+    layer_order: Array.isArray(data.layer_order)
+      ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
+      : [],
+    layers,
+  });
 }
 
 export function layerKeyCompare(a, b) {
