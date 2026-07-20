@@ -716,7 +716,6 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 io.String.Input(
                     "placement_data",
                     default='{"version":1,"layers":{}}',
-                    multiline=True,
                     advanced=True,
                     tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
                 ),

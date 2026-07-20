@@ -186,23 +186,8 @@ class LayeredPlacementEditor {
   }
 
   installWidget() {
-    // Multiline STRING inputs are DOM widgets in current ComfyUI builds. Hiding
-    // only their LiteGraph draw function leaves the textarea floating over the
-    // node, so hide the backing DOM element as well while keeping the widget in
-    // node.widgets for prompt and workflow serialization.
     this.placementWidget.computeSize = () => [0, -4];
     this.placementWidget.draw = () => {};
-    for (const widgetElement of [
-      this.placementWidget.element,
-      this.placementWidget.inputEl,
-      this.placementWidget.el,
-    ]) {
-      if (!(widgetElement instanceof HTMLElement)) continue;
-      widgetElement.hidden = true;
-      widgetElement.tabIndex = -1;
-      widgetElement.setAttribute("aria-hidden", "true");
-      widgetElement.style.setProperty("display", "none", "important");
-    }
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
       hideOnZoom: false,
