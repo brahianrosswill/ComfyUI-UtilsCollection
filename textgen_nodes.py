@@ -2,6 +2,7 @@ import re
 import math
 import logging
 import torch
+from contextlib import nullcontext
 from enum import Enum
 
 from comfy_api.latest import ComfyExtension, io
@@ -188,7 +189,7 @@ def generate_fused_qwen3vl(clip, full_prompt, images, config, generation_args, t
     fused_info["extra"] = dict(canonical_info["extra"])
     fused_info["extra"]["deepstack"] = fused_deepstack
     position_ids, visual_mask, rebuilt_deepstack = model.transformer.build_image_inputs(canonical, [fused_info])
-    context = model_management.cuda_device_context(device) if hasattr(model_management, "cuda_device_context") else __import__("contextlib").nullcontext()
+    context = model_management.cuda_device_context(device) if hasattr(model_management, "cuda_device_context") else nullcontext()
     with context:
         return model.transformer.generate(
             canonical, **generation_args, position_ids=position_ids,
@@ -212,7 +213,7 @@ def generate_fused_qwen35(clip, full_prompt, images, config, generation_args, th
     position_ids = qwen2vl_mrope_position_ids([fused_info], canonical.shape[1], canonical.device)
     if position_ids is None:
         raise ValueError("Qwen3.5 visual fusion could not rebuild multimodal MRoPE positions.")
-    context = model_management.cuda_device_context(device) if hasattr(model_management, "cuda_device_context") else __import__("contextlib").nullcontext()
+    context = model_management.cuda_device_context(device) if hasattr(model_management, "cuda_device_context") else nullcontext()
     with context:
         return model.transformer.generate(canonical, **generation_args, position_ids=position_ids)
 
