@@ -923,6 +923,35 @@ POWER_BLEND_PRESET = {
 }
 
 
+def _common_conditioning_prefix_length(tensors, rtol=1e-5, atol=1e-6):
+    """Return the longest leading token span numerically shared by every [tokens, dims] tensor."""
+    if not tensors:
+        return 0
+    limit = min(tensor.shape[0] for tensor in tensors)
+    if limit == 0:
+        return 0
+    reference = tensors[0][:limit]
+    common = torch.ones(limit, dtype=torch.bool, device=reference.device)
+    for tensor in tensors[1:]:
+        common &= torch.isclose(reference, tensor[:limit], rtol=rtol, atol=atol).all(dim=-1)
+    mismatch = (~common).nonzero(as_tuple=False)
+    return int(mismatch[0].item()) if mismatch.numel() else limit
+
+
+def _position_biased_similarity_scores(similarities, position_weight):
+    """Blend cosine scores with a narrowing Gaussian over normalized sequence positions."""
+    weight = float(position_weight)
+    if weight <= 0.0:
+        return similarities
+    n_ref, n_source = similarities.shape
+    ref_positions = torch.linspace(0.0, 1.0, n_ref, device=similarities.device, dtype=torch.float32)
+    source_positions = torch.linspace(0.0, 1.0, n_source, device=similarities.device, dtype=torch.float32)
+    distance = ref_positions[:, None] - source_positions[None, :]
+    sigma = max(1.0 - min(weight, 1.0), 1.0 / max(n_ref, n_source, 1))
+    affinity = torch.exp(-0.5 * (distance / sigma) ** 2).to(similarities)
+    return similarities * (1.0 - weight) + affinity * weight
+
+
 def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensors: dict = None, device=None, compute_dtype=None) -> tuple:
     """
     Consensus-Weighted Blending math engine for language space sequences and pooled embeddings.
@@ -976,6 +1005,10 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
 
     dsc_enabled = False
     soft_comfort_enabled = False
+    position_weight = blend_config.get("position_weight", 0.0)
+    preserve_common_prefix = blend_config.get("preserve_common_prefix", False)
+    if not 0.0 <= position_weight <= 1.0:
+        raise ValueError("Position weight must be between 0.0 and 1.0.")
 
     if blend_preset != "off" and blend_preset in presets:
         p = presets[blend_preset]
@@ -1001,6 +1034,13 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
     C_blended_list = []
     for b in range(B):
         batch_tensors = [comfy.model_management.cast_to_device(t[b], device, compute_dtype) for t in tensors_list]
+        prefix_length = _common_conditioning_prefix_length(batch_tensors) if preserve_common_prefix else 0
+        preserved_prefix = batch_tensors[0][:prefix_length]
+        if prefix_length:
+            batch_tensors = [tensor[prefix_length:] for tensor in batch_tensors]
+        if all(tensor.shape[0] == 0 for tensor in batch_tensors):
+            C_blended_list.append(preserved_prefix)
+            continue
 
         if blend_method == "linear":
             max_len = max(t.shape[0] for t in batch_tensors)
@@ -1014,7 +1054,7 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
             merged_seq = torch.mean(stacked, dim=0)
             if global_scale != 1.0:
                 merged_seq *= global_scale
-            C_blended_list.append(merged_seq)
+            C_blended_list.append(torch.cat([preserved_prefix, merged_seq], dim=0))
             continue
 
         if alignment_method == "similarity":
@@ -1037,12 +1077,15 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
 
                 matched_tk_idx = [-1] * N_ref
                 sim_matrix_tmp = sim_matrix.clone()
+                if position_weight > 0.0:
+                    sim_matrix_tmp = _position_biased_similarity_scores(sim_matrix_tmp, position_weight)
+                    sim_matrix_tmp = sim_matrix_tmp.masked_fill(sim_matrix < alignment_threshold, -100.0)
 
                 for _ in range(min(N_ref, N_k)):
                     flat_idx = torch.argmax(sim_matrix_tmp)
                     max_val = sim_matrix_tmp.flatten()[flat_idx].item()
 
-                    if max_val < alignment_threshold:
+                    if (position_weight == 0.0 and max_val < alignment_threshold) or max_val <= -100.0:
                         break
 
                     r_idx = flat_idx // N_k
@@ -1113,7 +1156,7 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
                 if global_scale != 1.0:
                     merged_vec *= global_scale
                 merged_seq[r_idx] = merged_vec
-            C_blended_list.append(merged_seq)
+            C_blended_list.append(torch.cat([preserved_prefix, merged_seq], dim=0))
         else:
             # Index-Based Sequential Matching
             max_len = max(t.shape[0] for t in batch_tensors)
@@ -1164,7 +1207,7 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
                 if global_scale != 1.0:
                     merged_vec *= global_scale
                 merged_seq[i] = merged_vec
-            C_blended_list.append(merged_seq)
+            C_blended_list.append(torch.cat([preserved_prefix, merged_seq], dim=0))
 
     C_blended = comfy.model_management.cast_to_device(
         torch.stack(C_blended_list, dim=0), tensors_list[0].device, tensors_list[0].dtype
