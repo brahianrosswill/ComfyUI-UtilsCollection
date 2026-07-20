@@ -2,10 +2,12 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
   DEFAULT_PLACEMENT,
+  DEFAULT_WORKSPACE_PADDING,
   drawRect,
   layerKeyCompare,
   moveRect,
   normalizePlacement,
+  normalizeWorkspacePadding,
   parsePlacementData,
   placementToRect,
   rectToPlacement,
@@ -109,7 +111,7 @@ class LayeredPlacementEditor {
 
     const controls = element("div", {
       display: "grid",
-      gridTemplateColumns: "minmax(110px, 1fr) repeat(3, minmax(58px, .6fr)) auto",
+      gridTemplateColumns: "minmax(110px, 1fr) repeat(4, minmax(58px, .6fr)) auto",
       gap: "5px",
       alignItems: "end",
     });
@@ -136,6 +138,17 @@ class LayeredPlacementEditor {
       group.append(input);
       controls.append(group);
     }
+    const paddingGroup = this.labeledControl("Padding");
+    this.paddingInput = element("input", this.controlStyle());
+    this.paddingInput.type = "number";
+    this.paddingInput.step = "0.05";
+    this.paddingInput.min = "0";
+    this.paddingInput.max = "1";
+    this.paddingInput.title = "Workspace padding: 0 is none, 1 is the previous maximum";
+    this.paddingInput.addEventListener("change", () => this.paddingChanged(this.paddingInput.value));
+    this.paddingInput.addEventListener("keydown", (event) => event.stopPropagation());
+    paddingGroup.append(this.paddingInput);
+    controls.append(paddingGroup);
     this.resetButton = element("button", {
       ...this.controlStyle(),
       height: "24px",
@@ -417,8 +430,9 @@ class LayeredPlacementEditor {
   }
 
   viewFor(width, height, dimensions, layers) {
-    const basePaddingX = dimensions.width * 0.25;
-    const basePaddingY = dimensions.height * 0.25;
+    const paddingLevel = normalizeWorkspacePadding(this.data.workspace_padding);
+    const basePaddingX = dimensions.width * 0.25 * paddingLevel;
+    const basePaddingY = dimensions.height * 0.25 * paddingLevel;
     let left = -basePaddingX;
     let top = -basePaddingY;
     let right = dimensions.width + basePaddingX;
@@ -430,12 +444,12 @@ class LayeredPlacementEditor {
       right = Math.max(right, rect.x + rect.width);
       bottom = Math.max(bottom, rect.y + rect.height);
     }
-    const outerPadding = Math.max(right - left, bottom - top) * 0.04;
+    const outerPadding = Math.max(right - left, bottom - top) * 0.04 * paddingLevel;
     left -= outerPadding;
     top -= outerPadding;
     right += outerPadding;
     bottom += outerPadding;
-    const padding = 8;
+    const padding = 8 * paddingLevel;
     const scale = Math.min((width - padding * 2) / (right - left), (height - padding * 2) / (bottom - top));
     return {
       x: (width - (right - left) * scale) / 2 - left * scale,
@@ -704,7 +718,21 @@ class LayeredPlacementEditor {
       input.disabled = !this.selected;
       input.value = Number(placement[field]).toFixed(4);
     }
+    this.paddingInput.value = normalizeWorkspacePadding(
+      this.data.workspace_padding ?? DEFAULT_WORKSPACE_PADDING,
+    ).toFixed(2);
     this.resetButton.disabled = !this.selected;
+  }
+
+  paddingChanged(value) {
+    this.node.graph?.beforeChange?.();
+    this.data.workspace_padding = normalizeWorkspacePadding(value);
+    this.placementWidget.value = serializePlacementData(this.data);
+    this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
+    this.node.graph?.setDirtyCanvas?.(true, true);
+    this.node.graph?.afterChange?.();
+    this.syncNumericControls();
+    this.requestDraw();
   }
 
   numericChanged(field, value) {

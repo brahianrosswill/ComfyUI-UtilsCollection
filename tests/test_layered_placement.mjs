@@ -94,11 +94,12 @@ test("corner resizing stays proportional and respects scale limits", () => {
 });
 
 test("placement JSON is normalized and deterministically ordered", () => {
-  const parsed = parsePlacementData('{"version":1,"layers":{"foreground_10":{"scale":2},"foreground_2":{}}}');
+  const parsed = parsePlacementData('{"version":1,"workspace_padding":2,"layers":{"foreground_10":{"scale":2},"foreground_2":{}}}');
   assert.deepEqual(parsed.layers.foreground_2, DEFAULT_PLACEMENT);
+  assert.equal(parsed.workspace_padding, 1);
   assert.equal(
     serializePlacementData(parsed),
-    '{"version":1,"layers":{"foreground_2":{"scale":0.9,"long_axis_shift":0,"short_axis_shift":0},"foreground_10":{"scale":2,"long_axis_shift":0,"short_axis_shift":0}}}',
+    '{"version":1,"workspace_padding":1,"layers":{"foreground_2":{"scale":0.9,"long_axis_shift":0,"short_axis_shift":0},"foreground_10":{"scale":2,"long_axis_shift":0,"short_axis_shift":0}}}',
   );
-  assert.deepEqual(parsePlacementData("not json"), { version: 1, layers: {} });
+  assert.deepEqual(parsePlacementData("not json"), { version: 1, workspace_padding: 0.5, layers: {} });
 });
