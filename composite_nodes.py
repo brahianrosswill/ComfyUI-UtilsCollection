@@ -1,3 +1,5 @@
+import json
+import logging
 import math
 
 import numpy as np
@@ -6,7 +8,7 @@ import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
 from comfy.utils import common_upscale
-from comfy_api.latest import io
+from comfy_api.latest import io, ui
 from nodes import MAX_RESOLUTION
 
 
@@ -14,6 +16,11 @@ FaceDetectionType = io.Custom("FACE_DETECTION_MODEL")
 FaceCompositeOptionsType = io.Custom("UC_FACE_COMPOSITE_OPTIONS")
 
 _RESIZE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
+_DEFAULT_LAYER_PLACEMENT = {
+    "scale": 0.9,
+    "long_axis_shift": 0.0,
+    "short_axis_shift": 0.0,
+}
 
 
 def _resize_image(image, width, height, method, crop="disabled"):
@@ -125,6 +132,102 @@ def _flatten_autogrow_images(image_inputs):
                 raise ValueError(f"Foreground input {key} must have shape [batch, height, width, channels].")
             images.extend(item[index:index + 1] for index in range(item.shape[0]))
     return images
+
+
+def _foreground_input_order(key):
+    digits = "".join(filter(str.isdigit, key))
+    return int(digits or 0), key
+
+
+def _ordered_single_foregrounds(image_inputs):
+    foregrounds = []
+    for key in sorted(image_inputs or {}, key=_foreground_input_order):
+        value = image_inputs[key]
+        values = value if isinstance(value, (list, tuple)) else [value]
+        values = [item for item in values if item is not None]
+        if len(values) != 1 or not torch.is_tensor(values[0]) or values[0].ndim != 4:
+            raise ValueError(f"Foreground input {key} must contain exactly one image tensor.")
+        image = values[0]
+        if image.shape[0] != 1:
+            raise ValueError(f"Foreground input {key} must contain exactly one image, not a batch.")
+        foregrounds.append((key, image))
+    return foregrounds
+
+
+def _parse_layer_placements(value):
+    if value is None or value == "":
+        value = {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Layer placement data is not valid JSON: {error.msg}.") from error
+    if not isinstance(value, dict):
+        raise ValueError("Layer placement data must be a JSON object.")
+    version = value.get("version", 1)
+    if version != 1:
+        raise ValueError(f"Unsupported layer placement data version: {version}.")
+    layers = value.get("layers", {})
+    if not isinstance(layers, dict):
+        raise ValueError("Layer placement data 'layers' must be a JSON object.")
+
+    parsed = {}
+    for key, placement in layers.items():
+        if not isinstance(key, str) or not isinstance(placement, dict):
+            raise ValueError("Every layer placement must be an object keyed by its foreground socket name.")
+        result = dict(_DEFAULT_LAYER_PLACEMENT)
+        for field, minimum, maximum in (
+            ("scale", 0.05, 10.0),
+            ("long_axis_shift", -1.0, 1.0),
+            ("short_axis_shift", -1.0, 1.0),
+        ):
+            raw = placement.get(field, result[field])
+            if isinstance(raw, bool):
+                raise ValueError(f"Layer {key} field {field} must be numeric.")
+            try:
+                number = float(raw)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Layer {key} field {field} must be numeric.") from error
+            if not math.isfinite(number) or number < minimum or number > maximum:
+                raise ValueError(f"Layer {key} field {field} must be between {minimum} and {maximum}.")
+            result[field] = number
+        parsed[key] = result
+    return parsed
+
+
+def _placement_offsets(background_width, background_height, placed_width, placed_height, placement):
+    long_shift = (placement["long_axis_shift"] + 1.0) / 2.0
+    short_shift = (placement["short_axis_shift"] + 1.0) / 2.0
+    if background_width > background_height:
+        offset_x = round((background_width - placed_width) * long_shift)
+        offset_y = round((background_height - placed_height) * short_shift)
+    elif background_height > background_width:
+        offset_y = round((background_height - placed_height) * long_shift)
+        offset_x = round((background_width - placed_width) * short_shift)
+    else:
+        offset_x = round((background_width - placed_width) * long_shift)
+        offset_y = round((background_height - placed_height) * short_shift)
+    return offset_x, offset_y
+
+
+def _bounded_preview(image, longest):
+    height, width = image.shape[1:3]
+    if max(height, width) <= longest:
+        return image
+    ratio = float(longest) / max(height, width)
+    return _resize_image(image, max(1, round(width * ratio)), max(1, round(height * ratio)), "bicubic")
+
+
+def _save_editor_preview(image, prefix, longest):
+    preview = _bounded_preview(image, longest)
+    saved = ui.ImageSaveHelper.save_images(
+        preview,
+        filename_prefix=prefix,
+        folder_type=io.FolderType.temp,
+        cls=None,
+        compress_level=1,
+    )
+    return dict(saved[0]) if saved else None
 
 
 def _crop_bounds(mask, padding, multiple=8):
@@ -587,6 +690,178 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
             masks.append(canvas_mask)
 
         return io.NodeOutput(torch.cat(composites, dim=0), torch.cat(masks, dim=0))
+
+
+class UC_LayeredBackgroundComposite(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        foreground_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("foreground"), prefix="foreground_", min=1, max=50
+        )
+        return io.Schema(
+            node_id="UC_LayeredBackgroundComposite",
+            display_name="Layered Background Composite",
+            category="utils/image",
+            inputs=[
+                io.BackgroundRemoval.Input(
+                    "background_removal_model",
+                    tooltip="Core background-removal model used to isolate every foreground layer.",
+                ),
+                io.Image.Input("background", tooltip="Single image used as the scene canvas."),
+                io.Autogrow.Input(
+                    "foreground_images",
+                    template=foreground_template,
+                    tooltip="One image per socket, composited from foreground_0 at the back to the highest socket at the front.",
+                ),
+                io.String.Input(
+                    "placement_data",
+                    default='{"version":1,"layers":{}}',
+                    advanced=True,
+                    tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
+                ),
+                io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01),
+                io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True),
+                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True),
+                io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True),
+                io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True),
+            ],
+            outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        background_removal_model,
+        background,
+        foreground_images,
+        placement_data,
+        mask_threshold,
+        border_cleanup_width,
+        artifact_cleanup_radius,
+        gap_fill_radius,
+        feather_radius,
+    ):
+        if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
+            raise ValueError("Layered Background Composite requires exactly one background image.")
+        if background.shape[-1] < 3:
+            raise ValueError("Background image must have at least three channels.")
+        foregrounds = _ordered_single_foregrounds(foreground_images)
+        if not foregrounds:
+            raise ValueError("Layered Background Composite requires at least one foreground image.")
+        placements = _parse_layer_placements(placement_data)
+
+        scene = background[..., :3].clone()
+        background_height, background_width = scene.shape[1:3]
+        combined_mask = scene.new_zeros((1, background_height, background_width))
+        layer_metadata = []
+
+        for key, foreground in foregrounds:
+            if foreground.shape[-1] < 3:
+                raise ValueError(f"Foreground input {key} must have at least three channels.")
+            foreground = foreground[..., :3]
+            raw_mask = background_removal_model.encode_image(foreground)
+            if not torch.is_tensor(raw_mask):
+                raise ValueError(f"Background removal returned an invalid mask for {key}.")
+            if raw_mask.ndim == 4 and raw_mask.shape[1] == 1:
+                raw_mask = raw_mask[:, 0]
+            elif raw_mask.ndim == 4 and raw_mask.shape[-1] == 1:
+                raw_mask = raw_mask[..., 0]
+            if raw_mask.ndim != 3 or raw_mask.shape[0] != 1:
+                raise ValueError(f"Background removal must return one [batch, height, width] mask for {key}.")
+            if raw_mask.shape[-2:] != foreground.shape[1:3]:
+                raw_mask = _resize_mask(raw_mask, foreground.shape[2], foreground.shape[1], "bilinear")
+
+            refined = _refine_foreground_mask(
+                raw_mask[0],
+                float(mask_threshold),
+                border_cleanup_width,
+                artifact_cleanup_radius,
+                gap_fill_radius,
+            )
+            points = torch.nonzero(refined > 0, as_tuple=False)
+            if points.numel() == 0:
+                raise ValueError(f"Background removal produced an empty foreground mask for {key}.")
+            top = int(points[:, 0].min())
+            bottom = int(points[:, 0].max()) + 1
+            left = int(points[:, 1].min())
+            right = int(points[:, 1].max()) + 1
+            crop = foreground[:, top:bottom, left:right]
+            crop_mask = refined[None, top:bottom, left:right]
+            crop_height, crop_width = crop.shape[1:3]
+
+            placement = placements.get(key, _DEFAULT_LAYER_PLACEMENT)
+            target_longest = max(1, round(min(background_height, background_width) * placement["scale"]))
+            scale = target_longest / max(crop_height, crop_width)
+            placed_height = max(1, round(crop_height * scale))
+            placed_width = max(1, round(crop_width * scale))
+            resized_foreground = _resize_image(crop, placed_width, placed_height, "bicubic").to(scene)
+            resized_mask = _resize_mask(crop_mask, placed_width, placed_height, "nearest-exact").to(scene)
+            resized_mask = (resized_mask[0] >= 0.5).to(scene)
+            alpha = _feather_mask(resized_mask, -int(feather_radius)) if feather_radius else resized_mask
+            offset_x, offset_y = _placement_offsets(
+                background_width,
+                background_height,
+                placed_width,
+                placed_height,
+                placement,
+            )
+
+            destination_top = max(0, offset_y)
+            destination_bottom = min(background_height, offset_y + placed_height)
+            destination_left = max(0, offset_x)
+            destination_right = min(background_width, offset_x + placed_width)
+            source_top = destination_top - offset_y
+            source_bottom = source_top + destination_bottom - destination_top
+            source_left = destination_left - offset_x
+            source_right = source_left + destination_right - destination_left
+            placed_alpha = alpha[source_top:source_bottom, source_left:source_right]
+            placed_foreground = resized_foreground[0, source_top:source_bottom, source_left:source_right]
+            region = scene[0, destination_top:destination_bottom, destination_left:destination_right]
+            scene[0, destination_top:destination_bottom, destination_left:destination_right] = (
+                region * (1.0 - placed_alpha.unsqueeze(-1)) + placed_foreground * placed_alpha.unsqueeze(-1)
+            )
+            mask_region = combined_mask[0, destination_top:destination_bottom, destination_left:destination_right]
+            combined_mask[0, destination_top:destination_bottom, destination_left:destination_right] = (
+                mask_region + placed_alpha * (1.0 - mask_region)
+            )
+
+            preview_alpha = crop_mask[0]
+            if feather_radius:
+                preview_alpha = _feather_mask(preview_alpha, -int(feather_radius))
+            preview_rgba = torch.cat((crop[0], preview_alpha.unsqueeze(-1)), dim=-1).unsqueeze(0)
+            layer_metadata.append({
+                "socket": key,
+                "crop_width": crop_width,
+                "crop_height": crop_height,
+                "preview_tensor": preview_rgba,
+            })
+
+        editor_metadata = {
+            "version": 1,
+            "background": {"width": background_width, "height": background_height},
+            "layers": [],
+        }
+        try:
+            editor_metadata["background"]["preview"] = _save_editor_preview(
+                background[..., :3], "UC_layered_background", 1024
+            )
+        except Exception:
+            logging.warning("Unable to create layered-composite background editor preview.", exc_info=True)
+        for layer in layer_metadata:
+            entry = {
+                "socket": layer["socket"],
+                "crop_width": layer["crop_width"],
+                "crop_height": layer["crop_height"],
+            }
+            try:
+                entry["preview"] = _save_editor_preview(
+                    layer["preview_tensor"], f"UC_layered_{layer['socket']}", 512
+                )
+            except Exception:
+                logging.warning("Unable to create editor cutout preview for %s.", layer["socket"], exc_info=True)
+            editor_metadata["layers"].append(entry)
+
+        return io.NodeOutput(scene, combined_mask, ui={"uc_layered_scene_editor": [editor_metadata]})
 
 
 class UC_MediaPipeFaceCompositeOptions(io.ComfyNode):
