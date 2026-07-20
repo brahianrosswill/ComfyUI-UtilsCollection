@@ -742,7 +742,13 @@ def _stage_layered_foregrounds(
     return {"version": 1, "layers": layers}
 
 
-def _composite_staged_foregrounds(background, staged_foregrounds, placement_data, feather_radius):
+def _composite_staged_foregrounds(
+    background,
+    staged_foregrounds,
+    placement_data,
+    feather_radius,
+    stage_mode=None,
+):
     if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
         raise ValueError("Staged Layered Background Composite requires exactly one background image.")
     if background.shape[-1] < 3:
@@ -808,6 +814,8 @@ def _composite_staged_foregrounds(background, staged_foregrounds, placement_data
         "background": {"width": background_width, "height": background_height},
         "layers": [],
     }
+    if stage_mode:
+        editor_metadata["stage_mode"] = stage_mode
     try:
         editor_metadata["background"]["preview"] = _save_editor_preview(
             background[..., :3], "UC_layered_background", 1024
@@ -827,8 +835,6 @@ def _composite_staged_foregrounds(background, staged_foregrounds, placement_data
 
 
 class UC_LayeredForegroundStage(io.ComfyNode):
-    _staged_by_node = {}
-
     @classmethod
     def define_schema(cls):
         foreground_template = io.Autogrow.TemplatePrefix(
@@ -841,18 +847,12 @@ class UC_LayeredForegroundStage(io.ComfyNode):
             inputs=[
                 io.BackgroundRemoval.Input("background_removal_model"),
                 io.Autogrow.Input("foreground_images", template=foreground_template),
-                io.Boolean.Input(
-                    "use_staged",
-                    default=False,
-                    tooltip="Reuse this node's last successful cutouts and ignore changed foreground values.",
-                ),
                 io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True),
                 io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True),
                 io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True),
             ],
             outputs=[LayeredForegroundStageType.Output("staged_foregrounds")],
-            hidden=[io.Hidden.unique_id],
         )
 
     @classmethod
@@ -860,17 +860,11 @@ class UC_LayeredForegroundStage(io.ComfyNode):
         cls,
         background_removal_model,
         foreground_images,
-        use_staged,
         mask_threshold,
         border_cleanup_width,
         artifact_cleanup_radius,
         gap_fill_radius,
     ):
-        node_id = str(cls.hidden.unique_id or "")
-        if use_staged:
-            if node_id not in cls._staged_by_node:
-                raise ValueError("No staged foregrounds are available. Run once with use_staged disabled.")
-            return io.NodeOutput(cls._staged_by_node[node_id])
         staged = _stage_layered_foregrounds(
             background_removal_model,
             foreground_images,
@@ -879,11 +873,25 @@ class UC_LayeredForegroundStage(io.ComfyNode):
             artifact_cleanup_radius,
             gap_fill_radius,
         )
-        cls._staged_by_node[node_id] = staged
-        return io.NodeOutput(staged)
+        previews = []
+        for layer in staged["layers"]:
+            rgba = torch.cat((layer["image"][0], layer["mask"][0].unsqueeze(-1)), dim=-1).unsqueeze(0)
+            try:
+                preview = _save_editor_preview(rgba, f"UC_staged_{layer['socket']}", 512)
+                if preview:
+                    previews.append(preview)
+            except Exception:
+                logging.warning(
+                    "Unable to create staged foreground preview for %s.",
+                    layer["socket"],
+                    exc_info=True,
+                )
+        return io.NodeOutput(staged, ui={"images": previews})
 
 
 class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
+    _staged_by_node = {}
+
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -892,7 +900,12 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             category="utils/image",
             inputs=[
                 io.Image.Input("background", tooltip="Single image used as the scene canvas."),
-                LayeredForegroundStageType.Input("staged_foregrounds"),
+                LayeredForegroundStageType.Input("staged_foregrounds", lazy=True),
+                io.Boolean.Input(
+                    "use_staged",
+                    default=False,
+                    tooltip="Reuse this compositor's retained cutouts without evaluating the staging branch.",
+                ),
                 io.String.Input(
                     "placement_data",
                     default='{"version":1,"layers":{}}',
@@ -902,11 +915,40 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                 io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True),
             ],
             outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
+            hidden=[io.Hidden.unique_id],
+            is_output_node=True,
         )
 
     @classmethod
-    def execute(cls, background, staged_foregrounds, placement_data, feather_radius):
-        return _composite_staged_foregrounds(background, staged_foregrounds, placement_data, feather_radius)
+    def check_lazy_status(cls, use_staged, staged_foregrounds=None, **kwargs):
+        if not use_staged and staged_foregrounds is None:
+            return ["staged_foregrounds"]
+        return []
+
+    @classmethod
+    def execute(cls, background, staged_foregrounds, use_staged, placement_data, feather_radius):
+        node_id = str(cls.hidden.unique_id or "")
+        if use_staged:
+            if node_id not in cls._staged_by_node:
+                raise ValueError(
+                    "No retained foreground stage is available for this compositor. "
+                    "Run once with use_staged disabled."
+                )
+            staged = cls._staged_by_node[node_id]
+            stage_mode = "retained"
+        else:
+            if staged_foregrounds is None:
+                raise ValueError("Fresh staged foreground data was not evaluated.")
+            staged = staged_foregrounds
+            cls._staged_by_node[node_id] = staged
+            stage_mode = "fresh"
+        return _composite_staged_foregrounds(
+            background,
+            staged,
+            placement_data,
+            feather_radius,
+            stage_mode=stage_mode,
+        )
 
 
 class UC_LayeredBackgroundComposite(io.ComfyNode):

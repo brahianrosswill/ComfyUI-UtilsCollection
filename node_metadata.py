@@ -89,7 +89,7 @@ EXTRA_ALIASES = {
     "UC_MediaPipeFaceComposite": ["face swap", "face landmarks", "face blend", "mediapipe"],
     "UC_MediaPipeFaceCompositeOptions": ["face regions", "face landmarks", "mediapipe options"],
     "UC_UnifiedBackgroundReplace": ["background replacement", "remove background", "batch composite", "shared background", "cutout"],
-    "UC_LayeredForegroundStage": ["staged cutout", "background removal cache", "scene foreground", "prestage"],
+    "UC_LayeredForegroundStage": ["staged cutout", "background removal stage", "scene foreground", "prestage"],
     "UC_StagedLayeredBackgroundComposite": ["staged scene composite", "interactive placement", "cached cutout"],
     "UC_LayeredBackgroundComposite": ["scene composite", "layered composite", "object placement", "background replacement", "cutout"],
     "UC_ResolutionSelectorExtended": ["megapixels", "aspect ratio", "width height", "resolution"],

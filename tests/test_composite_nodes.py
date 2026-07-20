@@ -463,6 +463,67 @@ def test_staged_layered_composite_rejects_missing_stage():
         )
 
 
+def test_foreground_stage_publishes_transparent_cutout_previews(monkeypatch):
+    saved = []
+
+    def capture_preview(image, prefix, longest):
+        saved.append(image.clone())
+        return {"filename": f"{prefix}.png"}
+
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", capture_preview)
+    foreground = torch.ones(1, 6, 8, 3)
+    mask = torch.zeros(1, 6, 8)
+    mask[:, 1:5, 3] = 1
+    mask[:, 3, 2:6] = 1
+    output = composite_nodes.UC_LayeredForegroundStage.execute(
+        _QueuedBackgroundModel([mask]),
+        {"foreground_0": foreground},
+        0.5,
+        0,
+        0,
+        0,
+    )
+
+    assert output.ui["images"] == [{"filename": "UC_staged_foreground_0.png"}]
+    assert saved[0].shape == (1, 4, 4, 4)
+    assert saved[0][..., 3].min().item() == 0
+    assert saved[0][..., 3].max().item() == 1
+
+
+def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
+    node = composite_nodes.UC_StagedLayeredBackgroundComposite
+    schema = node.define_schema()
+    staged_input = next(value for value in schema.inputs if value.id == "staged_foregrounds")
+    assert schema.is_output_node is True
+    assert staged_input.lazy is True
+    node._staged_by_node.clear()
+    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-a"))
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    staged = {
+        "version": 1,
+        "layers": [{
+            "socket": "foreground_0",
+            "image": torch.ones(1, 4, 4, 3),
+            "mask": torch.ones(1, 4, 4),
+        }],
+    }
+    background = torch.zeros(1, 20, 20, 3)
+
+    assert node.check_lazy_status(False, None) == ["staged_foregrounds"]
+    assert node.check_lazy_status(False, staged) == []
+    assert node.check_lazy_status(True, None) == []
+    fresh = node.execute(background, staged, False, '{"version":1,"layers":{}}', 0)
+    retained = node.execute(background, None, True, '{"version":1,"layers":{}}', 0)
+
+    assert fresh.ui["uc_layered_scene_editor"][0]["stage_mode"] == "fresh"
+    assert retained.ui["uc_layered_scene_editor"][0]["stage_mode"] == "retained"
+    assert torch.equal(fresh.result[0], retained.result[0])
+
+    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-b"))
+    with pytest.raises(ValueError, match="No retained foreground stage"):
+        node.execute(background, None, True, '{"version":1,"layers":{}}', 0)
+
+
 def test_face_foreground_solidification_matches_composite_operation():
     foreground = torch.tensor([0.25, 0.5, 0.625, 0.75, 1.0])
     inverted = 1.0 - foreground

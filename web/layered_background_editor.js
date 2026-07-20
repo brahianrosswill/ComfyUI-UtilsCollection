@@ -239,6 +239,15 @@ class LayeredPlacementEditor {
     return (this.metadata?.layers || []).map((layer) => layer.socket).sort(layerKeyCompare);
   }
 
+  isStagedComposite() {
+    return this.node.comfyClass === "UC_StagedLayeredBackgroundComposite"
+      || this.node.type === "UC_StagedLayeredBackgroundComposite";
+  }
+
+  usesRetainedStage() {
+    return Boolean(this.node.widgets?.find((widget) => widget.name === "use_staged")?.value);
+  }
+
   inputOrigin(name) {
     const slot = (this.node.inputs || []).findIndex((input) => (
       input.name === name || input.name.endsWith(`.${name}`) || input.label === name
@@ -249,7 +258,7 @@ class LayeredPlacementEditor {
   }
 
   semanticSignature() {
-    const sourceNames = (this.node.comfyClass === "UC_StagedLayeredBackgroundComposite" || this.node.type === "UC_StagedLayeredBackgroundComposite")
+    const sourceNames = this.isStagedComposite()
       ? ["background", "staged_foregrounds"]
       : ["background", ...this.connectedLayers()];
     const links = sourceNames.map((name) => {
@@ -360,7 +369,7 @@ class LayeredPlacementEditor {
   }
 
   upstreamUpdated(nodeId) {
-    const sourceNames = (this.node.comfyClass === "UC_StagedLayeredBackgroundComposite" || this.node.type === "UC_StagedLayeredBackgroundComposite")
+    const sourceNames = this.isStagedComposite()
       ? ["background", "staged_foregrounds"]
       : ["background", ...this.connectedLayers()];
     const origins = sourceNames.map((name) => this.inputOrigin(name));
@@ -469,9 +478,18 @@ class LayeredPlacementEditor {
     context.strokeRect(this.view.x, this.view.y, this.view.width, this.view.height);
     if (this.selected) this.drawHandles(context, this.selected, dimensions);
     const pending = layers.filter((key) => !this.layerMetadata(key)).length;
-    this.status.textContent = pending
-      ? `${pending} foreground${pending === 1 ? "" : "s"} pending removal pass`
-      : `${layers.length} layer${layers.length === 1 ? "" : "s"} • back → front`;
+    if (this.isStagedComposite() && !layers.length) {
+      this.status.textContent = this.usesRetainedStage()
+        ? "No retained stage • disable use_staged and queue"
+        : "Queue to load a fresh foreground stage";
+    } else if (pending) {
+      this.status.textContent = `${pending} foreground${pending === 1 ? "" : "s"} pending removal pass`;
+    } else {
+      const stage = this.isStagedComposite()
+        ? ` • ${this.metadata?.stage_mode === "retained" ? "retained stage" : "fresh stage"}`
+        : "";
+      this.status.textContent = `${layers.length} layer${layers.length === 1 ? "" : "s"} • back → front${stage}`;
+    }
     this.status.hidden = false;
   }
 
