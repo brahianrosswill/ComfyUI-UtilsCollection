@@ -327,13 +327,18 @@ def test_composite_auto_resize_selects_direction_appropriate_methods():
 
 
 def test_background_compositor_schemas_append_resize_and_workspace_controls():
-    unified = [value.id for value in composite_nodes.UC_UnifiedBackgroundReplace.define_schema().inputs]
-    layered = [value.id for value in composite_nodes.UC_LayeredBackgroundComposite.define_schema().inputs]
-    staged = [value.id for value in composite_nodes.UC_StagedLayeredBackgroundComposite.define_schema().inputs]
+    schemas = [
+        composite_nodes.UC_UnifiedBackgroundReplace.define_schema(),
+        composite_nodes.UC_LayeredBackgroundComposite.define_schema(),
+        composite_nodes.UC_StagedLayeredBackgroundComposite.define_schema(),
+    ]
+    unified, layered, staged = ([value.id for value in schema.inputs] for schema in schemas)
 
     assert unified[-3:] == ["image_resize_method", "mask_resize_method", "workspace_padding"]
     assert layered[-2:] == ["image_resize_method", "mask_resize_method"]
     assert staged[-2:] == ["image_resize_method", "mask_resize_method"]
+    for schema in schemas:
+        assert all(value.tooltip for value in schema.inputs)
 
 
 def test_composite_smooth_mask_resize_preserves_subpixel_coverage():

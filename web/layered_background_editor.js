@@ -136,13 +136,15 @@ class LayeredPlacementEditor {
     });
     this.layerListGroup.append(layerCaption, this.layerList);
     this.inputs = {};
-    for (const [field, label, step] of [
-      ["scale", "Scale", "0.01"],
-      ["center_x", "Center X", "0.01"],
-      ["center_y", "Center Y", "0.01"],
+    for (const [field, label, step, tooltip] of [
+      ["scale", "Scale", "0.01", "Foreground longest-side size as a fraction of the background's shortest side; aspect ratio is preserved."],
+      ["center_x", "Center X", "0.01", "Horizontal foreground center divided by background width; values outside 0–1 place it beyond the output boundary."],
+      ["center_y", "Center Y", "0.01", "Vertical foreground center divided by background height; values outside 0–1 place it beyond the output boundary."],
     ]) {
       const group = this.labeledControl(label);
       const input = element("input", this.controlStyle());
+      group.title = tooltip;
+      input.title = tooltip;
       input.type = "number";
       input.step = step;
       input.min = field === "scale" ? "0.05" : "-10";

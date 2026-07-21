@@ -23,6 +23,19 @@ _DEFAULT_LAYER_PLACEMENT = {
     "short_axis_shift": 0.0,
 }
 _DEFAULT_LAYER_PLACEMENT_V2 = {"scale": 0.9, "center_x": 0.5, "center_y": 0.5}
+_MASK_THRESHOLD_TOOLTIP = "Minimum background-removal confidence retained as foreground before cleanup."
+_BORDER_CLEANUP_TOOLTIP = "Source-edge strip width in pixels where weak foreground predictions are removed; 0 disables it."
+_ARTIFACT_CLEANUP_TOOLTIP = "Opening radius in pixels used to remove small or thin mask artifacts; 0 disables it."
+_GAP_FILL_TOOLTIP = "Closing radius in pixels used to fill small mask cracks and holes; 0 disables it."
+_FEATHER_TOOLTIP = "Inward mask-edge softness in pixels; 0 keeps the resized edge unchanged."
+_IMAGE_RESIZE_TOOLTIP = (
+    "Foreground resampling method. auto uses Lanczos when shrinking and bicubic when enlarging; "
+    "choose another method to override it."
+)
+_MASK_RESIZE_TOOLTIP = (
+    "Mask resampling method. auto uses area when shrinking and bilinear when enlarging while preserving soft coverage; "
+    "nearest-exact produces a hard binary edge."
+)
 
 
 def _resize_image(image, width, height, method, crop="disabled"):
@@ -674,8 +687,8 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
                 io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Opening radius used to remove small and thin mask artifacts."),
                 io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Closing radius used to fill small cracks and holes in the foreground."),
                 io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Inward edge softness; the foreground interior remains fully opaque."),
-                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
-                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
+                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_IMAGE_RESIZE_TOOLTIP),
+                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_MASK_RESIZE_TOOLTIP),
                 io.Float.Input("workspace_padding", default=0.5, min=0.0, max=1.0, step=0.05, advanced=True, tooltip="Permitted off-canvas placement margin, up to 25% of each background axis."),
             ],
             outputs=[
@@ -1007,7 +1020,8 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         foreground_template = io.Autogrow.TemplatePrefix(
-            io.Image.Input("foreground", lazy=True), prefix="foreground_", min=1, max=50
+            io.Image.Input("foreground", lazy=True, tooltip="Foreground image to isolate and retain as a placeable layer."),
+            prefix="foreground_", min=1, max=50
         )
         return io.Schema(
             node_id="UC_StagedLayeredBackgroundComposite",
@@ -1019,7 +1033,11 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             ),
             category="utils/image",
             inputs=[
-                io.BackgroundRemoval.Input("background_removal_model", lazy=True),
+                io.BackgroundRemoval.Input(
+                    "background_removal_model",
+                    lazy=True,
+                    tooltip="Core background-removal model used when run_staging or full_run refreshes the foreground cutouts.",
+                ),
                 io.Image.Input("background", tooltip="Single image used as the scene canvas."),
                 io.Autogrow.Input(
                     "foreground_images",
@@ -1036,19 +1054,19 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                         "full_run: refresh cutouts from current inputs and composite them immediately."
                     ),
                 ),
-                io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01),
-                io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True),
-                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True),
-                io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True),
+                io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01, tooltip=_MASK_THRESHOLD_TOOLTIP),
+                io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True, tooltip=_BORDER_CLEANUP_TOOLTIP),
+                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_ARTIFACT_CLEANUP_TOOLTIP),
+                io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_GAP_FILL_TOOLTIP),
                 io.String.Input(
                     "placement_data",
                     default='{"version":2,"workspace_padding":0.5,"layers":{}}',
                     advanced=True,
                     tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
                 ),
-                io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True),
-                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
-                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
+                io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_FEATHER_TOOLTIP),
+                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_IMAGE_RESIZE_TOOLTIP),
+                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_MASK_RESIZE_TOOLTIP),
             ],
             outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
             hidden=[io.Hidden.unique_id],
@@ -1137,7 +1155,8 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         foreground_template = io.Autogrow.TemplatePrefix(
-            io.Image.Input("foreground"), prefix="foreground_", min=1, max=50
+            io.Image.Input("foreground", tooltip="Foreground image to isolate and add as a placeable layer."),
+            prefix="foreground_", min=1, max=50
         )
         return io.Schema(
             node_id="UC_LayeredBackgroundComposite",
@@ -1160,13 +1179,13 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                     advanced=True,
                     tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
                 ),
-                io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01),
-                io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True),
-                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True),
-                io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True),
-                io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True),
-                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
-                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
+                io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01, tooltip=_MASK_THRESHOLD_TOOLTIP),
+                io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True, tooltip=_BORDER_CLEANUP_TOOLTIP),
+                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_ARTIFACT_CLEANUP_TOOLTIP),
+                io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_GAP_FILL_TOOLTIP),
+                io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_FEATHER_TOOLTIP),
+                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_IMAGE_RESIZE_TOOLTIP),
+                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_MASK_RESIZE_TOOLTIP),
             ],
             outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
         )
