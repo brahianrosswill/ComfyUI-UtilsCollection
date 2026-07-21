@@ -1,46 +1,56 @@
 export const DEFAULT_PLACEMENT = Object.freeze({
   scale: 0.9,
-  long_axis_shift: 0,
-  short_axis_shift: 0,
+  center_x: 0.5,
+  center_y: 0.5,
 });
+export const LEGACY_DEFAULT_PLACEMENT = Object.freeze({ scale: 0.9, long_axis_shift: 0, short_axis_shift: 0 });
 export const DEFAULT_WORKSPACE_PADDING = 0.5;
 
 const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 export const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 export const normalizeWorkspacePadding = (value) => clamp(finite(value, DEFAULT_WORKSPACE_PADDING), 0, 1);
 
-export function normalizePlacement(value = {}) {
+export function normalizePlacement(value = {}, version = 2) {
+  const scale = clamp(finite(value.scale, DEFAULT_PLACEMENT.scale), 0.05, 10);
+  if (version === 1 && value.center_x === undefined && value.center_y === undefined) {
+    return {
+      scale,
+      long_axis_shift: clamp(finite(value.long_axis_shift, 0), -1, 1),
+      short_axis_shift: clamp(finite(value.short_axis_shift, 0), -1, 1),
+    };
+  }
   return {
-    scale: clamp(finite(value.scale, DEFAULT_PLACEMENT.scale), 0.05, 10),
-    long_axis_shift: clamp(finite(value.long_axis_shift, 0), -1, 1),
-    short_axis_shift: clamp(finite(value.short_axis_shift, 0), -1, 1),
+    scale,
+    center_x: clamp(finite(value.center_x, 0.5), -10, 10),
+    center_y: clamp(finite(value.center_y, 0.5), -10, 10),
   };
 }
 
 export function parsePlacementData(value) {
   try {
     const data = typeof value === "string" ? JSON.parse(value || "{}") : value;
-    if (!data || typeof data !== "object" || (data.version ?? 1) !== 1) throw new Error();
+    const version = data?.version ?? 1;
+    if (!data || typeof data !== "object" || ![1, 2].includes(version)) throw new Error();
     const layers = {};
     for (const [key, placement] of Object.entries(data.layers || {})) {
-      if (placement && typeof placement === "object") layers[key] = normalizePlacement(placement);
+      if (placement && typeof placement === "object") layers[key] = normalizePlacement(placement, version);
     }
     const layer_order = Array.isArray(data.layer_order)
       ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
       : [];
-    return { version: 1, workspace_padding: normalizeWorkspacePadding(data.workspace_padding), layer_order, layers };
+    return { version, workspace_padding: normalizeWorkspacePadding(data.workspace_padding), layer_order, layers };
   } catch {
-    return { version: 1, workspace_padding: DEFAULT_WORKSPACE_PADDING, layer_order: [], layers: {} };
+    return { version: 2, workspace_padding: DEFAULT_WORKSPACE_PADDING, layer_order: [], layers: {} };
   }
 }
 
 export function serializePlacementData(data) {
   const layers = {};
   for (const key of Object.keys(data.layers || {}).sort(layerKeyCompare)) {
-    layers[key] = normalizePlacement(data.layers[key]);
+    layers[key] = normalizePlacement(data.layers[key], data.version ?? 2);
   }
   return JSON.stringify({
-    version: 1,
+    version: data.version ?? 2,
     workspace_padding: normalizeWorkspacePadding(data.workspace_padding),
     layer_order: Array.isArray(data.layer_order)
       ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
@@ -70,15 +80,18 @@ function physicalShifts(backgroundWidth, backgroundHeight, placement) {
   return { x: placement.short_axis_shift, y: placement.long_axis_shift };
 }
 
-function logicalShifts(backgroundWidth, backgroundHeight, x, y) {
-  return backgroundWidth >= backgroundHeight
-    ? { long_axis_shift: x, short_axis_shift: y }
-    : { long_axis_shift: y, short_axis_shift: x };
-}
-
 export function placementToRect(backgroundWidth, backgroundHeight, aspect, value) {
-  const placement = normalizePlacement(value);
+  const legacy = value?.center_x === undefined && value?.center_y === undefined;
+  const placement = normalizePlacement(value, legacy ? 1 : 2);
   const size = sizeFromScale(backgroundWidth, backgroundHeight, aspect, placement.scale);
+  if (!legacy) {
+    return {
+      x: placement.center_x * backgroundWidth - size.width / 2,
+      y: placement.center_y * backgroundHeight - size.height / 2,
+      width: size.width,
+      height: size.height,
+    };
+  }
   const shifts = physicalShifts(backgroundWidth, backgroundHeight, placement);
   const travelX = backgroundWidth - size.width;
   const travelY = backgroundHeight - size.height;
@@ -90,27 +103,28 @@ export function placementToRect(backgroundWidth, backgroundHeight, aspect, value
   };
 }
 
-function shiftFromOffset(offset, travel, prior) {
-  if (Math.abs(travel) < 1e-9) return clamp(finite(prior, 0), -1, 1);
-  return clamp((offset / travel) * 2 - 1, -1, 1);
-}
-
-export function rectToPlacement(backgroundWidth, backgroundHeight, rect, prior = DEFAULT_PLACEMENT) {
+export function rectToPlacement(backgroundWidth, backgroundHeight, rect) {
   const longest = Math.max(rect.width, rect.height);
   const scale = longest / Math.min(backgroundWidth, backgroundHeight);
-  const priorPhysical = physicalShifts(backgroundWidth, backgroundHeight, normalizePlacement(prior));
-  const x = shiftFromOffset(rect.x, backgroundWidth - rect.width, priorPhysical.x);
-  const y = shiftFromOffset(rect.y, backgroundHeight - rect.height, priorPhysical.y);
-  return normalizePlacement({ scale, ...logicalShifts(backgroundWidth, backgroundHeight, x, y) });
+  return normalizePlacement({
+    scale,
+    center_x: (rect.x + rect.width / 2) / backgroundWidth,
+    center_y: (rect.y + rect.height / 2) / backgroundHeight,
+  });
 }
 
-export function moveRect(backgroundWidth, backgroundHeight, rect, deltaX, deltaY) {
-  const travelX = backgroundWidth - rect.width;
-  const travelY = backgroundHeight - rect.height;
+export function moveRect(backgroundWidth, backgroundHeight, rect, deltaX, deltaY, workspacePadding = 0) {
+  const padding = normalizeWorkspacePadding(workspacePadding);
+  const paddingX = backgroundWidth * 0.25 * padding;
+  const paddingY = backgroundHeight * 0.25 * padding;
+  const travelX = backgroundWidth + paddingX * 2 - rect.width;
+  const travelY = backgroundHeight + paddingY * 2 - rect.height;
+  const xLimits = [-paddingX, -paddingX + travelX, 0, backgroundWidth - rect.width];
+  const yLimits = [-paddingY, -paddingY + travelY, 0, backgroundHeight - rect.height];
   return {
     ...rect,
-    x: clamp(rect.x + deltaX, Math.min(0, travelX), Math.max(0, travelX)),
-    y: clamp(rect.y + deltaY, Math.min(0, travelY), Math.max(0, travelY)),
+    x: clamp(rect.x + deltaX, Math.min(...xLimits), Math.max(...xLimits)) || 0,
+    y: clamp(rect.y + deltaY, Math.min(...yLimits), Math.max(...yLimits)) || 0,
   };
 }
 

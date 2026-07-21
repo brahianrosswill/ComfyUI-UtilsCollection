@@ -148,6 +148,9 @@ def _replace_background(model, background, foregrounds, **overrides):
         "artifact_cleanup_radius": 0,
         "gap_fill_radius": 0,
         "feather_radius": 0,
+        "image_resize_method": "auto",
+        "mask_resize_method": "auto",
+        "workspace_padding": 0.0,
     }
     options.update(overrides)
     return composite_nodes.UC_UnifiedBackgroundReplace.execute(
@@ -315,6 +318,60 @@ def test_unified_background_square_canvas_uses_both_axis_shifts():
     assert masks.sum() == 90 * 90
 
 
+def test_composite_auto_resize_selects_direction_appropriate_methods():
+    assert composite_nodes._composite_resize_method("auto", 100, 80, 50, 40) == "lanczos"
+    assert composite_nodes._composite_resize_method("auto", 50, 40, 100, 80) == "bicubic"
+    assert composite_nodes._composite_resize_method("auto", 100, 80, 50, 40, mask=True) == "area"
+    assert composite_nodes._composite_resize_method("auto", 50, 40, 100, 80, mask=True) == "bilinear"
+    assert composite_nodes._composite_resize_method("nearest-exact", 100, 80, 50, 40) == "nearest-exact"
+
+
+def test_background_compositor_schemas_append_resize_and_workspace_controls():
+    unified = [value.id for value in composite_nodes.UC_UnifiedBackgroundReplace.define_schema().inputs]
+    layered = [value.id for value in composite_nodes.UC_LayeredBackgroundComposite.define_schema().inputs]
+    staged = [value.id for value in composite_nodes.UC_StagedLayeredBackgroundComposite.define_schema().inputs]
+
+    assert unified[-3:] == ["image_resize_method", "mask_resize_method", "workspace_padding"]
+    assert layered[-2:] == ["image_resize_method", "mask_resize_method"]
+    assert staged[-2:] == ["image_resize_method", "mask_resize_method"]
+
+
+def test_composite_smooth_mask_resize_preserves_subpixel_coverage():
+    mask = torch.tensor([[[0.0, 1.0], [0.0, 1.0]]])
+
+    smooth = composite_nodes._resize_composite_mask(mask, 4, 4, "auto")
+    hard = composite_nodes._resize_composite_mask(mask, 4, 4, "nearest-exact")
+
+    assert ((smooth > 0) & (smooth < 1)).any()
+    assert set(hard.unique().tolist()) == {0.0, 1.0}
+
+
+def test_unified_workspace_padding_allows_partial_and_fully_hidden_foregrounds():
+    background = torch.zeros(1, 100, 100, 3)
+    foreground = torch.ones(1, 8, 8, 3)
+
+    _, partial = _replace_background(
+        _QueuedBackgroundModel([torch.ones(1, 8, 8)]),
+        background,
+        {"foreground_0": foreground},
+        foreground_scale=0.2,
+        long_axis_shift=-1.0,
+        workspace_padding=0.5,
+    )
+    image, hidden = _replace_background(
+        _QueuedBackgroundModel([torch.ones(1, 8, 8)]),
+        background,
+        {"foreground_0": foreground},
+        foreground_scale=0.2,
+        long_axis_shift=-1.0,
+        workspace_padding=1.0,
+    )
+
+    assert partial.sum() == 8 * 20
+    assert hidden.sum() == 0
+    assert torch.equal(image, background)
+
+
 def test_unified_background_validates_background_and_empty_masks():
     foreground = torch.ones(1, 8, 8, 3)
     model = _QueuedBackgroundModel([torch.zeros(1, 4, 4)])
@@ -389,6 +446,27 @@ def test_layered_background_uses_independent_landscape_positions(monkeypatch):
     assert mask.sum() == 200
 
 
+def test_layered_version_two_centers_allow_partial_off_canvas_placement(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    background = torch.zeros(1, 100, 100, 3)
+    foreground = torch.ones(1, 8, 8, 3)
+    placement = (
+        '{"version":2,"workspace_padding":1,"layers":{'
+        '"foreground_0":{"scale":0.2,"center_x":0,"center_y":0.5}}}'
+    )
+
+    image, mask = _layered_composite(
+        _QueuedBackgroundModel([torch.ones(1, 8, 8)]),
+        background,
+        {"foreground_0": foreground},
+        placement,
+    ).result
+
+    assert mask.sum() == 10 * 20
+    assert image[:, :, :10].sum() == 10 * 20 * 3
+    assert mask[:, :, 10:].sum() == 0
+
+
 def test_layered_background_uses_explicit_layer_order(monkeypatch):
     monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
     background = torch.zeros(1, 20, 20, 3)
@@ -407,7 +485,7 @@ def test_layered_background_uses_explicit_layer_order(monkeypatch):
     ).result
 
     assert torch.allclose(image[0, 5:15, 5:15, 0], torch.ones(10, 10))
-    assert image[0, 5:15, 5:15, 1].sum().item() == 0
+    assert image[0, 5:15, 5:15, 1].sum().item() == pytest.approx(0, abs=1e-6)
 
 
 def test_layered_background_rejects_batches_and_invalid_placements(monkeypatch):
@@ -504,7 +582,7 @@ def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
         _QueuedBackgroundModel([mask]),
         background,
         {"foreground_0": foreground},
-        False,
+        "run_staging",
         0.5,
         0,
         0,
@@ -526,7 +604,12 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     schema = node.define_schema()
     model_input = next(value for value in schema.inputs if value.id == "background_removal_model")
     foreground_input = next(value for value in schema.inputs if value.id == "foreground_images")
+    execution_input = next(value for value in schema.inputs if value.id == "execution_mode")
     assert schema.is_output_node is True
+    assert schema.display_name == "Staged Layered Background Composite (Read tooltip)"
+    assert "Run only this node" in schema.description
+    assert execution_input.options == ["run_staging", "run_staged", "full_run"]
+    assert execution_input.default == "run_staging"
     assert model_input.lazy is True
     assert foreground_input.template.input.lazy is True
     node._staged_by_node.clear()
@@ -537,18 +620,18 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
     foregrounds = {"foreground_0": torch.ones(1, 4, 4, 3)}
     assert node.check_lazy_status(
-        False, None, {"foreground_0": (None, "foreground_0")}
+        "run_staging", None, {"foreground_0": (None, "foreground_0")}
     ) == ["background_removal_model", "foreground_0"]
     assert node.check_lazy_status(
-        False, model, {"foreground_0": (foregrounds["foreground_0"], "foreground_0")}
+        "full_run", model, {"foreground_0": (foregrounds["foreground_0"], "foreground_0")}
     ) == []
-    assert node.check_lazy_status(True, None, {"foreground_0": (None, "foreground_0")}) == []
+    assert node.check_lazy_status("run_staged", None, {"foreground_0": (None, "foreground_0")}) == []
     fresh = node.execute(
-        model, background, foregrounds, False, 0.5, 0, 0, 0,
+        model, background, foregrounds, "run_staging", 0.5, 0, 0, 0,
         '{"version":1,"layers":{}}', 0,
     )
     retained = node.execute(
-        None, background, {"foreground_0": None}, True, 0.5, 0, 0, 0,
+        None, background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
         '{"version":1,"layers":{}}', 0,
     )
 
@@ -557,10 +640,19 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     assert fresh.result[0].sum().item() == 0
     assert retained.result[0].sum().item() > 0
 
+    updated_model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
+    full = node.execute(
+        updated_model, background, {"foreground_0": foregrounds["foreground_0"] * 0.5},
+        "full_run", 0.5, 0, 0, 0, '{"version":1,"layers":{}}', 0,
+    )
+    assert full.ui["uc_layered_scene_editor"][0]["stage_mode"] == "full_run"
+    assert full.result[0].sum().item() > 0
+    assert len(updated_model.masks) == 0
+
     monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-b"))
     with pytest.raises(ValueError, match="No retained foreground stage"):
         node.execute(
-            None, background, {"foreground_0": None}, True, 0.5, 0, 0, 0,
+            None, background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
             '{"version":1,"layers":{}}', 0,
         )
 

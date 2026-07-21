@@ -46,6 +46,10 @@ class LayeredPlacementEditor {
     this.node = node;
     this.placementWidget = node.widgets?.find((widget) => widget.name === "placement_data");
     if (!this.placementWidget) throw new Error("Layered compositor placement_data widget was not created.");
+    const executionWidget = node.widgets?.find((widget) => widget.name === "execution_mode");
+    if (typeof executionWidget?.value === "boolean") {
+      executionWidget.value = executionWidget.value ? "run_staged" : "run_staging";
+    }
     this.data = parsePlacementData(this.placementWidget.value);
     this.selected = null;
     this.backgroundImage = null;
@@ -134,15 +138,15 @@ class LayeredPlacementEditor {
     this.inputs = {};
     for (const [field, label, step] of [
       ["scale", "Scale", "0.01"],
-      ["long_axis_shift", "Long", "0.01"],
-      ["short_axis_shift", "Short", "0.01"],
+      ["center_x", "Center X", "0.01"],
+      ["center_y", "Center Y", "0.01"],
     ]) {
       const group = this.labeledControl(label);
       const input = element("input", this.controlStyle());
       input.type = "number";
       input.step = step;
-      input.min = field === "scale" ? "0.05" : "-1";
-      input.max = field === "scale" ? "10" : "1";
+      input.min = field === "scale" ? "0.05" : "-10";
+      input.max = "10";
       input.dataset.field = field;
       input.addEventListener("change", () => this.numericChanged(field, input.value));
       input.addEventListener("keydown", (event) => event.stopPropagation());
@@ -156,7 +160,7 @@ class LayeredPlacementEditor {
     this.paddingInput.step = "0.05";
     this.paddingInput.min = "0";
     this.paddingInput.max = "1";
-    this.paddingInput.title = "Workspace padding: 0 is none, 1 is the previous maximum";
+    this.paddingInput.title = "Visible and permitted placement padding: 0 is none, 1 adds 25% of each background axis per side";
     this.paddingInput.addEventListener("change", () => this.paddingChanged(this.paddingInput.value));
     this.paddingInput.addEventListener("keydown", (event) => event.stopPropagation());
     paddingGroup.append(this.paddingInput);
@@ -285,7 +289,7 @@ class LayeredPlacementEditor {
   }
 
   usesRetainedStage() {
-    return Boolean(this.node.widgets?.find((widget) => widget.name === "use_staged")?.value);
+    return this.node.widgets?.find((widget) => widget.name === "execution_mode")?.value === "run_staged";
   }
 
   inputOrigin(name) {
@@ -491,7 +495,10 @@ class LayeredPlacementEditor {
   }
 
   layerPlacement(key) {
-    return normalizePlacement(this.data.layers[key] || DEFAULT_PLACEMENT);
+    const fallback = this.data.version === 1
+      ? { scale: DEFAULT_PLACEMENT.scale, long_axis_shift: 0, short_axis_shift: 0 }
+      : DEFAULT_PLACEMENT;
+    return normalizePlacement(this.data.layers[key] || fallback, this.data.version);
   }
 
   dimensions() {
@@ -575,13 +582,13 @@ class LayeredPlacementEditor {
     const pending = layers.filter((key) => !this.layerMetadata(key)).length;
     if (this.isStagedComposite() && !layers.length) {
       this.status.textContent = this.usesRetainedStage()
-        ? "No retained stage • disable use_staged and queue"
+        ? "No retained stage • choose run_staging and queue this node"
         : "Queue to load a fresh foreground stage";
     } else if (pending) {
       this.status.textContent = `${pending} foreground${pending === 1 ? "" : "s"} pending removal pass`;
     } else {
       const stage = this.isStagedComposite()
-        ? ` • ${this.metadata?.stage_mode === "retained" ? "retained stage" : "fresh stage"}`
+        ? ` • ${this.metadata?.stage_mode === "retained" ? "retained stage" : this.metadata?.stage_mode === "full_run" ? "full run" : "fresh stage"}`
         : "";
       this.status.textContent = `${layers.length} layer${layers.length === 1 ? "" : "s"} • back → front${stage}`;
     }
@@ -644,8 +651,8 @@ class LayeredPlacementEditor {
     };
   }
 
-  backgroundPoint(canvasPoint) {
-    return { x: (canvasPoint.x - this.view.x) / this.view.scale, y: (canvasPoint.y - this.view.y) / this.view.scale };
+  backgroundPoint(canvasPoint, view = this.view) {
+    return { x: (canvasPoint.x - view.x) / view.scale, y: (canvasPoint.y - view.y) / view.scale };
   }
 
   pointerDown(event) {
@@ -704,12 +711,15 @@ class LayeredPlacementEditor {
     event.preventDefault();
     const dimensions = this.dimensions();
     const canvasPoint = this.canvasPoint(event);
-    const point = this.backgroundPoint(canvasPoint);
+    const point = this.backgroundPoint(canvasPoint, this.gesture.view);
     const deltaX = point.x - this.gesture.startPoint.x;
     const deltaY = point.y - this.gesture.startPoint.y;
     let rect;
     if (this.gesture.action === "move") {
-      rect = moveRect(dimensions.width, dimensions.height, this.gesture.startRect, deltaX, deltaY);
+      rect = moveRect(
+        dimensions.width, dimensions.height, this.gesture.startRect, deltaX, deltaY,
+        this.data.workspace_padding,
+      );
     } else if (this.gesture.action === "resize") {
       const shortest = Math.min(dimensions.width, dimensions.height);
       rect = resizeRectFromDelta(
@@ -721,6 +731,7 @@ class LayeredPlacementEditor {
         shortest * 0.05,
         shortest * 10,
       );
+      rect = moveRect(dimensions.width, dimensions.height, rect, 0, 0, this.data.workspace_padding);
     } else {
       rect = drawRect(this.gesture.startPoint, point, this.layerAspect(this.gesture.key));
       if (Math.hypot(canvasPoint.x - this.gesture.startCanvas.x, canvasPoint.y - this.gesture.startCanvas.y) < 6) return;
@@ -731,7 +742,6 @@ class LayeredPlacementEditor {
       dimensions.width,
       dimensions.height,
       rect,
-      this.layerPlacement(this.gesture.key),
     ));
   }
 
@@ -768,7 +778,22 @@ class LayeredPlacementEditor {
     if (!this.pendingPlacement) return;
     const { key, placement } = this.pendingPlacement;
     this.pendingPlacement = null;
-    this.data.layers[key] = normalizePlacement(placement);
+    if (this.data.version === 1) {
+      const dimensions = this.dimensions();
+      if (dimensions) {
+        const migrated = {};
+        for (const layerKey of Object.keys(this.data.layers)) {
+          const rect = placementToRect(
+            dimensions.width, dimensions.height, this.layerAspect(layerKey),
+            normalizePlacement(this.data.layers[layerKey], 1),
+          );
+          migrated[layerKey] = rectToPlacement(dimensions.width, dimensions.height, rect);
+        }
+        this.data.layers = migrated;
+      }
+    }
+    this.data.version = 2;
+    this.data.layers[key] = normalizePlacement(placement, 2);
     this.placementWidget.value = serializePlacementData(this.data);
     this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
     this.node.graph?.setDirtyCanvas?.(true, true);
@@ -786,7 +811,10 @@ class LayeredPlacementEditor {
   }
 
   syncNumericControls() {
-    const placement = this.selected ? this.layerPlacement(this.selected) : DEFAULT_PLACEMENT;
+    const dimensions = this.dimensions();
+    const placement = this.selected && dimensions
+      ? rectToPlacement(dimensions.width, dimensions.height, this.rectFor(this.selected, dimensions))
+      : DEFAULT_PLACEMENT;
     for (const [field, input] of Object.entries(this.inputs)) {
       input.disabled = !this.selected;
       input.value = Number(placement[field]).toFixed(4);
@@ -832,7 +860,12 @@ class LayeredPlacementEditor {
 
   numericChanged(field, value) {
     if (!this.selected) return;
-    const placement = { ...this.layerPlacement(this.selected), [field]: Number(value) };
+    const dimensions = this.dimensions();
+    if (!dimensions) return;
+    const placement = {
+      ...rectToPlacement(dimensions.width, dimensions.height, this.rectFor(this.selected, dimensions)),
+      [field]: Number(value),
+    };
     this.node.graph?.beforeChange?.();
     this.queuePlacement(this.selected, placement);
     this.flushPlacement();
@@ -877,12 +910,12 @@ class LayeredPlacementEditor {
       this.rectFor(this.selected, dimensions),
       dx * amount,
       dy * amount,
+      this.data.workspace_padding,
     );
     this.queuePlacement(this.selected, rectToPlacement(
       dimensions.width,
       dimensions.height,
       rect,
-      this.layerPlacement(this.selected),
     ));
   }
 

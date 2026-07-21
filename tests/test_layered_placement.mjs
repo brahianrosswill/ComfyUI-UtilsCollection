@@ -47,16 +47,16 @@ test("oversized placement uses negative travel and round trips", () => {
   assert.ok(rect.y < 0);
   const roundTrip = rectToPlacement(160, 100, rect, placement);
   close(roundTrip.scale, placement.scale);
-  close(roundTrip.long_axis_shift, placement.long_axis_shift);
-  close(roundTrip.short_axis_shift, placement.short_axis_shift);
+  const rebuilt = placementToRect(160, 100, 0.5, roundTrip);
+  close(rebuilt.x, rect.x);
+  close(rebuilt.y, rect.y);
 });
 
-test("zero travel preserves the prior physical-axis shift", () => {
+test("legacy zero-travel placement migrates to an equivalent center", () => {
   const prior = { scale: 1, long_axis_shift: 0.75, short_axis_shift: -0.25 };
   const rect = placementToRect(100, 200, 1, prior);
   const result = rectToPlacement(100, 200, rect, prior);
-  close(result.short_axis_shift, -0.25);
-  close(result.long_axis_shift, 0.75);
+  assert.deepEqual(placementToRect(100, 200, 1, result), rect);
 });
 
 test("drawing in opposite directions produces the same normalized bounds", () => {
@@ -74,6 +74,14 @@ test("moving clamps both contained and oversized rectangles", () => {
   assert.deepEqual(
     moveRect(100, 100, { x: -50, y: -20, width: 200, height: 140 }, 100, -100),
     { x: 0, y: -40, width: 200, height: 140 },
+  );
+  assert.deepEqual(
+    moveRect(100, 100, { x: -50, y: -20, width: 200, height: 140 }, 100, -100, 0.5),
+    { x: 0, y: -40, width: 200, height: 140 },
+  );
+  assert.deepEqual(
+    moveRect(100, 100, { x: 25, y: 25, width: 50, height: 50 }, -100, 100, 1),
+    { x: -25, y: 75, width: 50, height: 50 },
   );
 });
 
@@ -95,12 +103,25 @@ test("corner resizing stays proportional and respects scale limits", () => {
 
 test("placement JSON is normalized and deterministically ordered", () => {
   const parsed = parsePlacementData('{"version":1,"workspace_padding":2,"layer_order":["foreground_10","foreground_2","foreground_10"],"layers":{"foreground_10":{"scale":2},"foreground_2":{}}}');
-  assert.deepEqual(parsed.layers.foreground_2, DEFAULT_PLACEMENT);
+  assert.deepEqual(parsed.layers.foreground_2, { scale: 0.9, long_axis_shift: 0, short_axis_shift: 0 });
   assert.equal(parsed.workspace_padding, 1);
   assert.deepEqual(parsed.layer_order, ["foreground_10", "foreground_2"]);
   assert.equal(
     serializePlacementData(parsed),
     '{"version":1,"workspace_padding":1,"layer_order":["foreground_10","foreground_2"],"layers":{"foreground_2":{"scale":0.9,"long_axis_shift":0,"short_axis_shift":0},"foreground_10":{"scale":2,"long_axis_shift":0,"short_axis_shift":0}}}',
   );
-  assert.deepEqual(parsePlacementData("not json"), { version: 1, workspace_padding: 0.5, layer_order: [], layers: {} });
+  assert.deepEqual(parsePlacementData("not json"), { version: 2, workspace_padding: 0.5, layer_order: [], layers: {} });
+});
+
+test("version 2 stores normalized centers outside the output canvas", () => {
+  const placement = rectToPlacement(100, 80, { x: -20, y: 60, width: 40, height: 20 });
+  assert.deepEqual(placement, { scale: 0.5, center_x: 0, center_y: 0.875 });
+  assert.deepEqual(placementToRect(100, 80, 2, placement), { x: -20, y: 60, width: 40, height: 20 });
+  const encoded = serializePlacementData({
+    version: 2,
+    workspace_padding: 1,
+    layer_order: [],
+    layers: { foreground_0: placement },
+  });
+  assert.equal(encoded, '{"version":2,"workspace_padding":1,"layer_order":[],"layers":{"foreground_0":{"scale":0.5,"center_x":0,"center_y":0.875}}}');
 });

@@ -16,11 +16,13 @@ FaceDetectionType = io.Custom("FACE_DETECTION_MODEL")
 FaceCompositeOptionsType = io.Custom("UC_FACE_COMPOSITE_OPTIONS")
 
 _RESIZE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
+_COMPOSITE_RESIZE_METHODS = ["auto", *_RESIZE_METHODS]
 _DEFAULT_LAYER_PLACEMENT = {
     "scale": 0.9,
     "long_axis_shift": 0.0,
     "short_axis_shift": 0.0,
 }
+_DEFAULT_LAYER_PLACEMENT_V2 = {"scale": 0.9, "center_x": 0.5, "center_y": 0.5}
 
 
 def _resize_image(image, width, height, method, crop="disabled"):
@@ -34,6 +36,38 @@ def _resize_mask(mask, width, height, method, crop="disabled"):
     else:
         mask = common_upscale(mask, width, height, method, crop)
     return mask.squeeze(1)
+
+
+def _composite_resize_method(method, source_width, source_height, width, height, mask=False):
+    if method not in _COMPOSITE_RESIZE_METHODS:
+        raise ValueError(f"Unsupported composite resize method: {method!r}.")
+    if method != "auto":
+        return method
+    shrinking = width < source_width or height < source_height
+    if mask:
+        return "area" if shrinking else "bilinear"
+    return "lanczos" if shrinking else "bicubic"
+
+
+def _resize_composite_image(image, width, height, method):
+    source_height, source_width = image.shape[1:3]
+    if (source_width, source_height) == (width, height):
+        return image
+    selected = _composite_resize_method(method, source_width, source_height, width, height)
+    return _resize_image(image, width, height, selected)
+
+
+def _resize_composite_mask(mask, width, height, method):
+    source_height, source_width = mask.shape[-2:]
+    if (source_width, source_height) == (width, height):
+        resized = mask
+        selected = method
+    else:
+        selected = _composite_resize_method(method, source_width, source_height, width, height, mask=True)
+        resized = _resize_mask(mask, width, height, selected)
+    if selected == "nearest-exact":
+        return (resized >= 0.5).to(resized)
+    return resized.clamp(0.0, 1.0)
 
 
 def _broadcast_batch(value, batch_size, name):
@@ -165,7 +199,7 @@ def _parse_layer_payload(value):
     if not isinstance(value, dict):
         raise ValueError("Layer placement data must be a JSON object.")
     version = value.get("version", 1)
-    if version != 1:
+    if version not in (1, 2):
         raise ValueError(f"Unsupported layer placement data version: {version}.")
     layers = value.get("layers", {})
     if not isinstance(layers, dict):
@@ -173,22 +207,32 @@ def _parse_layer_payload(value):
     layer_order = value.get("layer_order", [])
     if not isinstance(layer_order, list) or any(not isinstance(key, str) for key in layer_order):
         raise ValueError("Layer placement data 'layer_order' must be an array of socket names.")
-    return layers, layer_order
+    workspace_padding = value.get("workspace_padding", 0.5)
+    if isinstance(workspace_padding, bool):
+        raise ValueError("Layer placement workspace_padding must be numeric.")
+    try:
+        workspace_padding = float(workspace_padding)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Layer placement workspace_padding must be numeric.") from error
+    if not math.isfinite(workspace_padding) or not 0.0 <= workspace_padding <= 1.0:
+        raise ValueError("Layer placement workspace_padding must be between 0 and 1.")
+    return version, layers, layer_order, workspace_padding
 
 
 def _parse_layer_placements(value):
-    layers, _ = _parse_layer_payload(value)
+    version, layers, _, _ = _parse_layer_payload(value)
 
     parsed = {}
     for key, placement in layers.items():
         if not isinstance(key, str) or not isinstance(placement, dict):
             raise ValueError("Every layer placement must be an object keyed by its foreground socket name.")
-        result = dict(_DEFAULT_LAYER_PLACEMENT)
-        for field, minimum, maximum in (
-            ("scale", 0.05, 10.0),
-            ("long_axis_shift", -1.0, 1.0),
-            ("short_axis_shift", -1.0, 1.0),
-        ):
+        result = dict(_DEFAULT_LAYER_PLACEMENT_V2 if version == 2 else _DEFAULT_LAYER_PLACEMENT)
+        fields = [("scale", 0.05, 10.0)]
+        if version == 2:
+            fields.extend((("center_x", -10.0, 10.0), ("center_y", -10.0, 10.0)))
+        else:
+            fields.extend((("long_axis_shift", -1.0, 1.0), ("short_axis_shift", -1.0, 1.0)))
+        for field, minimum, maximum in fields:
             raw = placement.get(field, result[field])
             if isinstance(raw, bool):
                 raise ValueError(f"Layer {key} field {field} must be numeric.")
@@ -199,12 +243,13 @@ def _parse_layer_placements(value):
             if not math.isfinite(number) or number < minimum or number > maximum:
                 raise ValueError(f"Layer {key} field {field} must be between {minimum} and {maximum}.")
             result[field] = number
+        result["_version"] = version
         parsed[key] = result
     return parsed
 
 
 def _ordered_layer_keys(value, available_keys):
-    _, requested = _parse_layer_payload(value)
+    _, _, requested, _ = _parse_layer_payload(value)
     available = list(available_keys)
     available_set = set(available)
     ordered = []
@@ -215,19 +260,50 @@ def _ordered_layer_keys(value, available_keys):
     return ordered
 
 
-def _placement_offsets(background_width, background_height, placed_width, placed_height, placement):
+def _placement_offsets(background_width, background_height, placed_width, placed_height, placement, workspace_padding=0.0):
+    if placement.get("_version") == 2 or "center_x" in placement or "center_y" in placement:
+        offset_x = round(float(placement.get("center_x", 0.5)) * background_width - placed_width / 2.0)
+        offset_y = round(float(placement.get("center_y", 0.5)) * background_height - placed_height / 2.0)
+        padding_x = background_width * 0.25 * workspace_padding
+        padding_y = background_height * 0.25 * workspace_padding
+        x_limits = (-padding_x, background_width + padding_x - placed_width, 0.0, background_width - placed_width)
+        y_limits = (-padding_y, background_height + padding_y - placed_height, 0.0, background_height - placed_height)
+        offset_x = round(min(max(offset_x, min(x_limits)), max(x_limits)))
+        offset_y = round(min(max(offset_y, min(y_limits)), max(y_limits)))
+        return offset_x, offset_y
     long_shift = (placement["long_axis_shift"] + 1.0) / 2.0
     short_shift = (placement["short_axis_shift"] + 1.0) / 2.0
+    padding_x = background_width * 0.25 * workspace_padding
+    padding_y = background_height * 0.25 * workspace_padding
+    travel_x = background_width + 2.0 * padding_x - placed_width
+    travel_y = background_height + 2.0 * padding_y - placed_height
     if background_width > background_height:
-        offset_x = round((background_width - placed_width) * long_shift)
-        offset_y = round((background_height - placed_height) * short_shift)
+        offset_x = round(-padding_x + travel_x * long_shift)
+        offset_y = round(-padding_y + travel_y * short_shift)
     elif background_height > background_width:
-        offset_y = round((background_height - placed_height) * long_shift)
-        offset_x = round((background_width - placed_width) * short_shift)
+        offset_y = round(-padding_y + travel_y * long_shift)
+        offset_x = round(-padding_x + travel_x * short_shift)
     else:
-        offset_x = round((background_width - placed_width) * long_shift)
-        offset_y = round((background_height - placed_height) * short_shift)
+        offset_x = round(-padding_x + travel_x * long_shift)
+        offset_y = round(-padding_y + travel_y * short_shift)
     return offset_x, offset_y
+
+
+def _visible_placement_slices(background_width, background_height, placed_width, placed_height, offset_x, offset_y):
+    destination_top = max(0, offset_y)
+    destination_bottom = min(background_height, offset_y + placed_height)
+    destination_left = max(0, offset_x)
+    destination_right = min(background_width, offset_x + placed_width)
+    if destination_bottom <= destination_top or destination_right <= destination_left:
+        return None
+    source_top = destination_top - offset_y
+    source_bottom = source_top + destination_bottom - destination_top
+    source_left = destination_left - offset_x
+    source_right = source_left + destination_right - destination_left
+    return (
+        destination_top, destination_bottom, destination_left, destination_right,
+        source_top, source_bottom, source_left, source_right,
+    )
 
 
 def _bounded_preview(image, longest):
@@ -598,6 +674,9 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
                 io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Opening radius used to remove small and thin mask artifacts."),
                 io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Closing radius used to fill small cracks and holes in the foreground."),
                 io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip="Inward edge softness; the foreground interior remains fully opaque."),
+                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
+                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
+                io.Float.Input("workspace_padding", default=0.5, min=0.0, max=1.0, step=0.05, advanced=True, tooltip="Permitted off-canvas placement margin, up to 25% of each background axis."),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -619,11 +698,17 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
         artifact_cleanup_radius,
         gap_fill_radius,
         feather_radius,
+        image_resize_method="auto",
+        mask_resize_method="auto",
+        workspace_padding=0.5,
     ):
         if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
             raise ValueError("Unified Background Replace requires exactly one background image.")
         if background.shape[-1] < 3:
             raise ValueError("Background image must have at least three channels.")
+        workspace_padding = float(workspace_padding)
+        if not math.isfinite(workspace_padding) or not 0.0 <= workspace_padding <= 1.0:
+            raise ValueError("Unified Background Replace workspace_padding must be between 0 and 1.")
         foregrounds = _flatten_autogrow_images(foreground_images)
         if not foregrounds:
             raise ValueError("Unified Background Replace requires at least one foreground image.")
@@ -648,7 +733,7 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
             if raw_mask.ndim != 3 or raw_mask.shape[0] != 1:
                 raise ValueError(f"Background removal model must return one [batch, height, width] mask for foreground image {index}.")
             if raw_mask.shape[-2:] != foreground.shape[1:3]:
-                raw_mask = _resize_mask(raw_mask, foreground.shape[2], foreground.shape[1], "bilinear")
+                raw_mask = _resize_composite_mask(raw_mask, foreground.shape[2], foreground.shape[1], mask_resize_method)
             refined = _refine_foreground_mask(
                 raw_mask[0],
                 float(mask_threshold),
@@ -669,42 +754,38 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
             scale = target_longest / max(crop_height, crop_width)
             placed_height = max(1, round(crop_height * scale))
             placed_width = max(1, round(crop_width * scale))
-            resized_foreground = _resize_image(crop, placed_width, placed_height, "bicubic").to(background)
-            resized_mask = _resize_mask(crop_mask, placed_width, placed_height, "nearest-exact").to(background)
-            resized_mask = (resized_mask[0] >= 0.5).to(background)
+            resized_foreground = _resize_composite_image(crop, placed_width, placed_height, image_resize_method).to(background)
+            resized_mask = _resize_composite_mask(crop_mask, placed_width, placed_height, mask_resize_method).to(background)
+            resized_mask = resized_mask[0]
             alpha = _feather_mask(resized_mask, -int(feather_radius)) if feather_radius else resized_mask
 
-            offset_y = (background_height - placed_height) // 2
-            offset_x = (background_width - placed_width) // 2
-            long_shift = (float(long_axis_shift) + 1.0) / 2.0
-            short_shift = (float(short_axis_shift) + 1.0) / 2.0
-            if background_width > background_height:
-                offset_x = round((background_width - placed_width) * long_shift)
-                offset_y = round((background_height - placed_height) * short_shift)
-            elif background_height > background_width:
-                offset_y = round((background_height - placed_height) * long_shift)
-                offset_x = round((background_width - placed_width) * short_shift)
-            else:
-                # A square canvas has no intrinsic long or short axis. Keep both
-                # controls useful by mapping long to horizontal and short to vertical.
-                offset_x = round((background_width - placed_width) * long_shift)
-                offset_y = round((background_height - placed_height) * short_shift)
-            destination_top = max(0, offset_y)
-            destination_bottom = min(background_height, offset_y + placed_height)
-            destination_left = max(0, offset_x)
-            destination_right = min(background_width, offset_x + placed_width)
-            source_top = destination_top - offset_y
-            source_bottom = source_top + destination_bottom - destination_top
-            source_left = destination_left - offset_x
-            source_right = source_left + destination_right - destination_left
+            placement = {
+                "long_axis_shift": float(long_axis_shift),
+                "short_axis_shift": float(short_axis_shift),
+            }
+            offset_x, offset_y = _placement_offsets(
+                background_width, background_height, placed_width, placed_height,
+                placement, workspace_padding,
+            )
+            slices = _visible_placement_slices(
+                background_width, background_height, placed_width, placed_height, offset_x, offset_y
+            )
             composite = background.clone()
+            canvas_mask = background.new_zeros((1, background_height, background_width))
+            if slices is None:
+                composites.append(composite)
+                masks.append(canvas_mask)
+                continue
+            (
+                destination_top, destination_bottom, destination_left, destination_right,
+                source_top, source_bottom, source_left, source_right,
+            ) = slices
             placed_alpha = alpha[source_top:source_bottom, source_left:source_right]
             placed_foreground = resized_foreground[0, source_top:source_bottom, source_left:source_right]
             region = composite[0, destination_top:destination_bottom, destination_left:destination_right]
             composite[0, destination_top:destination_bottom, destination_left:destination_right] = (
                 region * (1.0 - placed_alpha.unsqueeze(-1)) + placed_foreground * placed_alpha.unsqueeze(-1)
             )
-            canvas_mask = background.new_zeros((1, background_height, background_width))
             canvas_mask[0, destination_top:destination_bottom, destination_left:destination_right] = placed_alpha
             composites.append(composite)
             masks.append(canvas_mask)
@@ -719,6 +800,7 @@ def _stage_layered_foregrounds(
     border_cleanup_width,
     artifact_cleanup_radius,
     gap_fill_radius,
+    mask_resize_method="auto",
 ):
     foregrounds = _ordered_single_foregrounds(foreground_images)
     if not foregrounds:
@@ -738,7 +820,7 @@ def _stage_layered_foregrounds(
         if raw_mask.ndim != 3 or raw_mask.shape[0] != 1:
             raise ValueError(f"Background removal must return one [batch, height, width] mask for {key}.")
         if raw_mask.shape[-2:] != foreground.shape[1:3]:
-            raw_mask = _resize_mask(raw_mask, foreground.shape[2], foreground.shape[1], "bilinear")
+            raw_mask = _resize_composite_mask(raw_mask, foreground.shape[2], foreground.shape[1], mask_resize_method)
         refined = _refine_foreground_mask(
             raw_mask[0],
             float(mask_threshold),
@@ -821,6 +903,8 @@ def _composite_staged_foregrounds(
     placement_data,
     feather_radius,
     stage_mode=None,
+    image_resize_method="auto",
+    mask_resize_method="auto",
 ):
     if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
         raise ValueError("Staged Layered Background Composite requires exactly one background image.")
@@ -832,6 +916,7 @@ def _composite_staged_foregrounds(
     if not isinstance(layers, list) or not layers:
         raise ValueError("Staged foreground data contains no layers.")
     placements = _parse_layer_placements(placement_data)
+    placement_version, _, _, workspace_padding = _parse_layer_payload(placement_data)
     layers_by_socket = {layer["socket"]: layer for layer in layers}
     layers = [
         layers_by_socket[key]
@@ -847,36 +932,40 @@ def _composite_staged_foregrounds(
         crop = layer["image"]
         crop_mask = layer["mask"]
         crop_height, crop_width = crop.shape[1:3]
-        placement = placements.get(key, _DEFAULT_LAYER_PLACEMENT)
+        placement = placements.get(
+            key,
+            {**(_DEFAULT_LAYER_PLACEMENT_V2 if placement_version == 2 else _DEFAULT_LAYER_PLACEMENT), "_version": placement_version},
+        )
         target_longest = max(1, round(min(background_height, background_width) * placement["scale"]))
         scale = target_longest / max(crop_height, crop_width)
         placed_height = max(1, round(crop_height * scale))
         placed_width = max(1, round(crop_width * scale))
-        resized_foreground = _resize_image(crop, placed_width, placed_height, "bicubic").to(scene)
-        resized_mask = _resize_mask(crop_mask, placed_width, placed_height, "nearest-exact").to(scene)
-        resized_mask = (resized_mask[0] >= 0.5).to(scene)
+        resized_foreground = _resize_composite_image(crop, placed_width, placed_height, image_resize_method).to(scene)
+        resized_mask = _resize_composite_mask(crop_mask, placed_width, placed_height, mask_resize_method).to(scene)
+        resized_mask = resized_mask[0]
         alpha = _feather_mask(resized_mask, -int(feather_radius)) if feather_radius else resized_mask
         offset_x, offset_y = _placement_offsets(
-            background_width, background_height, placed_width, placed_height, placement
+            background_width, background_height, placed_width, placed_height, placement,
+            workspace_padding if placement_version == 2 else 0.0,
         )
-        destination_top = max(0, offset_y)
-        destination_bottom = min(background_height, offset_y + placed_height)
-        destination_left = max(0, offset_x)
-        destination_right = min(background_width, offset_x + placed_width)
-        source_top = destination_top - offset_y
-        source_bottom = source_top + destination_bottom - destination_top
-        source_left = destination_left - offset_x
-        source_right = source_left + destination_right - destination_left
-        placed_alpha = alpha[source_top:source_bottom, source_left:source_right]
-        placed_foreground = resized_foreground[0, source_top:source_bottom, source_left:source_right]
-        region = scene[0, destination_top:destination_bottom, destination_left:destination_right]
-        scene[0, destination_top:destination_bottom, destination_left:destination_right] = (
-            region * (1.0 - placed_alpha.unsqueeze(-1)) + placed_foreground * placed_alpha.unsqueeze(-1)
+        slices = _visible_placement_slices(
+            background_width, background_height, placed_width, placed_height, offset_x, offset_y
         )
-        mask_region = combined_mask[0, destination_top:destination_bottom, destination_left:destination_right]
-        combined_mask[0, destination_top:destination_bottom, destination_left:destination_right] = (
-            mask_region + placed_alpha * (1.0 - mask_region)
-        )
+        if slices is not None:
+            (
+                destination_top, destination_bottom, destination_left, destination_right,
+                source_top, source_bottom, source_left, source_right,
+            ) = slices
+            placed_alpha = alpha[source_top:source_bottom, source_left:source_right]
+            placed_foreground = resized_foreground[0, source_top:source_bottom, source_left:source_right]
+            region = scene[0, destination_top:destination_bottom, destination_left:destination_right]
+            scene[0, destination_top:destination_bottom, destination_left:destination_right] = (
+                region * (1.0 - placed_alpha.unsqueeze(-1)) + placed_foreground * placed_alpha.unsqueeze(-1)
+            )
+            mask_region = combined_mask[0, destination_top:destination_bottom, destination_left:destination_right]
+            combined_mask[0, destination_top:destination_bottom, destination_left:destination_right] = (
+                mask_region + placed_alpha * (1.0 - mask_region)
+            )
         preview_alpha = crop_mask[0]
         if feather_radius:
             preview_alpha = _feather_mask(preview_alpha, -int(feather_radius))
@@ -922,7 +1011,12 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
         )
         return io.Schema(
             node_id="UC_StagedLayeredBackgroundComposite",
-            display_name="Staged Layered Background Composite (Experimental)",
+            display_name="Staged Layered Background Composite (Read tooltip)",
+            description=(
+                "Run only this node with execution_mode set to run_staging to stage foreground objects for placement. "
+                "After arranging them, use run_staged to composite the retained cutouts, or full_run to restage changed "
+                "inputs and composite them in one execution."
+            ),
             category="utils/image",
             inputs=[
                 io.BackgroundRemoval.Input("background_removal_model", lazy=True),
@@ -932,10 +1026,15 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                     template=foreground_template,
                     tooltip="Foregrounds staged and composited from foreground_0 at the back to the highest socket at the front.",
                 ),
-                io.Boolean.Input(
-                    "use_staged",
-                    default=False,
-                    tooltip="Reuse this compositor's retained cutouts without evaluating the staging branch.",
+                io.Combo.Input(
+                    "execution_mode",
+                    options=["run_staging", "run_staged", "full_run"],
+                    default="run_staging",
+                    tooltip=(
+                        "run_staging: refresh retained cutouts and placement previews only. "
+                        "run_staged: composite the retained cutouts without evaluating foreground inputs. "
+                        "full_run: refresh cutouts from current inputs and composite them immediately."
+                    ),
                 ),
                 io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True),
@@ -943,11 +1042,13 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                 io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True),
                 io.String.Input(
                     "placement_data",
-                    default='{"version":1,"layers":{}}',
+                    default='{"version":2,"workspace_padding":0.5,"layers":{}}',
                     advanced=True,
                     tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
                 ),
                 io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True),
+                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
+                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
             ],
             outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
             hidden=[io.Hidden.unique_id],
@@ -957,12 +1058,12 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
     @classmethod
     def check_lazy_status(
         cls,
-        use_staged,
+        execution_mode,
         background_removal_model=None,
         foreground_images=None,
         **kwargs,
     ):
-        if use_staged:
+        if execution_mode is True or execution_mode == "run_staged":
             return []
         required = []
         if background_removal_model is None:
@@ -982,20 +1083,26 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
         background_removal_model,
         background,
         foreground_images,
-        use_staged,
+        execution_mode,
         mask_threshold,
         border_cleanup_width,
         artifact_cleanup_radius,
         gap_fill_radius,
         placement_data,
         feather_radius,
+        image_resize_method="auto",
+        mask_resize_method="auto",
     ):
         node_id = str(cls.hidden.unique_id or "")
-        if use_staged:
+        if isinstance(execution_mode, bool):
+            execution_mode = "run_staged" if execution_mode else "run_staging"
+        if execution_mode not in ("run_staging", "run_staged", "full_run"):
+            raise ValueError(f"Unsupported staged compositor execution mode: {execution_mode!r}.")
+        if execution_mode == "run_staged":
             if node_id not in cls._staged_by_node:
                 raise ValueError(
                     "No retained foreground stage is available for this compositor. "
-                    "Run once with use_staged disabled."
+                    "Run once with execution_mode set to run_staging or full_run."
                 )
             staged = cls._staged_by_node[node_id]
             stage_mode = "retained"
@@ -1009,15 +1116,20 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                 border_cleanup_width,
                 artifact_cleanup_radius,
                 gap_fill_radius,
+                mask_resize_method,
             )
             cls._staged_by_node[node_id] = staged
-            return _preview_staged_foregrounds(background, staged, feather_radius)
+            if execution_mode == "run_staging":
+                return _preview_staged_foregrounds(background, staged, feather_radius)
+            stage_mode = "full_run"
         return _composite_staged_foregrounds(
             background,
             staged,
             placement_data,
             feather_radius,
             stage_mode=stage_mode,
+            image_resize_method=image_resize_method,
+            mask_resize_method=mask_resize_method,
         )
 
 
@@ -1044,7 +1156,7 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 ),
                 io.String.Input(
                     "placement_data",
-                    default='{"version":1,"layers":{}}',
+                    default='{"version":2,"workspace_padding":0.5,"layers":{}}',
                     advanced=True,
                     tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
                 ),
@@ -1053,6 +1165,8 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True),
                 io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True),
                 io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True),
+                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
+                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True),
             ],
             outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
         )
@@ -1069,6 +1183,8 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
         artifact_cleanup_radius,
         gap_fill_radius,
         feather_radius,
+        image_resize_method="auto",
+        mask_resize_method="auto",
     ):
         if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
             raise ValueError("Layered Background Composite requires exactly one background image.")
@@ -1078,6 +1194,7 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
         if not foregrounds:
             raise ValueError("Layered Background Composite requires at least one foreground image.")
         placements = _parse_layer_placements(placement_data)
+        placement_version, _, _, workspace_padding = _parse_layer_payload(placement_data)
         foreground_by_socket = dict(foregrounds)
         foregrounds = [
             (key, foreground_by_socket[key])
@@ -1103,7 +1220,7 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
             if raw_mask.ndim != 3 or raw_mask.shape[0] != 1:
                 raise ValueError(f"Background removal must return one [batch, height, width] mask for {key}.")
             if raw_mask.shape[-2:] != foreground.shape[1:3]:
-                raw_mask = _resize_mask(raw_mask, foreground.shape[2], foreground.shape[1], "bilinear")
+                raw_mask = _resize_composite_mask(raw_mask, foreground.shape[2], foreground.shape[1], mask_resize_method)
 
             refined = _refine_foreground_mask(
                 raw_mask[0],
@@ -1123,14 +1240,17 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
             crop_mask = refined[None, top:bottom, left:right]
             crop_height, crop_width = crop.shape[1:3]
 
-            placement = placements.get(key, _DEFAULT_LAYER_PLACEMENT)
+            placement = placements.get(
+                key,
+                {**(_DEFAULT_LAYER_PLACEMENT_V2 if placement_version == 2 else _DEFAULT_LAYER_PLACEMENT), "_version": placement_version},
+            )
             target_longest = max(1, round(min(background_height, background_width) * placement["scale"]))
             scale = target_longest / max(crop_height, crop_width)
             placed_height = max(1, round(crop_height * scale))
             placed_width = max(1, round(crop_width * scale))
-            resized_foreground = _resize_image(crop, placed_width, placed_height, "bicubic").to(scene)
-            resized_mask = _resize_mask(crop_mask, placed_width, placed_height, "nearest-exact").to(scene)
-            resized_mask = (resized_mask[0] >= 0.5).to(scene)
+            resized_foreground = _resize_composite_image(crop, placed_width, placed_height, image_resize_method).to(scene)
+            resized_mask = _resize_composite_mask(crop_mask, placed_width, placed_height, mask_resize_method).to(scene)
+            resized_mask = resized_mask[0]
             alpha = _feather_mask(resized_mask, -int(feather_radius)) if feather_radius else resized_mask
             offset_x, offset_y = _placement_offsets(
                 background_width,
@@ -1138,26 +1258,27 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 placed_width,
                 placed_height,
                 placement,
+                workspace_padding if placement_version == 2 else 0.0,
             )
 
-            destination_top = max(0, offset_y)
-            destination_bottom = min(background_height, offset_y + placed_height)
-            destination_left = max(0, offset_x)
-            destination_right = min(background_width, offset_x + placed_width)
-            source_top = destination_top - offset_y
-            source_bottom = source_top + destination_bottom - destination_top
-            source_left = destination_left - offset_x
-            source_right = source_left + destination_right - destination_left
-            placed_alpha = alpha[source_top:source_bottom, source_left:source_right]
-            placed_foreground = resized_foreground[0, source_top:source_bottom, source_left:source_right]
-            region = scene[0, destination_top:destination_bottom, destination_left:destination_right]
-            scene[0, destination_top:destination_bottom, destination_left:destination_right] = (
-                region * (1.0 - placed_alpha.unsqueeze(-1)) + placed_foreground * placed_alpha.unsqueeze(-1)
+            slices = _visible_placement_slices(
+                background_width, background_height, placed_width, placed_height, offset_x, offset_y
             )
-            mask_region = combined_mask[0, destination_top:destination_bottom, destination_left:destination_right]
-            combined_mask[0, destination_top:destination_bottom, destination_left:destination_right] = (
-                mask_region + placed_alpha * (1.0 - mask_region)
-            )
+            if slices is not None:
+                (
+                    destination_top, destination_bottom, destination_left, destination_right,
+                    source_top, source_bottom, source_left, source_right,
+                ) = slices
+                placed_alpha = alpha[source_top:source_bottom, source_left:source_right]
+                placed_foreground = resized_foreground[0, source_top:source_bottom, source_left:source_right]
+                region = scene[0, destination_top:destination_bottom, destination_left:destination_right]
+                scene[0, destination_top:destination_bottom, destination_left:destination_right] = (
+                    region * (1.0 - placed_alpha.unsqueeze(-1)) + placed_foreground * placed_alpha.unsqueeze(-1)
+                )
+                mask_region = combined_mask[0, destination_top:destination_bottom, destination_left:destination_right]
+                combined_mask[0, destination_top:destination_bottom, destination_left:destination_right] = (
+                    mask_region + placed_alpha * (1.0 - mask_region)
+                )
 
             preview_alpha = crop_mask[0]
             if feather_radius:
