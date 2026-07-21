@@ -20,7 +20,7 @@ import numpy as np
 import folder_paths
 import node_helpers
 import comfy
-from comfy.utils import common_upscale
+from .helper_functions import resize_nchw
 
 from comfy.ldm.flux.math import apply_rope
 from comfy.ldm.modules.attention import optimized_attention
@@ -46,7 +46,7 @@ def prepare_vae_reference_image(samples, target_size, dimension_multiple, upscal
         target_height = height * scale
     aligned_width = max(multiple, round(target_width / multiple) * multiple)
     aligned_height = max(multiple, round(target_height / multiple) * multiple)
-    return common_upscale(samples, aligned_width, aligned_height, upscale_method, "disabled")
+    return resize_nchw(samples, aligned_width, aligned_height, upscale_method)
 
 
 def _resolve_clip_transformer(clip):

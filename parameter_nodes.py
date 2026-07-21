@@ -4,10 +4,9 @@ import torch
 
 from comfy_api.latest import ComfyExtension, io
 import comfy.model_management as mm
-import comfy.utils
 import nodes
 
-from .helper_functions import round_to_nearest, AspectRatio, ASPECT_RATIOS
+from .helper_functions import round_to_nearest, AspectRatio, ASPECT_RATIOS, resize_nchw
 
 
 class UC_AdjustedResolutionParameters(io.ComfyNode):
@@ -233,8 +232,8 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
         upscaled_width = max(multiple, round_to_nearest(adjusted_width * scale_by, multiple))
         upscaled_height = max(multiple, round_to_nearest(adjusted_height * scale_by, multiple))
 
-        adjusted_samples = comfy.utils.common_upscale(samples, int(adjusted_width), int(adjusted_height), upscale_method, crop_method)
-        upscaled_samples = comfy.utils.common_upscale(adjusted_samples, int(upscaled_width), int(upscaled_height), upscale_method, "disabled")
+        adjusted_samples = resize_nchw(samples, int(adjusted_width), int(adjusted_height), upscale_method, crop_method)
+        upscaled_samples = resize_nchw(adjusted_samples, int(upscaled_width), int(upscaled_height), upscale_method)
 
         adjusted_image_out = adjusted_samples.movedim(1, -1)
         upscaled_image_out = upscaled_samples.movedim(1, -1)

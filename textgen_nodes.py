@@ -6,11 +6,11 @@ from contextlib import nullcontext
 from enum import Enum
 
 from comfy_api.latest import ComfyExtension, io
-from comfy.utils import common_upscale
 from comfy import model_management
 from comfy.text_encoders.qwen_vl import qwen2vl_mrope_position_ids
 
 from .encoder_helpers import evaluate_tensor_expression, fuse_visual_token_sources, fuse_deepstack_layers
+from .helper_functions import resize_nchw
 
 VisualFusionConfig = io.Custom("VISUAL_FUSION_CONFIG")
 
@@ -64,7 +64,7 @@ def process_vlm_image(image, res):
         width_vlm = round(samples.shape[3] * scale_by_vlm)
         height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-        s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+        s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
         return s_vlm.movedim(1, -1)
 
 

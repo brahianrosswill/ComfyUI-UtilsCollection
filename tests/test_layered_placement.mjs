@@ -103,19 +103,19 @@ test("corner resizing stays proportional and respects scale limits", () => {
 
 test("placement JSON is normalized and deterministically ordered", () => {
   const parsed = parsePlacementData('{"version":1,"workspace_padding":2,"layer_order":["foreground_10","foreground_2","foreground_10"],"layers":{"foreground_10":{"scale":2},"foreground_2":{}}}');
-  assert.deepEqual(parsed.layers.foreground_2, { scale: 0.9, long_axis_shift: 0, short_axis_shift: 0 });
+  assert.deepEqual(parsed.layers.foreground_2, { scale: 0.9, long_axis_shift: 0, short_axis_shift: 0, flip_horizontal: false });
   assert.equal(parsed.workspace_padding, 1);
   assert.deepEqual(parsed.layer_order, ["foreground_10", "foreground_2"]);
   assert.equal(
     serializePlacementData(parsed),
-    '{"version":1,"workspace_padding":1,"layer_order":["foreground_10","foreground_2"],"layers":{"foreground_2":{"scale":0.9,"long_axis_shift":0,"short_axis_shift":0},"foreground_10":{"scale":2,"long_axis_shift":0,"short_axis_shift":0}}}',
+    '{"version":1,"workspace_padding":1,"layer_order":["foreground_10","foreground_2"],"layers":{"foreground_2":{"scale":0.9,"long_axis_shift":0,"short_axis_shift":0,"flip_horizontal":false},"foreground_10":{"scale":2,"long_axis_shift":0,"short_axis_shift":0,"flip_horizontal":false}}}',
   );
   assert.deepEqual(parsePlacementData("not json"), { version: 2, workspace_padding: 0.5, layer_order: [], layers: {} });
 });
 
 test("version 2 stores normalized centers outside the output canvas", () => {
   const placement = rectToPlacement(100, 80, { x: -20, y: 60, width: 40, height: 20 });
-  assert.deepEqual(placement, { scale: 0.5, center_x: 0, center_y: 0.875 });
+  assert.deepEqual(placement, { scale: 0.5, center_x: 0, center_y: 0.875, flip_horizontal: false });
   assert.deepEqual(placementToRect(100, 80, 2, placement), { x: -20, y: 60, width: 40, height: 20 });
   const encoded = serializePlacementData({
     version: 2,
@@ -123,5 +123,12 @@ test("version 2 stores normalized centers outside the output canvas", () => {
     layer_order: [],
     layers: { foreground_0: placement },
   });
-  assert.equal(encoded, '{"version":2,"workspace_padding":1,"layer_order":[],"layers":{"foreground_0":{"scale":0.5,"center_x":0,"center_y":0.875}}}');
+  assert.equal(encoded, '{"version":2,"workspace_padding":1,"layer_order":[],"layers":{"foreground_0":{"scale":0.5,"center_x":0,"center_y":0.875,"flip_horizontal":false}}}');
+});
+
+test("horizontal flip survives placement normalization and geometry edits", () => {
+  const parsed = parsePlacementData('{"version":2,"layers":{"foreground_0":{"flip_horizontal":true}}}');
+  assert.equal(parsed.layers.foreground_0.flip_horizontal, true);
+  const rect = placementToRect(100, 80, 2, parsed.layers.foreground_0);
+  assert.equal(rectToPlacement(100, 80, rect, parsed.layers.foreground_0).flip_horizontal, true);
 });

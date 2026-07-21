@@ -2,6 +2,7 @@ export const DEFAULT_PLACEMENT = Object.freeze({
   scale: 0.9,
   center_x: 0.5,
   center_y: 0.5,
+  flip_horizontal: false,
 });
 export const LEGACY_DEFAULT_PLACEMENT = Object.freeze({ scale: 0.9, long_axis_shift: 0, short_axis_shift: 0 });
 export const DEFAULT_WORKSPACE_PADDING = 0.5;
@@ -17,12 +18,14 @@ export function normalizePlacement(value = {}, version = 2) {
       scale,
       long_axis_shift: clamp(finite(value.long_axis_shift, 0), -1, 1),
       short_axis_shift: clamp(finite(value.short_axis_shift, 0), -1, 1),
+      flip_horizontal: value.flip_horizontal === true,
     };
   }
   return {
     scale,
     center_x: clamp(finite(value.center_x, 0.5), -10, 10),
     center_y: clamp(finite(value.center_y, 0.5), -10, 10),
+    flip_horizontal: value.flip_horizontal === true,
   };
 }
 
@@ -103,13 +106,14 @@ export function placementToRect(backgroundWidth, backgroundHeight, aspect, value
   };
 }
 
-export function rectToPlacement(backgroundWidth, backgroundHeight, rect) {
+export function rectToPlacement(backgroundWidth, backgroundHeight, rect, prior = {}) {
   const longest = Math.max(rect.width, rect.height);
   const scale = longest / Math.min(backgroundWidth, backgroundHeight);
   return normalizePlacement({
     scale,
     center_x: (rect.x + rect.width / 2) / backgroundWidth,
     center_y: (rect.y + rect.height / 2) / backgroundHeight,
+    flip_horizontal: prior.flip_horizontal === true,
   });
 }
 

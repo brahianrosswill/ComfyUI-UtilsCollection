@@ -18,7 +18,8 @@ from comfy.cli_args import args as cli_args
 prior_cpu = cli_args.cpu
 cli_args.cpu = True
 try:
-    from utils_collection_composite_test import composite_nodes
+    from utils_collection_composite_test import composite_nodes, image_nodes
+    from utils_collection_composite_test.helper_functions import resize_nchw
 finally:
     cli_args.cpu = prior_cpu
 
@@ -51,6 +52,44 @@ def test_image_and_mask_resize_uses_target_and_optional_overrides():
     assert width_overridden.result[1].shape == (1, 8, 6)
     assert target_sized.result[0][0, :4, :4, 0].sum() > 0
     assert target_sized.result[0][0, 4:, :, 0].sum() == 0
+
+
+def test_fp32_resize_bypasses_equal_dimensions_and_lanczos_does_not_quantize():
+    image = torch.linspace(0.0003, 0.9991, 8 * 10 * 3, dtype=torch.float32).reshape(1, 3, 8, 10)
+
+    unchanged = resize_nchw(image, 10, 8, "lanczos")
+    reduced = resize_nchw(image, 5, 4, "lanczos")
+
+    assert unchanged.data_ptr() == image.data_ptr()
+    assert torch.equal(unchanged, image)
+    assert ((reduced * 255.0) - (reduced * 255.0).round()).abs().max() > 1e-4
+
+
+def test_exact_size_crop_merge_and_image_mask_resize_are_bit_exact():
+    image = torch.rand(1, 8, 10, 3)
+    mask = torch.rand(1, 8, 10)
+
+    merged = composite_nodes.UC_ImageCropMerge.execute(
+        image, torch.zeros_like(image), 0, 0, 10, 8, "lanczos"
+    ).result[0]
+    resized_image, resized_mask = composite_nodes.UC_ImageAndMaskResize.execute(
+        image, mask, image, "lanczos", "disabled", 0
+    ).result
+
+    assert torch.equal(merged, image)
+    assert torch.equal(resized_image, image)
+    assert torch.equal(resized_mask, mask)
+
+
+def test_image_pad_equal_target_preserves_fp32_pixels():
+    image = torch.rand(1, 9, 11, 3)
+
+    padded, _ = image_nodes.UC_ImagePad.execute(
+        image, 0, 0, 0, 0, 0, "0, 0, 0", "color",
+        target_width=11, target_height=9,
+    ).result
+
+    assert torch.equal(padded, image)
 
 
 def test_crop_by_mask_uses_batch_union_and_rejects_empty_masks():
@@ -319,10 +358,12 @@ def test_unified_background_square_canvas_uses_both_axis_shifts():
 
 
 def test_composite_auto_resize_selects_direction_appropriate_methods():
-    assert composite_nodes._composite_resize_method("auto", 100, 80, 50, 40) == "lanczos"
+    assert composite_nodes._composite_resize_method("auto", 100, 80, 50, 40) == "area"
     assert composite_nodes._composite_resize_method("auto", 50, 40, 100, 80) == "bicubic"
+    assert composite_nodes._composite_resize_method("auto", 100, 40, 50, 80) == "bicubic"
     assert composite_nodes._composite_resize_method("auto", 100, 80, 50, 40, mask=True) == "area"
     assert composite_nodes._composite_resize_method("auto", 50, 40, 100, 80, mask=True) == "bilinear"
+    assert composite_nodes._composite_resize_method("auto", 100, 40, 50, 80, mask=True) == "bilinear"
     assert composite_nodes._composite_resize_method("nearest-exact", 100, 80, 50, 40) == "nearest-exact"
 
 
@@ -402,7 +443,7 @@ def _layered_composite(model, background, foregrounds, placement_data=None, **ov
 
 
 def test_layered_background_composites_in_socket_order(monkeypatch):
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix, longest: {"filename": prefix})
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix: {"filename": prefix})
     background = torch.zeros(1, 20, 20, 3)
     red = torch.zeros(1, 4, 4, 3)
     red[..., 0] = 1
@@ -530,7 +571,7 @@ def test_layered_background_preview_failure_does_not_change_result(monkeypatch):
 
 
 def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix, longest: {"filename": prefix})
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix: {"filename": prefix})
     foreground = torch.zeros(1, 6, 8, 3)
     foreground[..., 0] = 1
     mask = torch.zeros(1, 6, 8)
@@ -560,6 +601,27 @@ def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
     assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["crop_width"] == 4
 
 
+def test_staged_layered_composite_tracks_and_applies_horizontal_flip(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    foreground = torch.zeros(1, 2, 3, 3)
+    foreground[:, :, 0, 0] = 1.0
+    model = _QueuedBackgroundModel([torch.ones(1, 2, 3)])
+    flipped_placement = '{"version":2,"layers":{"foreground_0":{"flip_horizontal":true}}}'
+
+    staged = composite_nodes._stage_layered_foregrounds(
+        model, {"foreground_0": foreground}, 0.5, 0, 0, 0,
+        placement_data=flipped_placement,
+    )
+
+    assert staged["layers"][0]["flip_horizontal"] is True
+    assert staged["layers"][0]["image"][0, 0, 2, 0] == 1.0
+    output = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3), staged,
+        '{"version":2,"layers":{"foreground_0":{"flip_horizontal":false}}}', 0,
+    )
+    assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["flip_horizontal"] is False
+
+
 def test_staged_layered_composite_rejects_missing_stage():
     with pytest.raises(ValueError, match="missing or incompatible"):
         composite_nodes._composite_staged_foregrounds(
@@ -570,7 +632,7 @@ def test_staged_layered_composite_rejects_missing_stage():
 def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
     saved = []
 
-    def capture_preview(image, prefix, longest):
+    def capture_preview(image, prefix):
         saved.append(image.clone())
         return {"filename": f"{prefix}.png"}
 
@@ -599,9 +661,10 @@ def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
     assert torch.equal(output.result[0], background)
     assert output.result[1].sum().item() == 0
     assert output.ui["uc_layered_scene_editor"][0]["stage_mode"] == "fresh"
-    assert saved[1].shape == (1, 4, 4, 4)
-    assert saved[1][..., 3].min().item() == 0
-    assert saved[1][..., 3].max().item() == 1
+    assert len(saved) == 1
+    assert saved[0].shape == (1, 4, 4, 4)
+    assert saved[0][..., 3].min().item() == 0
+    assert saved[0][..., 3].max().item() == 1
 
 
 def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
@@ -660,6 +723,85 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
             None, background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
             '{"version":1,"layers":{}}', 0,
         )
+
+
+def test_staged_compositor_preserves_exact_size_non_overlapping_foregrounds(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    first = torch.rand(1, 8, 8, 3)
+    second = torch.rand(1, 8, 8, 3)
+    staged = {
+        "version": 1,
+        "layers": [
+            {"socket": "foreground_0", "image": first, "mask": torch.ones(1, 8, 8)},
+            {"socket": "foreground_1", "image": second, "mask": torch.ones(1, 8, 8)},
+        ],
+    }
+    placement = (
+        '{"version":2,"workspace_padding":0,"layers":{'
+        '"foreground_0":{"scale":0.5,"center_x":0.125,"center_y":0.5},'
+        '"foreground_1":{"scale":0.5,"center_x":0.875,"center_y":0.5}}}'
+    )
+
+    image, _ = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 16, 32, 3), staged, placement, 0
+    ).result
+
+    assert torch.equal(image[:, 4:12, 0:8], first)
+    assert torch.equal(image[:, 4:12, 24:32], second)
+    assert torch.count_nonzero(image[:, :, 8:24]) == 0
+
+
+def test_tensor_blending_preserves_fp32_and_noop_pixels():
+    destination = torch.rand(1, 12, 14, 3)
+    source = torch.rand(1, 12, 14, 3)
+    zero_mask = torch.zeros(1, 12, 14)
+
+    masked = image_nodes.UC_ImageBlendByMask.execute(
+        destination, source, "overlay", 1.0, False, zero_mask
+    ).result[0]
+    blended = image_nodes.UC_ImageBlendByMask.execute(
+        destination, source, "multiply", 0.37, False, None
+    ).result[0]
+
+    assert torch.equal(masked, destination)
+    assert ((blended * 255.0) - (blended * 255.0).round()).abs().max() > 1e-4
+
+
+def test_property_match_zero_weight_is_bit_exact():
+    original = torch.rand(1, 10, 12, 3)
+    generated = torch.rand(1, 10, 12, 3)
+
+    result = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        original, generated, 0.0, 1.0, 1.0, 0.5
+    ).result[0]
+
+    assert torch.equal(result, generated)
+
+
+def test_opencv_edits_preserve_unaffected_fp32_pixels():
+    image = torch.rand(1, 20, 20, 3)
+    mask = torch.zeros(1, 20, 20)
+    mask[:, 8:12, 8:12] = 1.0
+
+    inward = image_nodes.UC_ImageInwardEdgeFill.execute(image, mask, 1, 0).result[0]
+    stretched = image_nodes.UC_ImageIterativeStretchFill.execute(
+        image, mask, "horizontal", 2, 0, 1, 0
+    ).result[0]
+
+    unaffected = mask == 0
+    assert torch.equal(inward[unaffected], image[unaffected])
+    assert torch.equal(stretched[unaffected], image[unaffected])
+
+
+def test_text_overlay_preserves_pixels_outside_overlay():
+    image = torch.rand(1, 64, 96, 3)
+
+    result = image_nodes.UC_TextOverlayNode.execute(
+        image, "X", 12, "FFFFFF", "000000", True, 2, 0.5,
+        False, 0, -1, 0, -1,
+    ).result[0]
+
+    assert torch.equal(result[:, 48:, 48:], image[:, 48:, 48:])
 
 
 def test_face_foreground_solidification_matches_composite_operation():

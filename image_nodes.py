@@ -4,16 +4,15 @@ import torch
 import torch.nn.functional as F
 import hashlib
 import scipy
+import cv2
 from tqdm import tqdm
-import pilgram
-from PIL import Image, ImageOps, ImageSequence, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageOps, ImageSequence, ImageDraw, ImageFont
 import kornia.morphology as morph
-from .helper_functions import pil2tensor, tensor2pil, simplepil2tensor, simpletensor2pil, math_diag, pct_to_px, composite, fill_mask_from_edges, iterative_directional_stretch_fill, gaussian_blur_nchw, hex_to_rgb, string_to_color, match_image_properties, FLOW_PRESETS
+from .helper_functions import pil2tensor, math_diag, pct_to_px, composite, fill_mask_from_edges, iterative_directional_stretch_fill, gaussian_blur_nchw, hex_to_rgb, string_to_color, match_image_properties, resize_nchw, FLOW_PRESETS
 
 
 from comfy_api.latest import io
 from comfy import model_management
-from comfy.utils import common_upscale
 import node_helpers
 from nodes import MAX_RESOLUTION
 
@@ -563,8 +562,7 @@ class UC_OpticalFlowComposite(io.ComfyNode):
 
         if orig_np.shape != gen_np.shape:
             H, W = gen_np.shape[:2]
-            pil  = Image.fromarray((orig_np * 255).astype(np.uint8))
-            orig_np = np.array(pil.resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
+            orig_np = cv2.resize(orig_np.astype(np.float32), (W, H), interpolation=cv2.INTER_LANCZOS4)
 
         H, W = gen_np.shape[:2]
         diag = math_diag(H, W)
@@ -818,19 +816,15 @@ class UC_TextOverlayNode(io.ComfyNode):
         output_images = []
 
         for i in range(batch_count):
-            img_tensor = image[i] if batch_count > 1 else image
-            # Tensor is typically (C, H, W) or (H, W, C) depending on context, assuming (H, W, C) here
-            # Convert to PIL
-            img_pil = Image.fromarray(np.clip(255.0 * img_tensor.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)).convert("RGBA")
-
-            draw = ImageDraw.Draw(img_pil)
+            img_tensor = image[i] if batch_count > 1 else image[0]
+            img_height, img_width = img_tensor.shape[:2]
+            overlay = Image.new('RGBA', (img_width, img_height), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
 
             # Calculate text size using textbbox
             left_box, top_box, right_box, bottom_box = draw.textbbox((0, 0), text, font=font)
             text_width = right_box - left_box
             text_height = bottom_box - top_box
-
-            img_width, img_height = img_pil.size
 
             # Calculate total width/height including background padding
             total_width = text_width + (bg_padding * 2 if draw_background else 0)
@@ -868,23 +862,19 @@ class UC_TextOverlayNode(io.ComfyNode):
             # Draw background
             if draw_background:
                 bg_rect = [x_pos, y_pos, x_pos + total_width, y_pos + total_height]
-                # To support alpha, we draw on a separate layer and composite
-                overlay = Image.new('RGBA', img_pil.size, (255, 255, 255, 0))
-                overlay_draw = ImageDraw.Draw(overlay)
-                overlay_draw.rectangle(bg_rect, fill=b_color)
-                img_pil = Image.alpha_composite(img_pil, overlay)
-                draw = ImageDraw.Draw(img_pil) # Re-init draw for text on composited image
+                draw.rectangle(bg_rect, fill=b_color)
 
             # Draw text
             text_x = x_pos + (bg_padding if draw_background else 0)
             text_y = y_pos + (bg_padding if draw_background else 0)
 
             # Use textbbox offset for more accurate vertical alignment of text
-            draw.text((text_x - left_box, text_y - top_box), text, fill=t_color, font=font)
+            draw.text((text_x - left_box, text_y - top_box), text, fill=(*t_color[:3], 255), font=font)
 
-            # Convert back to tensor (RGB)
-            img_pil = img_pil.convert("RGB")
-            out_tensor = torch.from_numpy(np.array(img_pil).astype(np.float32) / 255.0)
+            overlay_tensor = torch.from_numpy(np.asarray(overlay).copy()).to(device=img_tensor.device, dtype=img_tensor.dtype) / 255.0
+            overlay_alpha = overlay_tensor[..., 3:4]
+            base = img_tensor[..., :3]
+            out_tensor = base * (1.0 - overlay_alpha) + overlay_tensor[..., :3] * overlay_alpha
             output_images.append(out_tensor)
 
         if batch_count > 1:
@@ -1011,45 +1001,18 @@ class UC_ModifyMask(io.ComfyNode):
             previous_output = output
             out.append(output.cpu())
 
-        if blur_radius != 0 and current_expand != 0:
-            # Convert the tensor list to PIL images, apply blur, and convert back
+        if blur_radius != 0:
             for idx, tensor in enumerate(out):
-                # Convert tensor to PIL image
-                pil_image = tensor2pil(tensor.cpu().detach())[0]
-                # Apply Gaussian blur
-                pil_image = pil_image.filter(ImageFilter.GaussianBlur(blur_radius))
-                # Convert back to tensor
-                blurred_tensor = pil2tensor(pil_image)
-
-                # 2. Restore the original pixels IF we are expanding
-                # We use torch.max: this keeps the original pixel value unless the
-                # blurred expansion is brighter. It prevents "adding" values together.
+                blurred_tensor = gaussian_blur_nchw(
+                    tensor.unsqueeze(0).unsqueeze(0), float(blur_radius)
+                )[0, 0].unsqueeze(0)
                 if current_expand > 0:
                     original_slice = original_mask_batches[idx].unsqueeze(0).cpu()
                     blurred_tensor = torch.max(blurred_tensor, original_slice)
-                else:
+                elif current_expand < 0:
                     original_slice = original_mask_batches[idx].unsqueeze(0).cpu()
                     blurred_tensor = torch.min(blurred_tensor, original_slice)
-
                 out[idx] = blurred_tensor
-
-            blurred = torch.cat(out, dim=0)
-            if lower_clamp > 0.0:
-                blurred = torch.max(blurred, torch.tensor(lower_clamp / 100.0, device=blurred.device))
-            if upper_clamp < 100.0:
-                blurred = torch.min(blurred, torch.tensor(upper_clamp / 100.0, device=blurred.device))
-            mask = blurred
-            mask_inverted = 1.0 - blurred
-            return io.NodeOutput(mask, mask_inverted)
-        elif blur_radius != 0 and current_expand == 0:
-            # Convert the tensor list to PIL images, apply blur, and convert back
-            for idx, tensor in enumerate(out):
-                # Convert tensor to PIL image
-                pil_image = tensor2pil(tensor.cpu().detach())[0]
-                # Apply Gaussian blur
-                pil_image = pil_image.filter(ImageFilter.GaussianBlur(blur_radius))
-                # Convert back to tensor
-                out[idx] = pil2tensor(pil_image)
             blurred = torch.cat(out, dim=0)
             if lower_clamp > 0.0:
                 blurred = torch.max(blurred, torch.tensor(lower_clamp / 100.0, device=blurred.device))
@@ -1066,6 +1029,79 @@ class UC_ModifyMask(io.ComfyNode):
                 mask = torch.min(mask, torch.tensor(upper_clamp / 100.0, device=mask.device))
             mask_inverted = 1.0 - mask
             return io.NodeOutput(mask, mask_inverted)
+
+
+def _blend_luminosity(value):
+    return value[..., 0:1] * 0.3 + value[..., 1:2] * 0.59 + value[..., 2:3] * 0.11
+
+
+def _blend_saturation(value):
+    return value.max(dim=-1, keepdim=True).values - value.min(dim=-1, keepdim=True).values
+
+
+def _clip_blend_color(value):
+    luminosity = _blend_luminosity(value)
+    minimum = value.min(dim=-1, keepdim=True).values
+    maximum = value.max(dim=-1, keepdim=True).values
+    below = luminosity + (value - luminosity) * luminosity / (luminosity - minimum).clamp_min(1e-12)
+    above = luminosity + (value - luminosity) * (1.0 - luminosity) / (maximum - luminosity).clamp_min(1e-12)
+    value = torch.where(minimum < 0.0, below, value)
+    return torch.where(maximum > 1.0, above, value)
+
+
+def _set_blend_luminosity(value, luminosity):
+    return _clip_blend_color(value + luminosity - _blend_luminosity(value))
+
+
+def _set_blend_saturation(value, saturation):
+    minimum = value.min(dim=-1, keepdim=True).values
+    maximum = value.max(dim=-1, keepdim=True).values
+    spread = maximum - minimum
+    normalized = (value - minimum) * saturation / spread.clamp_min(1e-12)
+    return torch.where(spread > 1e-12, normalized, torch.zeros_like(value))
+
+
+def _blend_rgb(destination, source, mode):
+    destination = destination.clamp(0.0, 1.0)
+    source = source.clamp(0.0, 1.0)
+    if mode == "add":
+        return source
+    if mode == "multiply":
+        return destination * source
+    if mode == "screen":
+        return destination + source - destination * source
+    if mode == "darken":
+        return torch.minimum(destination, source)
+    if mode == "lighten":
+        return torch.maximum(destination, source)
+    if mode == "difference":
+        return torch.abs(destination - source)
+    if mode == "exclusion":
+        return destination + source - 2.0 * destination * source
+    if mode == "overlay":
+        return torch.where(destination <= 0.5, 2.0 * destination * source, 1.0 - 2.0 * (1.0 - destination) * (1.0 - source))
+    if mode == "hard_light":
+        return torch.where(source <= 0.5, 2.0 * destination * source, 1.0 - 2.0 * (1.0 - destination) * (1.0 - source))
+    if mode == "color_dodge":
+        return torch.where(source >= 1.0, torch.ones_like(source), destination / (1.0 - source).clamp_min(1e-12)).clamp(0.0, 1.0)
+    if mode == "color_burn":
+        return torch.where(source <= 0.0, torch.zeros_like(source), 1.0 - (1.0 - destination) / source.clamp_min(1e-12)).clamp(0.0, 1.0)
+    if mode == "soft_light":
+        curve = torch.where(
+            destination <= 0.25,
+            ((16.0 * destination - 12.0) * destination + 4.0) * destination,
+            torch.sqrt(destination),
+        )
+        return torch.where(
+            source <= 0.5,
+            destination - (1.0 - 2.0 * source) * destination * (1.0 - destination),
+            destination + (2.0 * source - 1.0) * (curve - destination),
+        )
+    if mode == "hue":
+        return _set_blend_luminosity(_set_blend_saturation(source, _blend_saturation(destination)), _blend_luminosity(destination))
+    if mode == "color":
+        return _set_blend_luminosity(source, _blend_luminosity(destination))
+    raise ValueError(f"Unsupported image blend mode: {mode!r}.")
 
 
 class UC_ImageBlendByMask(io.ComfyNode):
@@ -1120,56 +1156,28 @@ class UC_ImageBlendByMask(io.ComfyNode):
         mask=None,
     ):
         destination, source = node_helpers.image_alpha_fix(destination, source)
-        destination = destination.clone().movedim(-1, 1)
-        source = source.movedim(-1, 1).to(destination.device)
+        destination = destination[..., :3]
+        source = source[..., :3].to(destination)
 
         if resize_source:
-            source = torch.nn.functional.interpolate(
-                source,
-                size=(destination.shape[-2], destination.shape[-1]),
-                mode="bicubic",
-            )
-
-        # Convert images to PIL
-        img_a = simpletensor2pil(destination)
-        img_b = simpletensor2pil(source)
-
-        # Apply blending mode
-        blending_modes = {
-            "color": pilgram.css.blending.color,
-            "color_burn": pilgram.css.blending.color_burn,
-            "color_dodge": pilgram.css.blending.color_dodge,
-            "darken": pilgram.css.blending.darken,
-            "difference": pilgram.css.blending.difference,
-            "exclusion": pilgram.css.blending.exclusion,
-            "hard_light": pilgram.css.blending.hard_light,
-            "hue": pilgram.css.blending.hue,
-            "lighten": pilgram.css.blending.lighten,
-            "multiply": pilgram.css.blending.multiply,
-            "add": pilgram.css.blending.normal,
-            "overlay": pilgram.css.blending.overlay,
-            "screen": pilgram.css.blending.screen,
-            "soft_light": pilgram.css.blending.soft_light,
-        }
-
-        out_image = blending_modes.get(mode, pilgram.css.blending.normal)(img_a, img_b)
-
-        out_image = out_image.convert("RGB")
-
-        # Apply mask if provided
+            source = resize_nchw(source.movedim(-1, 1), destination.shape[2], destination.shape[1], "bicubic").movedim(1, -1)
+        if source.shape[1:3] != destination.shape[1:3]:
+            raise ValueError("Source and destination dimensions must match unless resize_source is enabled.")
+        batch_size = max(destination.shape[0], source.shape[0])
+        if destination.shape[0] not in (1, batch_size) or source.shape[0] not in (1, batch_size):
+            raise ValueError("Source and destination batch sizes must match or be 1.")
+        destination = destination.expand(batch_size, -1, -1, -1)
+        source = source.expand(batch_size, -1, -1, -1)
+        blended = _blend_rgb(destination, source, mode).clamp(0.0, 1.0)
+        weight = destination.new_full((batch_size, 1, 1, 1), float(blend_percentage))
         if mask is not None:
-            mask = ImageOps.invert(simpletensor2pil(mask).convert("L"))
-            out_image = Image.composite(img_a, out_image, mask.resize(img_a.size))
-
-        # Blend image based on blend percentage
-        blend_mask = Image.new(
-            mode="L", size=img_a.size, color=(round(blend_percentage * 255))
-        )
-        blend_mask = ImageOps.invert(blend_mask)
-        out_image = Image.composite(img_a, out_image, blend_mask)
-
-        blended_image = simplepil2tensor(out_image)
-        return io.NodeOutput(blended_image)
+            mask = mask.to(destination)
+            if mask.shape[-2:] != destination.shape[1:3]:
+                mask = resize_nchw(mask.unsqueeze(1), destination.shape[2], destination.shape[1], "bilinear").squeeze(1)
+            if mask.shape[0] not in (1, batch_size):
+                raise ValueError("Mask batch size must match the image batch size or be 1.")
+            weight = weight * mask.expand(batch_size, -1, -1).clamp(0.0, 1.0).unsqueeze(-1)
+        return io.NodeOutput(destination * (1.0 - weight) + blended * weight)
 
 class UC_ImagePad(io.ComfyNode):
     @classmethod
@@ -1232,7 +1240,7 @@ class UC_ImagePad(io.ComfyNode):
             new_H = max(1, round(H * scale_factor))
 
             # Upscale/downscale the image tensor
-            image = common_upscale(image.movedim(-1, 1), new_W, new_H, "lanczos", "disabled").movedim(1, -1)
+            image = resize_nchw(image.movedim(-1, 1), new_W, new_H, "lanczos").movedim(1, -1)
             B, H, W, C = image.shape
 
             # Upscale/downscale the mask tensor if provided
@@ -1262,7 +1270,7 @@ class UC_ImagePad(io.ComfyNode):
                 bg_w = max(1, int(round(W * scale_fill)))
                 bg_h = max(1, int(round(H * scale_fill)))
                 src_b = image[b].movedim(-1, 0).unsqueeze(0)
-                bg = common_upscale(src_b, bg_w, bg_h, "bilinear", crop="disabled")
+                bg = resize_nchw(src_b, bg_w, bg_h, "bilinear")
                 y0 = max(0, (bg_h - padded_height) // 2)
                 x0 = max(0, (bg_w - padded_width) // 2)
                 y1 = min(bg_h, y0 + padded_height)
@@ -1407,9 +1415,8 @@ class UC_ListToImageBatch(io.ComfyNode):
             if image.shape[1] != first_h or image.shape[2] != first_w:
                 # permute to [B, C, H, W] for interpolate
                 img_perm = image.movedim(-1, 1)
-                img_resized = torch.nn.functional.interpolate(
-                    img_perm, size=(first_h, first_w), mode='bilinear', align_corners=False
-                )
+                method = "area" if first_h < image.shape[1] or first_w < image.shape[2] else "bicubic"
+                img_resized = resize_nchw(img_perm, first_w, first_h, method)
                 resized_images.append(img_resized.movedim(1, -1))
             else:
                 resized_images.append(image)

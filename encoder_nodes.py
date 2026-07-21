@@ -12,8 +12,7 @@ import comfy
 import folder_paths
 import node_helpers
 from comfy_api.latest import ComfyExtension, io
-from comfy.utils import common_upscale
-from .helper_functions import get_token_count, get_token_count_scaled
+from .helper_functions import get_token_count, get_token_count_scaled, resize_nchw
 from .encoder_helpers import(
     encode_embedding_scaled_bias,
     is_image_token,
@@ -884,7 +883,7 @@ class TextEncodeSystemEditPlus(io.ComfyNode):
                     width_vlm = round(samples.shape[3] * scale_by_vlm)
                     height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                    s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                    s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                     images_vl.append(s_vlm.movedim(1, -1))
 
                 # 2. Structural Path Scaling (VAE)
@@ -992,7 +991,7 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                 width_vlm = round(samples.shape[3] * scale_by_vlm)
                 height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                 return s_vlm.movedim(1, -1)
 
         # Create dict of preprocessed VLM images for math evaluation
@@ -1167,7 +1166,7 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                 width_vlm = round(samples.shape[3] * scale_by_vlm)
                 height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                 return s_vlm.movedim(1, -1)
 
         # Create dict of preprocessed VLM images for math evaluation
@@ -1341,7 +1340,7 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                 width_vlm = round(samples.shape[3] * scale_by_vlm)
                 height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                 return s_vlm.movedim(1, -1)
 
         # Create dict of preprocessed VLM images for math evaluation
@@ -1530,7 +1529,7 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
             width_vlm = round(samples.shape[3] * scale_by_vlm)
             height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-            s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+            s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
             return s_vlm.movedim(1, -1)[:, :, :, :3]
 
         # 3. Process the images and manually inject them sequentially into the 262144 tokens
@@ -1976,7 +1975,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 width_vlm = round(samples.shape[3] * scale_by_vlm)
                 height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                 return s_vlm.movedim(1, -1)
 
         processed_active_images = [process_vlm_image(image, vlm_resolution) for image in active_images]
@@ -2238,7 +2237,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 width_vlm = round(samples.shape[3] * scale_by_vlm)
                 height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                 return s_vlm.movedim(1, -1)
 
         for idx, img in enumerate(active_images):
@@ -2460,7 +2459,7 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                         width_vlm = round(samples.shape[3] * scale_by_vlm)
                         height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                        s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                        s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                         return s_vlm.movedim(1, -1)
 
                 processed_img = process_vlm_image(image_tensor, vlm_resolution)
@@ -2647,7 +2646,7 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                         width_vlm = round(samples.shape[3] * scale_by_vlm)
                         height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                        s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                        s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                         return s_vlm.movedim(1, -1)
 
                 processed_img = process_vlm_image(image_tensor, vlm_resolution)
@@ -2880,7 +2879,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 width_vlm = round(samples.shape[3] * scale_by_vlm)
                 height_vlm = round(samples.shape[2] * scale_by_vlm)
 
-                s_vlm = common_upscale(samples, width_vlm, height_vlm, "bicubic", "disabled")
+                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
                 return s_vlm.movedim(1, -1)
 
         # 2. Get tokens mapping on clean prompt with representative (first) image or fallback

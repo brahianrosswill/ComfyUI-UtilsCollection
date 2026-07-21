@@ -7,9 +7,9 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
-from comfy.utils import common_upscale
 from comfy_api.latest import io, ui
 from nodes import MAX_RESOLUTION
+from .helper_functions import resize_nchw
 
 
 FaceDetectionType = io.Custom("FACE_DETECTION_MODEL")
@@ -29,7 +29,7 @@ _ARTIFACT_CLEANUP_TOOLTIP = "Opening radius in pixels used to remove small or th
 _GAP_FILL_TOOLTIP = "Closing radius in pixels used to fill small mask cracks and holes; 0 disables it."
 _FEATHER_TOOLTIP = "Inward mask-edge softness in pixels; 0 keeps the resized edge unchanged."
 _IMAGE_RESIZE_TOOLTIP = (
-    "Foreground resampling method. auto uses Lanczos when shrinking and bicubic when enlarging; "
+    "Foreground resampling method. auto uses FP32 area reduction when shrinking and bicubic when enlarging; "
     "choose another method to override it."
 )
 _MASK_RESIZE_TOOLTIP = (
@@ -39,16 +39,11 @@ _MASK_RESIZE_TOOLTIP = (
 
 
 def _resize_image(image, width, height, method, crop="disabled"):
-    return common_upscale(image.movedim(-1, 1), width, height, method, crop).movedim(1, -1)
+    return resize_nchw(image.movedim(-1, 1), width, height, method, crop).movedim(1, -1)
 
 
 def _resize_mask(mask, width, height, method, crop="disabled"):
-    mask = mask.unsqueeze(1)
-    if method == "lanczos":
-        mask = common_upscale(mask.repeat(1, 3, 1, 1), width, height, method, crop)[:, :1]
-    else:
-        mask = common_upscale(mask, width, height, method, crop)
-    return mask.squeeze(1)
+    return resize_nchw(mask.unsqueeze(1), width, height, method, crop).squeeze(1)
 
 
 def _composite_resize_method(method, source_width, source_height, width, height, mask=False):
@@ -57,9 +52,10 @@ def _composite_resize_method(method, source_width, source_height, width, height,
     if method != "auto":
         return method
     shrinking = width < source_width or height < source_height
+    reducing_both_axes = width <= source_width and height <= source_height
     if mask:
-        return "area" if shrinking else "bilinear"
-    return "lanczos" if shrinking else "bicubic"
+        return "area" if reducing_both_axes and shrinking else "bilinear"
+    return "area" if reducing_both_axes and shrinking else "bicubic"
 
 
 def _resize_composite_image(image, width, height, method):
@@ -256,6 +252,10 @@ def _parse_layer_placements(value):
             if not math.isfinite(number) or number < minimum or number > maximum:
                 raise ValueError(f"Layer {key} field {field} must be between {minimum} and {maximum}.")
             result[field] = number
+        flip_horizontal = placement.get("flip_horizontal", False)
+        if not isinstance(flip_horizontal, bool):
+            raise ValueError(f"Layer {key} field flip_horizontal must be Boolean.")
+        result["flip_horizontal"] = flip_horizontal
         result["_version"] = version
         parsed[key] = result
     return parsed
@@ -319,18 +319,9 @@ def _visible_placement_slices(background_width, background_height, placed_width,
     )
 
 
-def _bounded_preview(image, longest):
-    height, width = image.shape[1:3]
-    if max(height, width) <= longest:
-        return image
-    ratio = float(longest) / max(height, width)
-    return _resize_image(image, max(1, round(width * ratio)), max(1, round(height * ratio)), "bicubic")
-
-
-def _save_editor_preview(image, prefix, longest):
-    preview = _bounded_preview(image, longest)
+def _save_editor_preview(image, prefix):
     saved = ui.ImageSaveHelper.save_images(
-        preview,
+        image,
         filename_prefix=prefix,
         folder_type=io.FolderType.temp,
         cls=None,
@@ -814,11 +805,13 @@ def _stage_layered_foregrounds(
     artifact_cleanup_radius,
     gap_fill_radius,
     mask_resize_method="auto",
+    placement_data=None,
 ):
     foregrounds = _ordered_single_foregrounds(foreground_images)
     if not foregrounds:
         raise ValueError("Layered foreground staging requires at least one foreground image.")
     layers = []
+    placements = _parse_layer_placements(placement_data)
     for key, foreground in foregrounds:
         if foreground.shape[-1] < 3:
             raise ValueError(f"Foreground input {key} must have at least three channels.")
@@ -848,10 +841,17 @@ def _stage_layered_foregrounds(
         bottom = int(points[:, 0].max()) + 1
         left = int(points[:, 1].min())
         right = int(points[:, 1].max()) + 1
+        flip_horizontal = placements.get(key, {}).get("flip_horizontal", False)
+        cropped_image = foreground[:, top:bottom, left:right]
+        cropped_mask = refined[None, top:bottom, left:right]
+        if flip_horizontal:
+            cropped_image = torch.flip(cropped_image, dims=(2,))
+            cropped_mask = torch.flip(cropped_mask, dims=(2,))
         layers.append({
             "socket": key,
-            "image": foreground[:, top:bottom, left:right],
-            "mask": refined[None, top:bottom, left:right],
+            "image": cropped_image,
+            "mask": cropped_mask,
+            "flip_horizontal": flip_horizontal,
         })
     return {"version": 1, "layers": layers}
 
@@ -873,12 +873,6 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
         "background": {"width": background_width, "height": background_height},
         "layers": [],
     }
-    try:
-        editor_metadata["background"]["preview"] = _save_editor_preview(
-            background[..., :3], "UC_layered_background", 1024
-        )
-    except Exception:
-        logging.warning("Unable to create staged layered-composite background preview.", exc_info=True)
     for layer in layers:
         crop = layer["image"]
         alpha = layer["mask"][0]
@@ -888,12 +882,11 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
             "socket": layer["socket"],
             "crop_width": crop.shape[2],
             "crop_height": crop.shape[1],
+            "flip_horizontal": bool(layer.get("flip_horizontal", False)),
         }
         try:
             rgba = torch.cat((crop[0], alpha.unsqueeze(-1)), dim=-1).unsqueeze(0)
-            entry["preview"] = _save_editor_preview(
-                rgba, f"UC_layered_{layer['socket']}", 512
-            )
+            entry["preview"] = _save_editor_preview(rgba, f"UC_layered_{layer['socket']}")
         except Exception:
             logging.warning(
                 "Unable to create staged editor cutout preview for %s.",
@@ -949,6 +942,11 @@ def _composite_staged_foregrounds(
             key,
             {**(_DEFAULT_LAYER_PLACEMENT_V2 if placement_version == 2 else _DEFAULT_LAYER_PLACEMENT), "_version": placement_version},
         )
+        staged_flip = bool(layer.get("flip_horizontal", False))
+        desired_flip = bool(placement.get("flip_horizontal", False))
+        if staged_flip != desired_flip:
+            crop = torch.flip(crop, dims=(2,))
+            crop_mask = torch.flip(crop_mask, dims=(2,))
         target_longest = max(1, round(min(background_height, background_width) * placement["scale"]))
         scale = target_longest / max(crop_height, crop_width)
         placed_height = max(1, round(crop_height * scale))
@@ -987,6 +985,7 @@ def _composite_staged_foregrounds(
             "crop_width": crop_width,
             "crop_height": crop_height,
             "preview_tensor": torch.cat((crop[0], preview_alpha.unsqueeze(-1)), dim=-1).unsqueeze(0),
+            "flip_horizontal": desired_flip,
         })
 
     editor_metadata = {
@@ -996,17 +995,11 @@ def _composite_staged_foregrounds(
     }
     if stage_mode:
         editor_metadata["stage_mode"] = stage_mode
-    try:
-        editor_metadata["background"]["preview"] = _save_editor_preview(
-            background[..., :3], "UC_layered_background", 1024
-        )
-    except Exception:
-        logging.warning("Unable to create staged layered-composite background preview.", exc_info=True)
     for layer in editor_layers:
-        entry = {key: layer[key] for key in ("socket", "crop_width", "crop_height")}
+        entry = {key: layer[key] for key in ("socket", "crop_width", "crop_height", "flip_horizontal")}
         try:
             entry["preview"] = _save_editor_preview(
-                layer["preview_tensor"], f"UC_layered_{layer['socket']}", 512
+                layer["preview_tensor"], f"UC_layered_{layer['socket']}"
             )
         except Exception:
             logging.warning("Unable to create staged editor cutout preview for %s.", layer["socket"], exc_info=True)
@@ -1135,6 +1128,7 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                 artifact_cleanup_radius,
                 gap_fill_radius,
                 mask_resize_method,
+                placement_data,
             )
             cls._staged_by_node[node_id] = staged
             if execution_mode == "run_staging":
@@ -1263,6 +1257,10 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 key,
                 {**(_DEFAULT_LAYER_PLACEMENT_V2 if placement_version == 2 else _DEFAULT_LAYER_PLACEMENT), "_version": placement_version},
             )
+            desired_flip = bool(placement.get("flip_horizontal", False))
+            if desired_flip:
+                crop = torch.flip(crop, dims=(2,))
+                crop_mask = torch.flip(crop_mask, dims=(2,))
             target_longest = max(1, round(min(background_height, background_width) * placement["scale"]))
             scale = target_longest / max(crop_height, crop_width)
             placed_height = max(1, round(crop_height * scale))
@@ -1308,6 +1306,7 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 "crop_width": crop_width,
                 "crop_height": crop_height,
                 "preview_tensor": preview_rgba,
+                "flip_horizontal": desired_flip,
             })
 
         editor_metadata = {
@@ -1315,21 +1314,16 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
             "background": {"width": background_width, "height": background_height},
             "layers": [],
         }
-        try:
-            editor_metadata["background"]["preview"] = _save_editor_preview(
-                background[..., :3], "UC_layered_background", 1024
-            )
-        except Exception:
-            logging.warning("Unable to create layered-composite background editor preview.", exc_info=True)
         for layer in layer_metadata:
             entry = {
                 "socket": layer["socket"],
                 "crop_width": layer["crop_width"],
                 "crop_height": layer["crop_height"],
+                "flip_horizontal": layer["flip_horizontal"],
             }
             try:
                 entry["preview"] = _save_editor_preview(
-                    layer["preview_tensor"], f"UC_layered_{layer['socket']}", 512
+                    layer["preview_tensor"], f"UC_layered_{layer['socket']}"
                 )
             except Exception:
                 logging.warning("Unable to create editor cutout preview for %s.", layer["socket"], exc_info=True)

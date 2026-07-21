@@ -57,6 +57,9 @@ class LayeredPlacementEditor {
     this.metadata = null;
     this.metadataSignature = null;
     this.cutouts = new Map();
+    this.preliminaryLayers = new Map();
+    this.preliminarySources = new Map();
+    this.preliminaryGenerations = new Map();
     this.backgroundGeneration = 0;
     this.metadataGeneration = 0;
     this.drawFrame = 0;
@@ -115,7 +118,7 @@ class LayeredPlacementEditor {
 
     const controls = element("div", {
       display: "grid",
-      gridTemplateColumns: "repeat(4, minmax(58px, 1fr)) auto",
+      gridTemplateColumns: "repeat(4, minmax(58px, 1fr)) auto auto",
       gap: "5px",
       alignItems: "end",
     });
@@ -167,6 +170,16 @@ class LayeredPlacementEditor {
     this.paddingInput.addEventListener("keydown", (event) => event.stopPropagation());
     paddingGroup.append(this.paddingInput);
     controls.append(paddingGroup);
+    this.flipButton = element("button", {
+      ...this.controlStyle(),
+      height: "24px",
+      padding: "2px 9px",
+      cursor: "pointer",
+    });
+    this.flipButton.type = "button";
+    this.flipButton.textContent = "Flip H";
+    this.flipButton.title = "Mirror the selected foreground horizontally in the preview and staged composite";
+    controls.append(this.flipButton);
     this.resetButton = element("button", {
       ...this.controlStyle(),
       height: "24px",
@@ -180,6 +193,7 @@ class LayeredPlacementEditor {
     this.root.append(this.stage, this.layerListGroup, controls);
 
     this.resetButton.addEventListener("click", () => this.resetSelected());
+    this.flipButton.addEventListener("click", () => this.toggleHorizontalFlip());
     for (const eventName of ["pointerdown", "pointermove", "pointerup", "wheel", "click", "dblclick"]) {
       this.root.addEventListener(eventName, (event) => event.stopPropagation());
     }
@@ -267,9 +281,6 @@ class LayeredPlacementEditor {
   }
 
   connectedLayers() {
-    if (this.isStagedComposite() && this.metadata?.layers?.length) {
-      return this.orderLayers(this.metadata.layers.map((layer) => layer.socket));
-    }
     const direct = (this.node.inputs || [])
       .filter((input) => /foreground_\d+$/.test(input.name) && input.link != null)
       .map((input) => input.name.match(/foreground_\d+$/)[0]);
@@ -304,9 +315,7 @@ class LayeredPlacementEditor {
   }
 
   semanticSignature() {
-    const sourceNames = this.isStagedComposite()
-      ? ["background"]
-      : ["background", ...this.connectedLayers()];
+    const sourceNames = ["background", ...this.connectedLayers()];
     const links = sourceNames.map((name) => {
       const origin = this.inputOrigin(name);
       const preview = origin?.node?.imgs?.[0];
@@ -335,6 +344,7 @@ class LayeredPlacementEditor {
       this.metadataGeneration++;
     }
     this.resolveBackground(force);
+    this.resolvePreliminaryLayers(layers, force);
     this.syncNumericControls();
     this.requestDraw();
   }
@@ -439,6 +449,45 @@ class LayeredPlacementEditor {
     }
   }
 
+  resolvePreliminaryLayers(layers, force) {
+    const available = new Set(layers);
+    for (const key of this.preliminaryLayers.keys()) {
+      if (!available.has(key)) this.preliminaryLayers.delete(key);
+    }
+    for (const key of this.preliminarySources.keys()) {
+      if (!available.has(key)) this.preliminarySources.delete(key);
+    }
+    for (const key of layers) {
+      const origin = this.inputOrigin(key);
+      let source = null;
+      let image = null;
+      if (origin?.node && ![2, 4].includes(origin.node.mode)) {
+        const candidate = origin.node.imgs?.[0];
+        if (candidate?.complete && (candidate.naturalWidth || candidate.width)) {
+          source = `element:${origin.link.origin_id}:${candidate.currentSrc || candidate.src || candidate.width}`;
+          image = candidate;
+        } else {
+          source = descriptorUrl(latestOutputs[String(origin.link.origin_id)]?.images?.[0]);
+        }
+      }
+      if (!force && source === this.preliminarySources.get(key)) continue;
+      this.preliminarySources.set(key, source);
+      const generation = (this.preliminaryGenerations.get(key) || 0) + 1;
+      this.preliminaryGenerations.set(key, generation);
+      if (image) {
+        this.preliminaryLayers.set(key, image);
+      } else if (source) {
+        this.loadImage(source, (loaded) => {
+          this.preliminaryLayers.set(key, loaded);
+          this.syncNumericControls();
+          this.requestDraw();
+        }, () => generation === this.preliminaryGenerations.get(key));
+      } else {
+        this.preliminaryLayers.delete(key);
+      }
+    }
+  }
+
   loadImage(url, callback, isCurrent) {
     const image = new Image();
     image.onload = () => {
@@ -469,9 +518,7 @@ class LayeredPlacementEditor {
   }
 
   upstreamUpdated(nodeId) {
-    const sourceNames = this.isStagedComposite()
-      ? ["background"]
-      : ["background", ...this.connectedLayers()];
+    const sourceNames = ["background", ...this.connectedLayers()];
     const origins = sourceNames.map((name) => this.inputOrigin(name));
     if (!origins.some((origin) => String(origin?.link?.origin_id) === String(nodeId))) return;
     if (sourceNames.slice(1).some((name) => String(this.inputOrigin(name)?.link?.origin_id) === String(nodeId))) {
@@ -481,8 +528,7 @@ class LayeredPlacementEditor {
       this.metadataGeneration++;
     }
     this.backgroundSource = null;
-    this.resolveBackground(true);
-    this.requestDraw();
+    this.refreshSources(true);
   }
 
   layerMetadata(key) {
@@ -491,9 +537,13 @@ class LayeredPlacementEditor {
 
   layerAspect(key) {
     const metadata = this.layerMetadata(key);
-    return metadata?.crop_width > 0 && metadata?.crop_height > 0
-      ? metadata.crop_width / metadata.crop_height
-      : 1;
+    if (metadata?.crop_width > 0 && metadata?.crop_height > 0) {
+      return metadata.crop_width / metadata.crop_height;
+    }
+    const preliminary = this.preliminaryLayers.get(key);
+    const width = preliminary?.naturalWidth || preliminary?.width;
+    const height = preliminary?.naturalHeight || preliminary?.height;
+    return width > 0 && height > 0 ? width / height : 1;
   }
 
   layerPlacement(key) {
@@ -612,8 +662,20 @@ class LayeredPlacementEditor {
 
   drawLayer(context, key, dimensions) {
     const rect = this.toCanvasRect(this.rectFor(key, dimensions));
-    const cutout = this.cutouts.get(key);
-    if (cutout) context.drawImage(cutout, rect.x, rect.y, rect.width, rect.height);
+    const preview = this.cutouts.get(key) || this.preliminaryLayers.get(key);
+    if (preview) {
+      const desiredFlip = this.layerPlacement(key).flip_horizontal === true;
+      const previewFlip = this.layerMetadata(key)?.flip_horizontal === true;
+      if (desiredFlip !== previewFlip) {
+        context.save();
+        context.translate(rect.x + rect.width, rect.y);
+        context.scale(-1, 1);
+        context.drawImage(preview, 0, 0, rect.width, rect.height);
+        context.restore();
+      } else {
+        context.drawImage(preview, rect.x, rect.y, rect.width, rect.height);
+      }
+    }
     context.fillStyle = key === this.selected ? "rgba(64,180,255,.16)" : "rgba(255,255,255,.055)";
     context.fillRect(rect.x, rect.y, rect.width, rect.height);
     context.save();
@@ -744,6 +806,7 @@ class LayeredPlacementEditor {
       dimensions.width,
       dimensions.height,
       rect,
+      this.layerPlacement(this.gesture.key),
     ));
   }
 
@@ -789,7 +852,9 @@ class LayeredPlacementEditor {
             dimensions.width, dimensions.height, this.layerAspect(layerKey),
             normalizePlacement(this.data.layers[layerKey], 1),
           );
-          migrated[layerKey] = rectToPlacement(dimensions.width, dimensions.height, rect);
+          migrated[layerKey] = rectToPlacement(
+            dimensions.width, dimensions.height, rect, this.data.layers[layerKey]
+          );
         }
         this.data.layers = migrated;
       }
@@ -815,7 +880,10 @@ class LayeredPlacementEditor {
   syncNumericControls() {
     const dimensions = this.dimensions();
     const placement = this.selected && dimensions
-      ? rectToPlacement(dimensions.width, dimensions.height, this.rectFor(this.selected, dimensions))
+      ? rectToPlacement(
+          dimensions.width, dimensions.height, this.rectFor(this.selected, dimensions),
+          this.layerPlacement(this.selected),
+        )
       : DEFAULT_PLACEMENT;
     for (const [field, input] of Object.entries(this.inputs)) {
       input.disabled = !this.selected;
@@ -825,6 +893,11 @@ class LayeredPlacementEditor {
       this.data.workspace_padding ?? DEFAULT_WORKSPACE_PADDING,
     ).toFixed(2);
     this.resetButton.disabled = !this.selected;
+    this.flipButton.disabled = !this.selected;
+    this.flipButton.setAttribute("aria-pressed", String(placement.flip_horizontal === true));
+    this.flipButton.style.background = placement.flip_horizontal
+      ? "rgba(64,180,255,.30)"
+      : "rgba(0,0,0,.25)";
   }
 
   dropLayer(dragged, target, insertAfter) {
@@ -866,6 +939,7 @@ class LayeredPlacementEditor {
     if (!dimensions) return;
     const placement = {
       ...rectToPlacement(dimensions.width, dimensions.height, this.rectFor(this.selected, dimensions)),
+      flip_horizontal: this.layerPlacement(this.selected).flip_horizontal,
       [field]: Number(value),
     };
     this.node.graph?.beforeChange?.();
@@ -878,6 +952,18 @@ class LayeredPlacementEditor {
     if (!this.selected) return;
     this.node.graph?.beforeChange?.();
     this.queuePlacement(this.selected, DEFAULT_PLACEMENT);
+    this.flushPlacement();
+    this.node.graph?.afterChange?.();
+  }
+
+  toggleHorizontalFlip() {
+    if (!this.selected) return;
+    const placement = this.layerPlacement(this.selected);
+    this.node.graph?.beforeChange?.();
+    this.queuePlacement(this.selected, {
+      ...placement,
+      flip_horizontal: !placement.flip_horizontal,
+    });
     this.flushPlacement();
     this.node.graph?.afterChange?.();
   }
@@ -918,6 +1004,7 @@ class LayeredPlacementEditor {
       dimensions.width,
       dimensions.height,
       rect,
+      this.layerPlacement(this.selected),
     ));
   }
 

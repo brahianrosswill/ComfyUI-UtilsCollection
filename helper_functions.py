@@ -4,10 +4,48 @@ from enum import Enum
 import numpy as np
 import re
 import torch
+import torch.nn.functional as F
 import cv2
 import math
 import json
 import codecs
+
+
+def resize_nchw(samples: torch.Tensor, width: int, height: int, method: str, crop: str = "disabled") -> torch.Tensor:
+    """Resize NCHW tensors without reducing image data to uint8."""
+    width, height = int(width), int(height)
+    if width < 1 or height < 1:
+        raise ValueError("Resize dimensions must be positive.")
+    source_height, source_width = samples.shape[-2:]
+    if crop == "center":
+        source_aspect = source_width / source_height
+        target_aspect = width / height
+        x = round((source_width - source_width * (target_aspect / source_aspect)) / 2) if source_aspect > target_aspect else 0
+        y = round((source_height - source_height * (source_aspect / target_aspect)) / 2) if source_aspect < target_aspect else 0
+        samples = samples[..., y:source_height - y, x:source_width - x]
+        source_height, source_width = samples.shape[-2:]
+    elif crop != "disabled":
+        raise ValueError(f"Unsupported resize crop mode: {crop!r}.")
+    if (source_width, source_height) == (width, height):
+        return samples
+    if method == "lanczos":
+        original_device, original_dtype = samples.device, samples.dtype
+        cpu = samples.detach().to(device="cpu", dtype=torch.float32)
+        batches = []
+        for batch in cpu:
+            channels = [
+                torch.from_numpy(np.asarray(Image.fromarray(channel.numpy()).resize((width, height), Image.Resampling.LANCZOS)).copy())
+                for channel in batch
+            ]
+            batches.append(torch.stack(channels))
+        return torch.stack(batches).to(device=original_device, dtype=original_dtype)
+    if method not in ("nearest-exact", "bilinear", "area", "bicubic"):
+        raise ValueError(f"Unsupported resize method: {method!r}.")
+    options = {}
+    if method in ("bilinear", "bicubic"):
+        options["align_corners"] = False
+        options["antialias"] = width < source_width or height < source_height
+    return F.interpolate(samples, size=(height, width), mode=method, **options)
 
 def round_to_nearest(n, m):
     return int((n + (m / 2)) // m) * m
@@ -216,6 +254,9 @@ def match_image_properties(
     mask_tensor: torch.Tensor = None,
 ) -> torch.Tensor:
 
+    if overall_weight == 0.0 or (color_weight == 0.0 and lighting_weight == 0.0):
+        return generated_tensor.clone()
+
     batch_size = generated_tensor.size(0)
     out_tensors = []
 
@@ -225,8 +266,8 @@ def match_image_properties(
     for i in range(batch_size):
         orig_i = i if i < orig_batch else 0
 
-        orig_np = np.clip(255.0 * original_tensor[orig_i].cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
-        gen_np = np.clip(255.0 * generated_tensor[i].cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
+        orig_np = np.clip(original_tensor[orig_i].detach().cpu().numpy().squeeze(), 0.0, 1.0).astype(np.float32)
+        gen_np = np.clip(generated_tensor[i].detach().cpu().numpy().squeeze(), 0.0, 1.0).astype(np.float32)
 
         mask_np = None
         if mask_tensor is not None:
@@ -282,13 +323,14 @@ def match_image_properties(
         if mask_np is not None:
             out_lab = gen_lab_f * (1.0 - mask_np) + out_lab * mask_np
 
-        out_lab = np.clip(out_lab, 0, 255).astype(np.uint8)
+        out_lab[:, :, 0] = np.clip(out_lab[:, :, 0], 0.0, 100.0)
+        out_lab[:, :, 1:] = np.clip(out_lab[:, :, 1:], -127.0, 127.0)
         res_rgb = cv2.cvtColor(out_lab, cv2.COLOR_LAB2RGB)
 
-        out_tensor = torch.from_numpy(res_rgb.astype(np.float32) / 255.0).unsqueeze(0)
+        out_tensor = torch.from_numpy(np.clip(res_rgb, 0.0, 1.0).astype(np.float32)).unsqueeze(0)
         out_tensors.append(out_tensor)
 
-    return torch.cat(out_tensors, dim=0)
+    return torch.cat(out_tensors, dim=0).to(generated_tensor)
 
 def composite(original_np: np.ndarray,
                generated_np: np.ndarray,
@@ -380,12 +422,13 @@ def composite(original_np: np.ndarray,
 
         M, _ = cv2.estimateAffinePartial2D(src_pts, dst_pts, method=cv2.RANSAC)
 
-    if M is not None:
+    identity = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
+    if M is not None and not np.allclose(M, identity, atol=1e-6, rtol=0.0):
         final_aligned_gen = cv2.warpAffine(
             generated_np.astype(np.float32),
             M.astype(np.float64),
             (W, H),
-            flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+            flags=cv2.INTER_LANCZOS4 | cv2.WARP_INVERSE_MAP,
             borderMode=cv2.BORDER_REFLECT
         )
     else:
@@ -424,13 +467,17 @@ def fill_mask_from_edges(
     for i in range(batch_size):
         # ComfyUI images are typically [B, H, W, C], float32, 0.0-1.0
         # Convert to numpy uint8 for OpenCV
-        img_np = np.clip(255.0 * image_tensor[i].cpu().numpy(), 0, 255).astype(np.uint8)
+        original_np = np.clip(image_tensor[i].detach().cpu().numpy(), 0.0, 1.0).astype(np.float32)
+        img_np = np.clip(255.0 * original_np, 0, 255).astype(np.uint8)
 
         # If the image has an alpha channel, we only inpaint the RGB channels
         has_alpha = img_np.shape[-1] == 4
         if has_alpha:
-            alpha_channel = img_np[:, :, 3]
+            alpha_channel = original_np[:, :, 3]
             img_np = img_np[:, :, :3]
+            original_rgb = original_np[:, :, :3]
+        else:
+            original_rgb = original_np
 
         # Extract and format the mask
         mask_i = i if i < mask_batch else 0
@@ -457,24 +504,23 @@ def fill_mask_from_edges(
             soft_mask = cv2.GaussianBlur(mask_np.astype(np.float32) / 255.0, (blur_size, blur_size), 0)
             soft_mask = soft_mask[:, :, np.newaxis]  # Reshape to [H, W, 1] for broadcasting
 
-            img_f = img_np.astype(np.float32)
-            inpainted_f = inpainted.astype(np.float32)
+            inpainted_f = inpainted.astype(np.float32) / 255.0
 
             # Composite: Original image where mask is 0, Inpainted image where mask is 1
-            final_np = img_f * (1.0 - soft_mask) + inpainted_f * soft_mask
-            final_np = np.clip(final_np, 0, 255).astype(np.uint8)
+            final_np = original_rgb * (1.0 - soft_mask) + inpainted_f * soft_mask
         else:
-            final_np = inpainted
+            hard_mask = (mask_binary.astype(np.float32) / 255.0)[:, :, np.newaxis]
+            final_np = original_rgb * (1.0 - hard_mask) + (inpainted.astype(np.float32) / 255.0) * hard_mask
 
         # Restore alpha channel if it existed
         if has_alpha:
             final_np = np.dstack((final_np, alpha_channel))
 
         # Convert back to ComfyUI tensor [1, H, W, C]
-        out_tensor = torch.from_numpy(final_np.astype(np.float32) / 255.0).unsqueeze(0)
+        out_tensor = torch.from_numpy(np.clip(final_np, 0.0, 1.0).astype(np.float32)).unsqueeze(0)
         out_tensors.append(out_tensor)
 
-    return torch.cat(out_tensors, dim=0)
+    return torch.cat(out_tensors, dim=0).to(image_tensor)
 
 
 def create_stretched_patch(img: np.ndarray, mask_binary: np.ndarray, axis: str, sample_thickness: int) -> np.ndarray:
@@ -584,11 +630,11 @@ def iterative_directional_stretch_fill(
     erosion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
     for i in range(batch_size):
-        img_np = np.clip(255.0 * image_tensor[i].cpu().numpy(), 0, 255).astype(np.uint8)
+        img_np = np.clip(image_tensor[i].detach().cpu().numpy(), 0.0, 1.0).astype(np.float32)
 
         has_alpha = img_np.shape[-1] == 4
         if has_alpha:
-            alpha_channel = img_np[:, :, 3]
+            alpha_channel = img_np[:, :, 3].copy()
             img_np = img_np[:, :, :3]
 
         mask_i = i if i < mask_batch else 0
@@ -626,7 +672,7 @@ def iterative_directional_stretch_fill(
 
             working_f = working_img.astype(np.float32)
             merged = working_f * (1.0 - soft_mask) + canvas * soft_mask
-            working_img = np.clip(merged, 0, 255).astype(np.uint8)
+            working_img = np.clip(merged, 0.0, 1.0).astype(np.float32)
 
             if step < iterations - 1 and mask_decay_pixels > 0:
                 working_mask = cv2.erode(working_mask, erosion_kernel, iterations=mask_decay_pixels)
@@ -634,10 +680,10 @@ def iterative_directional_stretch_fill(
         if has_alpha:
             working_img = np.dstack((working_img, alpha_channel))
 
-        out_tensor = torch.from_numpy(working_img.astype(np.float32) / 255.0).unsqueeze(0)
+        out_tensor = torch.from_numpy(working_img.astype(np.float32)).unsqueeze(0)
         out_tensors.append(out_tensor)
 
-    return torch.cat(out_tensors, dim=0)
+    return torch.cat(out_tensors, dim=0).to(image_tensor)
 
 def gaussian_blur_nchw(img_nchw, sigma_px):
     if sigma_px <= 0:
