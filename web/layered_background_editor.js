@@ -425,9 +425,10 @@ class LayeredPlacementEditor {
         controls.append(numeric.root);
       }
       const flip = this.createLayerAction("Flip H", "Mirror this foreground horizontally", () => this.toggleHorizontalFlip(key));
+      const flipVertical = this.createLayerAction("Flip V", "Mirror this foreground vertically", () => this.toggleVerticalFlip(key));
       const reset = this.createLayerAction("Reset", "Reset this foreground placement", () => this.resetLayer(key));
-      controls.append(flip, reset);
-      this.rowControls.set(key, { inputs: numericInputs, flip, reset });
+      controls.append(flip, flipVertical, reset);
+      this.rowControls.set(key, { inputs: numericInputs, flip, flipVertical, reset });
       row.append(grip, name, position, controls);
       row.addEventListener("click", () => this.selectLayer(key));
       grip.addEventListener("dragstart", (event) => {
@@ -872,12 +873,20 @@ class LayeredPlacementEditor {
     const rect = this.toCanvasRect(this.rectFor(key, dimensions));
     const preview = this.cutouts.get(key) || this.preliminaryLayers.get(key);
     if (preview) {
-      const desiredFlip = this.layerPlacement(key).flip_horizontal === true;
+      const placement = this.layerPlacement(key);
+      const desiredFlip = placement.flip_horizontal === true;
+      const desiredFlipVertical = placement.flip_vertical === true;
       const previewFlip = this.layerMetadata(key)?.flip_horizontal === true;
-      if (desiredFlip !== previewFlip) {
+      const previewFlipVertical = this.layerMetadata(key)?.flip_vertical === true;
+      const flipHorizontal = desiredFlip !== previewFlip;
+      const flipVertical = desiredFlipVertical !== previewFlipVertical;
+      if (flipHorizontal || flipVertical) {
         context.save();
-        context.translate(rect.x + rect.width, rect.y);
-        context.scale(-1, 1);
+        context.translate(
+          rect.x + (flipHorizontal ? rect.width : 0),
+          rect.y + (flipVertical ? rect.height : 0),
+        );
+        context.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
         context.drawImage(preview, 0, 0, rect.width, rect.height);
         context.restore();
       } else {
@@ -1101,6 +1110,10 @@ class LayeredPlacementEditor {
       controls.flip.style.background = placement.flip_horizontal
         ? "rgba(64,180,255,.30)"
         : "rgba(0,0,0,.25)";
+      controls.flipVertical.setAttribute("aria-pressed", String(placement.flip_vertical === true));
+      controls.flipVertical.style.background = placement.flip_vertical
+        ? "rgba(64,180,255,.30)"
+        : "rgba(0,0,0,.25)";
     }
     const padding = normalizeWorkspacePadding(
       this.data.workspace_padding ?? DEFAULT_WORKSPACE_PADDING,
@@ -1200,6 +1213,7 @@ class LayeredPlacementEditor {
     const placement = {
       ...rectToPlacement(dimensions.width, dimensions.height, this.rectFor(key, dimensions)),
       flip_horizontal: this.layerPlacement(key).flip_horizontal,
+      flip_vertical: this.layerPlacement(key).flip_vertical,
       [field]: normalizedValue,
     };
     this.node.graph?.beforeChange?.();
@@ -1235,13 +1249,21 @@ class LayeredPlacementEditor {
   }
 
   toggleHorizontalFlip(key = this.selected) {
+    this.toggleFlip(key, "flip_horizontal");
+  }
+
+  toggleVerticalFlip(key = this.selected) {
+    this.toggleFlip(key, "flip_vertical");
+  }
+
+  toggleFlip(key, field) {
     if (!key) return;
     const placement = this.layerPlacement(key);
     this.node.graph?.beforeChange?.();
     this.selected = key;
     this.queuePlacement(key, {
       ...placement,
-      flip_horizontal: !placement.flip_horizontal,
+      [field]: !placement[field],
     });
     this.flushPlacement();
     this.node.graph?.afterChange?.();

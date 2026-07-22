@@ -3,6 +3,7 @@ export const DEFAULT_PLACEMENT = Object.freeze({
   center_x: 0.5,
   center_y: 0.5,
   flip_horizontal: false,
+  flip_vertical: false,
 });
 export const LEGACY_DEFAULT_PLACEMENT = Object.freeze({ scale: 0.9, long_axis_shift: 0, short_axis_shift: 0 });
 export const DEFAULT_WORKSPACE_PADDING = 0.5;
@@ -25,6 +26,7 @@ export function normalizePlacement(value = {}, version = 2) {
       long_axis_shift: clamp(finite(value.long_axis_shift, 0), -1, 1),
       short_axis_shift: clamp(finite(value.short_axis_shift, 0), -1, 1),
       flip_horizontal: value.flip_horizontal === true,
+      flip_vertical: value.flip_vertical === true,
     };
   }
   return {
@@ -32,6 +34,7 @@ export function normalizePlacement(value = {}, version = 2) {
     center_x: clamp(finite(value.center_x, 0.5), -10, 10),
     center_y: clamp(finite(value.center_y, 0.5), -10, 10),
     flip_horizontal: value.flip_horizontal === true,
+    flip_vertical: value.flip_vertical === true,
   };
 }
 
@@ -120,6 +123,7 @@ export function rectToPlacement(backgroundWidth, backgroundHeight, rect, prior =
     center_x: (rect.x + rect.width / 2) / backgroundWidth,
     center_y: (rect.y + rect.height / 2) / backgroundHeight,
     flip_horizontal: prior.flip_horizontal === true,
+    flip_vertical: prior.flip_vertical === true,
   });
 }
 

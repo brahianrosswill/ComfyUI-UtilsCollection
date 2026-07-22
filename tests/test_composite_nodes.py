@@ -643,6 +643,27 @@ def test_staged_layered_composite_tracks_and_applies_horizontal_flip(monkeypatch
     assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["flip_horizontal"] is False
 
 
+def test_staged_layered_composite_tracks_and_applies_vertical_flip(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    foreground = torch.zeros(1, 3, 2, 3)
+    foreground[:, 0, :, 0] = 1.0
+    model = _QueuedBackgroundModel([torch.ones(1, 3, 2)])
+    flipped_placement = '{"version":2,"layers":{"foreground_0":{"flip_vertical":true}}}'
+
+    staged = composite_nodes._stage_layered_foregrounds(
+        model, {"foreground_0": foreground}, 0.5, 0, 0, 0,
+        placement_data=flipped_placement,
+    )
+
+    assert staged["layers"][0]["flip_vertical"] is True
+    assert staged["layers"][0]["image"][0, 2, 0, 0] == 1.0
+    output = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3), staged,
+        '{"version":2,"layers":{"foreground_0":{"flip_vertical":false}}}', 0,
+    )
+    assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["flip_vertical"] is False
+
+
 def test_staged_layered_composite_rejects_missing_stage():
     with pytest.raises(ValueError, match="missing or incompatible"):
         composite_nodes._composite_staged_foregrounds(

@@ -259,10 +259,11 @@ def _parse_layer_placements(value):
             if not math.isfinite(number) or number < minimum or number > maximum:
                 raise ValueError(f"Layer {key} field {field} must be between {minimum} and {maximum}.")
             result[field] = number
-        flip_horizontal = placement.get("flip_horizontal", False)
-        if not isinstance(flip_horizontal, bool):
-            raise ValueError(f"Layer {key} field flip_horizontal must be Boolean.")
-        result["flip_horizontal"] = flip_horizontal
+        for flip_field in ("flip_horizontal", "flip_vertical"):
+            flip_value = placement.get(flip_field, False)
+            if not isinstance(flip_value, bool):
+                raise ValueError(f"Layer {key} field {flip_field} must be Boolean.")
+            result[flip_field] = flip_value
         result["_version"] = version
         parsed[key] = result
     return parsed
@@ -856,16 +857,21 @@ def _stage_layered_foregrounds(
         left = int(points[:, 1].min())
         right = int(points[:, 1].max()) + 1
         flip_horizontal = placements.get(key, {}).get("flip_horizontal", False)
+        flip_vertical = placements.get(key, {}).get("flip_vertical", False)
         cropped_image = foreground[:, top:bottom, left:right]
         cropped_mask = refined[None, top:bottom, left:right]
         if flip_horizontal:
             cropped_image = torch.flip(cropped_image, dims=(2,))
             cropped_mask = torch.flip(cropped_mask, dims=(2,))
+        if flip_vertical:
+            cropped_image = torch.flip(cropped_image, dims=(1,))
+            cropped_mask = torch.flip(cropped_mask, dims=(1,))
         layers.append({
             "socket": key,
             "image": cropped_image,
             "mask": cropped_mask,
             "flip_horizontal": flip_horizontal,
+            "flip_vertical": flip_vertical,
             "uses_embedded_alpha": uses_embedded_alpha,
         })
     return {"version": 1, "layers": layers}
@@ -898,6 +904,7 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
             "crop_width": crop.shape[2],
             "crop_height": crop.shape[1],
             "flip_horizontal": bool(layer.get("flip_horizontal", False)),
+            "flip_vertical": bool(layer.get("flip_vertical", False)),
         }
         try:
             rgba = torch.cat((crop[0], alpha.unsqueeze(-1)), dim=-1).unsqueeze(0)
@@ -962,6 +969,11 @@ def _composite_staged_foregrounds(
         if staged_flip != desired_flip:
             crop = torch.flip(crop, dims=(2,))
             crop_mask = torch.flip(crop_mask, dims=(2,))
+        staged_flip_vertical = bool(layer.get("flip_vertical", False))
+        desired_flip_vertical = bool(placement.get("flip_vertical", False))
+        if staged_flip_vertical != desired_flip_vertical:
+            crop = torch.flip(crop, dims=(1,))
+            crop_mask = torch.flip(crop_mask, dims=(1,))
         target_longest = max(1, round(min(background_height, background_width) * placement["scale"]))
         scale = target_longest / max(crop_height, crop_width)
         placed_height = max(1, round(crop_height * scale))
@@ -1005,6 +1017,7 @@ def _composite_staged_foregrounds(
             "crop_height": crop_height,
             "preview_tensor": torch.cat((crop[0], preview_alpha.unsqueeze(-1)), dim=-1).unsqueeze(0),
             "flip_horizontal": desired_flip,
+            "flip_vertical": desired_flip_vertical,
         })
 
     editor_metadata = {
@@ -1015,7 +1028,10 @@ def _composite_staged_foregrounds(
     if stage_mode:
         editor_metadata["stage_mode"] = stage_mode
     for layer in editor_layers:
-        entry = {key: layer[key] for key in ("socket", "crop_width", "crop_height", "flip_horizontal")}
+        entry = {
+            key: layer[key]
+            for key in ("socket", "crop_width", "crop_height", "flip_horizontal", "flip_vertical")
+        }
         try:
             entry["preview"] = _save_editor_preview(
                 layer["preview_tensor"], f"UC_layered_{layer['socket']}"
@@ -1277,9 +1293,13 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 {**(_DEFAULT_LAYER_PLACEMENT_V2 if placement_version == 2 else _DEFAULT_LAYER_PLACEMENT), "_version": placement_version},
             )
             desired_flip = bool(placement.get("flip_horizontal", False))
+            desired_flip_vertical = bool(placement.get("flip_vertical", False))
             if desired_flip:
                 crop = torch.flip(crop, dims=(2,))
                 crop_mask = torch.flip(crop_mask, dims=(2,))
+            if desired_flip_vertical:
+                crop = torch.flip(crop, dims=(1,))
+                crop_mask = torch.flip(crop_mask, dims=(1,))
             target_longest = max(1, round(min(background_height, background_width) * placement["scale"]))
             scale = target_longest / max(crop_height, crop_width)
             placed_height = max(1, round(crop_height * scale))
@@ -1326,6 +1346,7 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 "crop_height": crop_height,
                 "preview_tensor": preview_rgba,
                 "flip_horizontal": desired_flip,
+                "flip_vertical": desired_flip_vertical,
             })
 
         editor_metadata = {
@@ -1339,6 +1360,7 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 "crop_width": layer["crop_width"],
                 "crop_height": layer["crop_height"],
                 "flip_horizontal": layer["flip_horizontal"],
+                "flip_vertical": layer["flip_vertical"],
             }
             try:
                 entry["preview"] = _save_editor_preview(
