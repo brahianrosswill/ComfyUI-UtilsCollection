@@ -10,6 +10,7 @@ import {
   rectToPlacement,
   resizeRectFromDelta,
   serializePlacementData,
+  stepPlacementValue,
 } from "../web/placement_geometry.js";
 
 const close = (actual, expected, tolerance = 1e-9) => assert.ok(
@@ -131,4 +132,11 @@ test("horizontal flip survives placement normalization and geometry edits", () =
   assert.equal(parsed.layers.foreground_0.flip_horizontal, true);
   const rect = placementToRect(100, 80, 2, parsed.layers.foreground_0);
   assert.equal(rectToPlacement(100, 80, rect, parsed.layers.foreground_0).flip_horizontal, true);
+});
+
+test("layer arrow controls step cleanly and respect placement limits", () => {
+  assert.equal(stepPlacementValue("scale", 0.9, 0.01), 0.91);
+  assert.equal(stepPlacementValue("scale", 0.05, -0.01), 0.05);
+  assert.equal(stepPlacementValue("center_x", 0.5, -0.01), 0.49);
+  assert.equal(stepPlacementValue("center_y", 10, 0.01), 10);
 });

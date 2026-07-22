@@ -13,7 +13,9 @@ import {
   rectToPlacement,
   resizeRectFromDelta,
   serializePlacementData,
+  stepPlacementValue,
 } from "./placement_geometry.js";
+import { buildStagingPrompt } from "./staged_queue.js";
 
 const NODE_TYPES = new Set([
   "UC_LayeredBackgroundComposite",
@@ -21,7 +23,26 @@ const NODE_TYPES = new Set([
 ]);
 const editors = new Set();
 let latestOutputs = {};
+let activeStagingQueue = null;
 const COMPOSITE_RESIZE_METHODS = new Set(["auto", "nearest-exact", "bilinear", "area", "bicubic", "lanczos"]);
+
+const originalApiQueuePrompt = api.queuePrompt;
+api.queuePrompt = async function(index, prompt, ...args) {
+  const queuedPrompt = activeStagingQueue
+    ? buildStagingPrompt(prompt, activeStagingQueue.nodeId)
+    : prompt;
+  return originalApiQueuePrompt.call(this, index, queuedPrompt, ...args);
+};
+
+async function queueStagingNode(node) {
+  if (activeStagingQueue) throw new Error("Another direct staging request is already being queued.");
+  activeStagingQueue = { nodeId: String(node.id) };
+  try {
+    return await app.queuePrompt(0);
+  } finally {
+    activeStagingQueue = null;
+  }
+}
 
 function descriptorUrl(descriptor) {
   if (!descriptor?.filename) return null;
@@ -116,14 +137,73 @@ class LayeredPlacementEditor {
       background: "rgba(0,0,0,.65)",
       pointerEvents: "none",
     });
-    this.stage.append(this.canvas, this.status);
-
-    const controls = element("div", {
-      display: "grid",
-      gridTemplateColumns: "repeat(4, minmax(58px, 1fr)) auto auto",
-      gap: "5px",
-      alignItems: "end",
+    this.paddingOverlay = element("div", {
+      position: "absolute",
+      right: "8px",
+      bottom: "7px",
+      display: "flex",
+      alignItems: "center",
+      gap: "6px",
+      padding: "5px 7px",
+      borderRadius: "5px",
+      color: "#fff",
+      background: "rgba(0,0,0,.72)",
     });
+    const paddingLabel = document.createElement("span");
+    paddingLabel.textContent = "Padding";
+    this.paddingSlider = element("input", { width: "120px", cursor: "pointer" });
+    this.paddingSlider.type = "range";
+    this.paddingSlider.min = "0";
+    this.paddingSlider.max = "1";
+    this.paddingSlider.step = "0.05";
+    this.paddingSlider.title = "Visible and permitted placement padding";
+    this.paddingValueButton = element("button", {
+      minWidth: "48px",
+      height: "28px",
+      padding: "2px 7px",
+      border: "1px solid rgba(255,255,255,.25)",
+      borderRadius: "4px",
+      color: "inherit",
+      background: "rgba(255,255,255,.08)",
+      cursor: "pointer",
+    });
+    this.paddingValueButton.type = "button";
+    this.paddingValueButton.title = "Enter an exact workspace padding value";
+    this.paddingExactInput = element("input", {
+      display: "none",
+      width: "54px",
+      height: "28px",
+      boxSizing: "border-box",
+      border: "1px solid #65c9ff",
+      borderRadius: "4px",
+      color: "inherit",
+      background: "#20242a",
+      textAlign: "center",
+    });
+    this.paddingExactInput.type = "text";
+    this.paddingExactInput.inputMode = "decimal";
+    this.paddingOverlay.append(paddingLabel, this.paddingSlider, this.paddingValueButton, this.paddingExactInput);
+
+    if (this.isStagedComposite()) {
+      this.stagingButton = element("button", {
+        position: "absolute",
+        right: "8px",
+        top: "8px",
+        height: "30px",
+        padding: "3px 11px",
+        border: "1px solid rgba(101,201,255,.8)",
+        borderRadius: "5px",
+        color: "#fff",
+        background: "rgba(25,105,145,.88)",
+        cursor: "pointer",
+      });
+      this.stagingButton.type = "button";
+      this.stagingButton.textContent = "Run Staging";
+      this.stagingButton.title = "Refresh this node's retained cutouts and placement previews";
+    }
+    this.stage.append(this.canvas, this.status, this.paddingOverlay);
+    if (this.stagingButton) this.stage.append(this.stagingButton);
+
     this.layerListGroup = element("div", { display: "flex", flexDirection: "column", gap: "3px" });
     const layerCaption = document.createElement("span");
     layerCaption.textContent = "Layer order (back → front)";
@@ -140,62 +220,19 @@ class LayeredPlacementEditor {
       background: "rgba(0,0,0,.18)",
     });
     this.layerListGroup.append(layerCaption, this.layerList);
-    this.inputs = {};
-    for (const [field, label, step, tooltip] of [
-      ["scale", "Scale", "0.01", "Foreground longest-side size as a fraction of the background's shortest side; aspect ratio is preserved."],
-      ["center_x", "Center X", "0.01", "Horizontal foreground center divided by background width; values outside 0–1 place it beyond the output boundary."],
-      ["center_y", "Center Y", "0.01", "Vertical foreground center divided by background height; values outside 0–1 place it beyond the output boundary."],
-    ]) {
-      const group = this.labeledControl(label);
-      const input = element("input", this.controlStyle());
-      group.title = tooltip;
-      input.title = tooltip;
-      input.type = "number";
-      input.step = step;
-      input.min = field === "scale" ? "0.05" : "-10";
-      input.max = "10";
-      input.dataset.field = field;
-      input.addEventListener("change", () => this.numericChanged(field, input.value));
-      input.addEventListener("keydown", (event) => event.stopPropagation());
-      this.inputs[field] = input;
-      group.append(input);
-      controls.append(group);
-    }
-    const paddingGroup = this.labeledControl("Padding");
-    this.paddingInput = element("input", this.controlStyle());
-    this.paddingInput.type = "number";
-    this.paddingInput.step = "0.05";
-    this.paddingInput.min = "0";
-    this.paddingInput.max = "1";
-    this.paddingInput.title = "Visible and permitted placement padding: 0 is none, 1 adds 25% of each background axis per side";
-    this.paddingInput.addEventListener("change", () => this.paddingChanged(this.paddingInput.value));
-    this.paddingInput.addEventListener("keydown", (event) => event.stopPropagation());
-    paddingGroup.append(this.paddingInput);
-    controls.append(paddingGroup);
-    this.flipButton = element("button", {
-      ...this.controlStyle(),
-      height: "24px",
-      padding: "2px 9px",
-      cursor: "pointer",
-    });
-    this.flipButton.type = "button";
-    this.flipButton.textContent = "Flip H";
-    this.flipButton.title = "Mirror the selected foreground horizontally in the preview and staged composite";
-    controls.append(this.flipButton);
-    this.resetButton = element("button", {
-      ...this.controlStyle(),
-      height: "24px",
-      padding: "2px 9px",
-      cursor: "pointer",
-    });
-    this.resetButton.type = "button";
-    this.resetButton.textContent = "Reset";
-    this.resetButton.title = "Reset the selected foreground placement";
-    controls.append(this.resetButton);
-    this.root.append(this.stage, this.layerListGroup, controls);
+    this.rowControls = new Map();
+    this.root.append(this.stage, this.layerListGroup);
 
-    this.resetButton.addEventListener("click", () => this.resetSelected());
-    this.flipButton.addEventListener("click", () => this.toggleHorizontalFlip());
+    this.paddingSlider.addEventListener("pointerdown", () => this.beginPaddingEdit());
+    this.paddingSlider.addEventListener("input", () => this.updatePadding(this.paddingSlider.value));
+    this.paddingSlider.addEventListener("change", () => this.endPaddingEdit());
+    this.paddingSlider.addEventListener("pointerup", () => this.endPaddingEdit());
+    this.paddingSlider.addEventListener("pointercancel", () => this.endPaddingEdit());
+    this.paddingSlider.addEventListener("blur", () => this.endPaddingEdit());
+    this.paddingValueButton.addEventListener("click", () => this.openPaddingEditor());
+    this.paddingExactInput.addEventListener("blur", () => this.commitPaddingEditor());
+    this.paddingExactInput.addEventListener("keydown", (event) => this.paddingEditorKeyDown(event));
+    this.stagingButton?.addEventListener("click", () => this.runStaging());
     for (const eventName of ["pointerdown", "pointermove", "pointerup", "wheel", "click", "dblclick"]) {
       this.root.addEventListener(eventName, (event) => event.stopPropagation());
     }
@@ -210,35 +247,13 @@ class LayeredPlacementEditor {
     this.resizeObserver.observe(this.stage);
   }
 
-  labeledControl(label) {
-    const group = element("label", { display: "flex", flexDirection: "column", gap: "2px", minWidth: "0" });
-    const caption = document.createElement("span");
-    caption.textContent = label;
-    caption.style.opacity = ".78";
-    group.append(caption);
-    return group;
-  }
-
-  controlStyle() {
-    return {
-      boxSizing: "border-box",
-      width: "100%",
-      height: "23px",
-      minWidth: "0",
-      border: "1px solid rgba(255,255,255,.2)",
-      borderRadius: "4px",
-      color: "inherit",
-      background: "rgba(0,0,0,.25)",
-    };
-  }
-
   installWidget() {
     this.placementWidget.computeSize = () => [0, -4];
     this.placementWidget.draw = () => {};
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => 370 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 7) * 28,
+      getMinHeight: () => 350 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 7) * 44,
     });
     widget.serialize = false;
     const placementIndex = this.node.widgets.indexOf(this.placementWidget);
@@ -357,14 +372,16 @@ class LayeredPlacementEditor {
     const signature = `${layers.join("|")}::${this.selected || ""}`;
     if (signature === this.layerListSignature) return;
     this.layerListSignature = signature;
+    this.rowControls.clear();
     this.layerList.replaceChildren(...layers.map((key, index) => {
       const selected = key === this.selected;
       const row = element("div", {
         display: "flex",
+        flexWrap: "wrap",
         alignItems: "center",
-        gap: "7px",
-        minHeight: "24px",
-        padding: "2px 7px",
+        gap: "6px",
+        minHeight: "40px",
+        padding: "4px 6px",
         border: `1px solid ${selected ? "#65c9ff" : "rgba(255,255,255,.14)"}`,
         borderRadius: "3px",
         background: selected ? "rgba(64,180,255,.18)" : "rgba(255,255,255,.04)",
@@ -372,20 +389,46 @@ class LayeredPlacementEditor {
       });
       row.dataset.layer = key;
       const grip = element("span", {
-        flex: "0 0 auto",
+        alignSelf: "stretch",
+        display: "flex",
+        flex: "0 0 40px",
+        alignItems: "center",
+        justifyContent: "center",
         color: "rgba(255,255,255,.65)",
         cursor: "grab",
-        fontSize: "16px",
-        lineHeight: "16px",
+        fontSize: "20px",
+        lineHeight: "20px",
+        borderRight: "1px solid rgba(255,255,255,.12)",
       });
       grip.textContent = "⠿";
       grip.title = "Drag to change stacking order";
       grip.draggable = true;
-      const name = element("span", { flex: "1 1 auto", overflow: "hidden", textOverflow: "ellipsis" });
+      const name = element("span", { flex: "1 1 110px", minWidth: "90px", overflow: "hidden", textOverflow: "ellipsis" });
       name.textContent = key;
       const position = element("span", { flex: "0 0 auto", opacity: ".65", fontSize: "11px" });
       position.textContent = index === 0 ? "back" : index === layers.length - 1 ? "front" : String(index + 1);
-      row.append(grip, name, position);
+      const controls = element("div", {
+        display: "flex",
+        flex: "4 1 540px",
+        flexWrap: "wrap",
+        gap: "5px",
+        alignItems: "center",
+      });
+      const numericInputs = {};
+      for (const [field, label, tooltip] of [
+        ["scale", "Scale", "Foreground size relative to the background"],
+        ["center_x", "Center X", "Horizontal center divided by background width"],
+        ["center_y", "Center Y", "Vertical center divided by background height"],
+      ]) {
+        const numeric = this.createLayerNumericControl(key, field, label, tooltip);
+        numericInputs[field] = numeric.input;
+        controls.append(numeric.root);
+      }
+      const flip = this.createLayerAction("Flip H", "Mirror this foreground horizontally", () => this.toggleHorizontalFlip(key));
+      const reset = this.createLayerAction("Reset", "Reset this foreground placement", () => this.resetLayer(key));
+      controls.append(flip, reset);
+      this.rowControls.set(key, { inputs: numericInputs, flip, reset });
+      row.append(grip, name, position, controls);
       row.addEventListener("click", () => this.selectLayer(key));
       grip.addEventListener("dragstart", (event) => {
         this.draggedLayer = key;
@@ -415,6 +458,109 @@ class LayeredPlacementEditor {
       });
       return row;
     }));
+    this.syncNumericControls();
+  }
+
+  createLayerNumericControl(key, field, label, tooltip) {
+    const root = element("div", {
+      display: "flex",
+      flex: "1 1 150px",
+      minWidth: "140px",
+      height: "32px",
+      alignItems: "center",
+      gap: "3px",
+    });
+    root.title = tooltip;
+    const caption = element("span", { flex: "0 0 auto", opacity: ".78", whiteSpace: "nowrap" });
+    caption.textContent = label;
+    const decrement = this.createStepButton("←", `${label}: decrease by 0.01`);
+    const increment = this.createStepButton("→", `${label}: increase by 0.01`);
+    const input = element("input", {
+      boxSizing: "border-box",
+      flex: "1 1 54px",
+      minWidth: "48px",
+      width: "54px",
+      height: "32px",
+      border: "1px solid rgba(255,255,255,.2)",
+      borderRadius: "4px",
+      color: "inherit",
+      background: "rgba(0,0,0,.25)",
+      textAlign: "center",
+    });
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.dataset.field = field;
+    input.setAttribute("aria-label", `${key} ${label}`);
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("change", () => this.numericChanged(key, field, input.value));
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        const dimensions = this.dimensions();
+        const placement = dimensions
+          ? rectToPlacement(dimensions.width, dimensions.height, this.rectFor(key, dimensions), this.layerPlacement(key))
+          : DEFAULT_PLACEMENT;
+        input.value = Number(placement[field]).toFixed(4);
+        input.blur();
+      }
+    });
+    decrement.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.stepLayerValue(key, field, -0.01);
+    });
+    increment.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.stepLayerValue(key, field, 0.01);
+    });
+    root.addEventListener("click", (event) => event.stopPropagation());
+    root.append(caption, decrement, input, increment);
+    return { root, input };
+  }
+
+  createStepButton(text, title) {
+    const button = element("button", {
+      flex: "0 0 32px",
+      width: "32px",
+      height: "32px",
+      padding: "0",
+      border: "1px solid rgba(255,255,255,.2)",
+      borderRadius: "4px",
+      color: "inherit",
+      background: "rgba(0,0,0,.25)",
+      cursor: "pointer",
+      fontSize: "16px",
+    });
+    button.type = "button";
+    button.textContent = text;
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    return button;
+  }
+
+  createLayerAction(text, title, callback) {
+    const button = element("button", {
+      flex: "0 0 auto",
+      height: "32px",
+      padding: "2px 9px",
+      border: "1px solid rgba(255,255,255,.2)",
+      borderRadius: "4px",
+      color: "inherit",
+      background: "rgba(0,0,0,.25)",
+      cursor: "pointer",
+    });
+    button.type = "button";
+    button.textContent = text;
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      callback();
+    });
+    return button;
   }
 
   resolveBackground(force) {
@@ -690,8 +836,8 @@ class LayeredPlacementEditor {
     const pending = layers.filter((key) => !this.layerMetadata(key)).length;
     if (this.isStagedComposite() && !layers.length) {
       this.status.textContent = this.usesRetainedStage()
-        ? "No retained stage • choose run_staging and queue this node"
-        : "Queue to load a fresh foreground stage";
+        ? "No retained stage • use Run Staging to refresh previews"
+        : "Use Run Staging to load a fresh foreground stage";
     } else if (pending) {
       this.status.textContent = `${pending} foreground${pending === 1 ? "" : "s"} pending removal pass`;
     } else {
@@ -935,25 +1081,26 @@ class LayeredPlacementEditor {
 
   syncNumericControls() {
     const dimensions = this.dimensions();
-    const placement = this.selected && dimensions
-      ? rectToPlacement(
-          dimensions.width, dimensions.height, this.rectFor(this.selected, dimensions),
-          this.layerPlacement(this.selected),
-        )
-      : DEFAULT_PLACEMENT;
-    for (const [field, input] of Object.entries(this.inputs)) {
-      input.disabled = !this.selected;
-      input.value = Number(placement[field]).toFixed(4);
+    for (const [key, controls] of this.rowControls.entries()) {
+      const placement = dimensions
+        ? rectToPlacement(
+            dimensions.width, dimensions.height, this.rectFor(key, dimensions),
+            this.layerPlacement(key),
+          )
+        : DEFAULT_PLACEMENT;
+      for (const [field, input] of Object.entries(controls.inputs)) {
+        if (document.activeElement !== input) input.value = Number(placement[field]).toFixed(4);
+      }
+      controls.flip.setAttribute("aria-pressed", String(placement.flip_horizontal === true));
+      controls.flip.style.background = placement.flip_horizontal
+        ? "rgba(64,180,255,.30)"
+        : "rgba(0,0,0,.25)";
     }
-    this.paddingInput.value = normalizeWorkspacePadding(
+    const padding = normalizeWorkspacePadding(
       this.data.workspace_padding ?? DEFAULT_WORKSPACE_PADDING,
-    ).toFixed(2);
-    this.resetButton.disabled = !this.selected;
-    this.flipButton.disabled = !this.selected;
-    this.flipButton.setAttribute("aria-pressed", String(placement.flip_horizontal === true));
-    this.flipButton.style.background = placement.flip_horizontal
-      ? "rgba(64,180,255,.30)"
-      : "rgba(0,0,0,.25)";
+    );
+    this.paddingSlider.value = String(padding);
+    this.paddingValueButton.textContent = padding.toFixed(2);
   }
 
   dropLayer(dragged, target, insertAfter) {
@@ -978,50 +1125,141 @@ class LayeredPlacementEditor {
     this.requestDraw();
   }
 
-  paddingChanged(value) {
+  beginPaddingEdit() {
+    if (this.paddingEditActive) return;
+    this.paddingEditActive = true;
     this.node.graph?.beforeChange?.();
+  }
+
+  updatePadding(value) {
+    if (!this.paddingEditActive) this.beginPaddingEdit();
     this.data.workspace_padding = normalizeWorkspacePadding(value);
     this.placementWidget.value = serializePlacementData(this.data);
     this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
     this.node.graph?.setDirtyCanvas?.(true, true);
-    this.node.graph?.afterChange?.();
     this.syncNumericControls();
     this.requestDraw();
   }
 
-  numericChanged(field, value) {
-    if (!this.selected) return;
+  endPaddingEdit() {
+    if (!this.paddingEditActive) return;
+    this.paddingEditActive = false;
+    this.node.graph?.afterChange?.();
+  }
+
+  paddingChanged(value) {
+    this.beginPaddingEdit();
+    this.updatePadding(value);
+    this.endPaddingEdit();
+  }
+
+  openPaddingEditor() {
+    this.paddingValueButton.style.display = "none";
+    this.paddingExactInput.style.display = "block";
+    this.paddingExactInput.value = normalizeWorkspacePadding(this.data.workspace_padding).toFixed(2);
+    this.paddingExactInput.focus();
+    this.paddingExactInput.select();
+  }
+
+  commitPaddingEditor() {
+    if (this.paddingExactInput.style.display === "none") return;
+    const value = this.paddingExactInput.value;
+    this.paddingExactInput.style.display = "none";
+    this.paddingValueButton.style.display = "block";
+    this.paddingChanged(value);
+  }
+
+  paddingEditorKeyDown(event) {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      this.commitPaddingEditor();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      this.paddingExactInput.style.display = "none";
+      this.paddingValueButton.style.display = "block";
+      this.syncNumericControls();
+      this.paddingValueButton.focus();
+    }
+  }
+
+  numericChanged(key, field, value) {
     const dimensions = this.dimensions();
     if (!dimensions) return;
+    const normalizedValue = Number(value);
+    if (!Number.isFinite(normalizedValue)) {
+      this.syncNumericControls();
+      return;
+    }
     const placement = {
-      ...rectToPlacement(dimensions.width, dimensions.height, this.rectFor(this.selected, dimensions)),
-      flip_horizontal: this.layerPlacement(this.selected).flip_horizontal,
-      [field]: Number(value),
+      ...rectToPlacement(dimensions.width, dimensions.height, this.rectFor(key, dimensions)),
+      flip_horizontal: this.layerPlacement(key).flip_horizontal,
+      [field]: normalizedValue,
     };
     this.node.graph?.beforeChange?.();
-    this.queuePlacement(this.selected, placement);
+    this.selected = key;
+    this.queuePlacement(key, placement);
     this.flushPlacement();
     this.node.graph?.afterChange?.();
+    this.layerListSignature = null;
+    this.syncLayerList(this.connectedLayers());
+  }
+
+  stepLayerValue(key, field, delta) {
+    const dimensions = this.dimensions();
+    if (!dimensions) return;
+    const placement = rectToPlacement(
+      dimensions.width, dimensions.height, this.rectFor(key, dimensions), this.layerPlacement(key),
+    );
+    this.numericChanged(key, field, stepPlacementValue(field, placement[field], delta));
+  }
+
+  resetLayer(key) {
+    this.node.graph?.beforeChange?.();
+    this.selected = key;
+    this.queuePlacement(key, DEFAULT_PLACEMENT);
+    this.flushPlacement();
+    this.node.graph?.afterChange?.();
+    this.layerListSignature = null;
+    this.syncLayerList(this.connectedLayers());
   }
 
   resetSelected() {
-    if (!this.selected) return;
-    this.node.graph?.beforeChange?.();
-    this.queuePlacement(this.selected, DEFAULT_PLACEMENT);
-    this.flushPlacement();
-    this.node.graph?.afterChange?.();
+    if (this.selected) this.resetLayer(this.selected);
   }
 
-  toggleHorizontalFlip() {
-    if (!this.selected) return;
-    const placement = this.layerPlacement(this.selected);
+  toggleHorizontalFlip(key = this.selected) {
+    if (!key) return;
+    const placement = this.layerPlacement(key);
     this.node.graph?.beforeChange?.();
-    this.queuePlacement(this.selected, {
+    this.selected = key;
+    this.queuePlacement(key, {
       ...placement,
       flip_horizontal: !placement.flip_horizontal,
     });
     this.flushPlacement();
     this.node.graph?.afterChange?.();
+    this.layerListSignature = null;
+    this.syncLayerList(this.connectedLayers());
+  }
+
+  async runStaging() {
+    if (!this.stagingButton || this.stagingButton.disabled) return;
+    const originalText = this.stagingButton.textContent;
+    this.stagingButton.disabled = true;
+    this.stagingButton.textContent = "Staging…";
+    this.stagingButton.style.cursor = "wait";
+    try {
+      await queueStagingNode(this.node);
+    } catch (error) {
+      console.error("Unable to queue staged compositor", error);
+      this.status.textContent = `Staging queue failed: ${error?.message || error}`;
+      this.status.hidden = false;
+    } finally {
+      this.stagingButton.disabled = false;
+      this.stagingButton.textContent = originalText;
+      this.stagingButton.style.cursor = "pointer";
+    }
   }
 
   keyDown(event) {
@@ -1074,6 +1312,7 @@ class LayeredPlacementEditor {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.endPaddingEdit();
     clearInterval(this.pollTimer);
     this.resizeObserver?.disconnect();
     if (this.drawFrame) cancelAnimationFrame(this.drawFrame);

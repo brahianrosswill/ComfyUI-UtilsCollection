@@ -11,6 +11,12 @@ const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(valu
 export const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 export const normalizeWorkspacePadding = (value) => clamp(finite(value, DEFAULT_WORKSPACE_PADDING), 0, 1);
 
+export function stepPlacementValue(field, value, delta) {
+  const minimum = field === "scale" ? 0.05 : -10;
+  const fallback = field === "scale" ? DEFAULT_PLACEMENT.scale : 0.5;
+  return clamp(Math.round((finite(value, fallback) + finite(delta, 0)) * 100) / 100, minimum, 10);
+}
+
 export function normalizePlacement(value = {}, version = 2) {
   const scale = clamp(finite(value.scale, DEFAULT_PLACEMENT.scale), 0.05, 10);
   if (version === 1 && value.center_x === undefined && value.center_y === undefined) {
