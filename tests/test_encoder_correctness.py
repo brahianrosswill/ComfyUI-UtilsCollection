@@ -168,6 +168,25 @@ def test_krea2_mapping_mirrors_core_prefix_strip():
     assert mapping[8:] == [(0, 1), (1, 2), (2, 3)]
 
 
+def test_mage_flow_mapping_mirrors_core_prefix_strip():
+    image = torch.zeros(1, 832, 1248, 3)
+    tokens = [(151644, 1.0), (8948, 1.0), (198, 1.0)]
+    tokens.extend((token_id, 1.0) for token_id in range(28))
+    tokens.extend([
+        (np.int64(151644), 1.0), (872, 1.0), (198, 1.0), (74785, 1.0),
+        ({"type": "image", "data": image}, 1.0),
+        (100, 1.0), (101, 1.0), (102, 1.0), (103, 1.0), (104, 1.0), (151645, 1.0),
+    ])
+    conditioning = torch.zeros(1, 1021, 2560)
+
+    mapping = encoder_helpers.build_token_to_conditioning_map(tokens, conditioning)
+
+    assert mapping[:34] == [(-1, -1)] * 34
+    assert mapping[34] == (0, 1)
+    assert mapping[35] == (1, 1015)
+    assert mapping[-1] == (1020, 1021)
+
+
 def test_krea2_mapping_mirrors_custom_system_prefix_strip():
     image = torch.zeros(1, 32, 32, 3)
     tokens = [

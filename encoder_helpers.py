@@ -283,8 +283,8 @@ def _token_id(token):
     return int(value) if isinstance(value, numbers.Integral) else None
 
 
-def _released_krea2_prefix_end(token_list, expanded_length: int) -> int:
-    """Mirror released Core's Krea2 prefix slice exactly."""
+def _released_qwen3vl_prefix_end(token_list, expanded_length: int) -> int:
+    """Mirror released Core's Qwen3-VL prefix slice for Krea2 and Mage Flow."""
     template_end = -1
     count_im_start = 0
     ids = [_token_id(token) for token in token_list]
@@ -294,7 +294,7 @@ def _released_krea2_prefix_end(token_list, expanded_length: int) -> int:
             count_im_start += 1
 
     if template_end < 0:
-        raise ValueError("Could not locate the Krea2 template prefix marker used by released Core.")
+        raise ValueError("Could not locate the Qwen3-VL template prefix marker used by released Core.")
     if expanded_length > template_end + 3:
         if ids[template_end + 1:template_end + 3] == [_QWEN_USER, _QWEN_NL]:
             template_end += 3
@@ -358,15 +358,24 @@ def visual_fusion_grid(image, visual_length: int, legacy_flat: bool = False) -> 
 def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, int]]:
     """Map raw tokenizer entries to conditioning spans, validating all inferred lengths."""
     cond_len = cond_tensor.shape[1]
-    is_krea2 = cond_tensor.shape[-1] == 12 * 2560
     exact_spans = [_qwen3vl_image_span(token) if is_image_token(token) else 1 for token in token_list]
     if not all(span is not None for span in exact_spans):
         raise ValueError("Cannot derive token positions because an image token has no usable Qwen3-VL tensor payload.")
 
     total_length = sum(exact_spans)
-    prefix_len = _released_krea2_prefix_end(token_list, total_length) if is_krea2 else 0
+    if total_length == cond_len:
+        prefix_len = 0
+    else:
+        try:
+            prefix_len = _released_qwen3vl_prefix_end(token_list, total_length)
+        except ValueError as error:
+            raise ValueError(
+                "Released Core's Qwen3-VL prefix rule cannot explain the returned conditioning length; "
+                "refusing to guess a visual range "
+                f"(conditioning_length={cond_len}, expanded_length={total_length})."
+            ) from error
     if any(is_image_token(token) for token in token_list[:prefix_len]):
-        raise ValueError("Released Core's Krea2 prefix slice crosses a visual token; mapping is unsafe.")
+        raise ValueError("Released Core's Qwen3-VL prefix slice crosses a visual token; mapping is unsafe.")
 
     token_spans = exact_spans[prefix_len:]
     expected_length = sum(token_spans)
@@ -378,7 +387,7 @@ def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, 
         ]
         nearby_ids = [_token_id(token) for token in token_list[max(0, prefix_len - 3):prefix_len + 4]]
         raise ValueError(
-            "Released Core's Krea2 prefix rule does not match the returned conditioning length; "
+            "Released Core's Qwen3-VL prefix rule does not match the returned conditioning length; "
             "refusing to guess a visual range "
             f"(conditioning_length={cond_len}, expected_length={expected_length}, "
             f"expanded_length={total_length}, prefix_end={prefix_len}, "
