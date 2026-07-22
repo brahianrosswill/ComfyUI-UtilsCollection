@@ -58,6 +58,7 @@ DESCRIPTIONS = {
     "UC_SwitchInverseNode": "Selects between two inputs using an inverted boolean switch.",
     "UC_SoftSwitchInverseNode": "Selects available inputs using an inverted soft switch.",
     "UC_IntegerRangeRandom": "Returns a seeded random integer within a configurable range.",
+    "UC_GetJsonValue": "Selects a typed value from a top-level JSON object by key, index, or seed.",
     "UC_TagNormalizeCombine": "Normalizes, deduplicates, scores, and combines tag strings.",
     "UC_RandInt": "Outputs an integer widget with generation-time control behavior.",
     "UC_StaticInt": "Outputs one reusable static integer value.",
@@ -83,6 +84,7 @@ DESCRIPTIONS = {
 EXTRA_ALIASES = {
     "UC_StaticInt": ["primitive integer", "number", "shared integer", "constant int"],
     "UC_StaticFloat": ["primitive float", "number", "decimal", "megapixel", "shared value", "constant float"],
+    "UC_GetJsonValue": ["json", "value", "random value", "key value", "configuration"],
     "UC_ConditioningConsensusBlend": ["conditioning merge", "conditioning combine", "post encoder", "cwb"],
     "UC_VisualFusionConfig": ["image token fusion", "visual blend", "dither", "checkerboard"],
     "UC_TextConsensusBlendConfig": ["conditioning blend config", "text merge", "cwb config"],

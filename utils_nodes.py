@@ -69,6 +69,102 @@ class UC_IntegerRangeRandom(io.ComfyNode):
         return io.NodeOutput(rng.randint(min_val, max_val))
 
 
+class UC_GetJsonValue(io.ComfyNode):
+    """Selects a value from a top-level JSON object without changing its type."""
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_GetJsonValue",
+            display_name="Get JSON Value",
+            category="utils/primitive",
+            inputs=[
+                io.String.Input(
+                    "json_path",
+                    default="./input/values.json",
+                    multiline=False,
+                    tooltip="Path to a JSON file containing a top-level object of named values.",
+                ),
+                io.Combo.Input(
+                    "selection_mode",
+                    options=["key", "random", "index"],
+                    default="key",
+                    tooltip="Select a value by its key, a deterministic random choice, or its insertion-order index.",
+                ),
+                io.String.Input(
+                    "key",
+                    default="",
+                    multiline=False,
+                    tooltip="Top-level JSON key to use when selection mode is key.",
+                ),
+                io.Int.Input(
+                    "index",
+                    default=0,
+                    min=0,
+                    max=sys.maxsize,
+                    tooltip="Zero-based insertion-order index to use when selection mode is index.",
+                ),
+                io.Int.Input(
+                    "seed",
+                    default=0,
+                    min=0,
+                    max=0xFFFFFFFFFFFFFFFF,
+                    control_after_generate=True,
+                    tooltip="Seed used for deterministic random selection.",
+                ),
+            ],
+            outputs=[
+                io.AnyType.Output(
+                    display_name="value",
+                    tooltip="The selected JSON value in its original JSON type.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        json_path: str,
+        selection_mode: str,
+        key: str,
+        index: int,
+        seed: int,
+    ) -> io.NodeOutput:
+        absolute_path = os.path.abspath(json_path)
+        try:
+            with open(absolute_path, "r", encoding="utf-8") as file:
+                values = json.load(file)
+        except FileNotFoundError as exc:
+            raise ValueError(f"JSON value file was not found: {absolute_path}") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Could not decode JSON value file {absolute_path}: {exc.msg}.") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Could not read JSON value file {absolute_path}: {exc}") from exc
+
+        if not isinstance(values, dict):
+            raise ValueError(f"JSON value file must contain a top-level object: {absolute_path}")
+        if not values:
+            raise ValueError(f"JSON value file is empty: {absolute_path}")
+
+        if selection_mode == "key":
+            if key not in values:
+                raise ValueError(f"JSON key {key!r} was not found in {absolute_path}.")
+            value = values[key]
+        elif selection_mode == "random":
+            value = random.Random(seed).choice(list(values.values()))
+        elif selection_mode == "index":
+            value_list = list(values.values())
+            if index >= len(value_list):
+                raise ValueError(
+                    f"JSON value index {index} is out of range for {len(value_list)} value(s)."
+                )
+            value = value_list[index]
+        else:
+            raise ValueError(f"Unsupported JSON value selection mode: {selection_mode!r}")
+
+        return io.NodeOutput(value)
+
+
 class UC_TagNormalizeCombine(io.ComfyNode):
     """
     Node that normalizes scores in two sets of tags and combines them,
