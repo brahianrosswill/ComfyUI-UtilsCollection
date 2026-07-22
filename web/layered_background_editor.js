@@ -253,7 +253,7 @@ class LayeredPlacementEditor {
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => 350 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 7) * 44,
+      getMinHeight: () => 358 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 7) * 52,
     });
     widget.serialize = false;
     const placementIndex = this.node.widgets.indexOf(this.placementWidget);
@@ -380,7 +380,7 @@ class LayeredPlacementEditor {
         flexWrap: "wrap",
         alignItems: "center",
         gap: "6px",
-        minHeight: "40px",
+        minHeight: "48px",
         padding: "4px 6px",
         border: `1px solid ${selected ? "#65c9ff" : "rgba(255,255,255,.14)"}`,
         borderRadius: "3px",
@@ -411,7 +411,7 @@ class LayeredPlacementEditor {
         display: "flex",
         flex: "4 1 540px",
         flexWrap: "wrap",
-        gap: "5px",
+        gap: "8px",
         alignItems: "center",
       });
       const numericInputs = {};
@@ -463,18 +463,23 @@ class LayeredPlacementEditor {
 
   createLayerNumericControl(key, field, label, tooltip) {
     const root = element("div", {
+      boxSizing: "border-box",
       display: "flex",
-      flex: "1 1 150px",
-      minWidth: "140px",
-      height: "32px",
+      flex: "1 1 170px",
+      minWidth: "160px",
+      height: "40px",
       alignItems: "center",
-      gap: "3px",
+      gap: "4px",
+      padding: "3px 4px",
+      border: "1px solid rgba(255,255,255,.22)",
+      borderRadius: "6px",
+      background: "rgba(0,0,0,.16)",
     });
     root.title = tooltip;
     const caption = element("span", { flex: "0 0 auto", opacity: ".78", whiteSpace: "nowrap" });
     caption.textContent = label;
-    const decrement = this.createStepButton("←", `${label}: decrease by 0.01`);
-    const increment = this.createStepButton("→", `${label}: increase by 0.01`);
+    const decrement = this.createStepButton("◀", `${label}: decrease by 0.01`);
+    const increment = this.createStepButton("▶", `${label}: increase by 0.01`);
     const input = element("input", {
       boxSizing: "border-box",
       flex: "1 1 54px",
@@ -532,7 +537,8 @@ class LayeredPlacementEditor {
       color: "inherit",
       background: "rgba(0,0,0,.25)",
       cursor: "pointer",
-      fontSize: "16px",
+      fontSize: "18px",
+      lineHeight: "1",
     });
     button.type = "button";
     button.textContent = text;
