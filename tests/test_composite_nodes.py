@@ -380,7 +380,12 @@ def test_background_compositor_schemas_place_variable_foregrounds_after_static_c
     assert layered[-1] == "foreground_images"
     assert layered[-4:-1] == ["image_resize_method", "mask_resize_method", "placement_data"]
     assert staged[-1] == "foreground_images"
-    assert staged[-4:-1] == ["image_resize_method", "mask_resize_method", "placement_data"]
+    assert staged[-5:-1] == [
+        "image_resize_method",
+        "mask_resize_method",
+        "placement_data",
+        "background_removal_model_name",
+    ]
     for schema in schemas:
         assert all(value.tooltip for value in schema.inputs)
 
@@ -688,16 +693,16 @@ def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
     mask[:, 3, 2:6] = 1
     background = torch.zeros(1, 12, 12, 3)
     output = node.execute(
-        _QueuedBackgroundModel([mask]),
-        background,
-        {"foreground_0": foreground},
-        "run_staging",
-        0.5,
-        0,
-        0,
-        0,
-        '{"version":1,"layers":{}}',
-        0,
+        background=background,
+        foreground_images={"foreground_0": foreground},
+        execution_mode="run_staging",
+        mask_threshold=0.5,
+        border_cleanup_width=0,
+        artifact_cleanup_radius=0,
+        gap_fill_radius=0,
+        placement_data='{"version":1,"layers":{}}',
+        feather_radius=0,
+        background_removal_model=_QueuedBackgroundModel([mask]),
     )
 
     assert torch.equal(output.result[0], background)
@@ -715,12 +720,17 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     model_input = next(value for value in schema.inputs if value.id == "background_removal_model")
     foreground_input = next(value for value in schema.inputs if value.id == "foreground_images")
     execution_input = next(value for value in schema.inputs if value.id == "execution_mode")
+    selector_input = next(value for value in schema.inputs if value.id == "background_removal_model_name")
     assert schema.is_output_node is True
     assert schema.display_name == "Staged Layered Background Composite (Read tooltip)"
     assert "Run only this node" in schema.description
     assert execution_input.options == ["run_staging", "run_staged", "full_run"]
-    assert execution_input.default == "run_staging"
+    assert execution_input.default == "full_run"
     assert model_input.lazy is True
+    assert model_input.optional is True
+    assert model_input.display_name == "background_removal_model_opt"
+    assert selector_input.options == ["birefnet", "lucida"]
+    assert selector_input.default == "birefnet"
     assert foreground_input.template.input.lazy is True
     node._staged_by_node.clear()
     monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-a"))
@@ -730,6 +740,9 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
     foregrounds = {"foreground_0": torch.ones(1, 4, 4, 3)}
     assert node.check_lazy_status(
+        "run_staging", foreground_images={"foreground_0": (None, "foreground_0")}
+    ) == ["foreground_0"]
+    assert node.check_lazy_status(
         "run_staging", None, {"foreground_0": (None, "foreground_0")}
     ) == ["background_removal_model", "foreground_0"]
     assert node.check_lazy_status(
@@ -737,11 +750,11 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     ) == []
     assert node.check_lazy_status("run_staged", None, {"foreground_0": (None, "foreground_0")}) == []
     fresh = node.execute(
-        model, background, foregrounds, "run_staging", 0.5, 0, 0, 0,
-        '{"version":1,"layers":{}}', 0,
+        background, foregrounds, "run_staging", 0.5, 0, 0, 0,
+        '{"version":1,"layers":{}}', 0, background_removal_model=model,
     )
     retained = node.execute(
-        None, background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
+        background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
         '{"version":1,"layers":{}}', 0,
     )
 
@@ -752,8 +765,9 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
 
     updated_model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
     full = node.execute(
-        updated_model, background, {"foreground_0": foregrounds["foreground_0"] * 0.5},
+        background, {"foreground_0": foregrounds["foreground_0"] * 0.5},
         "full_run", 0.5, 0, 0, 0, '{"version":1,"layers":{}}', 0,
+        background_removal_model=updated_model,
     )
     assert full.ui["uc_layered_scene_editor"][0]["stage_mode"] == "full_run"
     assert full.result[0].sum().item() > 0
@@ -762,9 +776,66 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-b"))
     with pytest.raises(ValueError, match="No retained foreground stage"):
         node.execute(
-            None, background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
+            background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
             '{"version":1,"layers":{}}', 0,
         )
+
+
+def test_internal_background_removal_loader_selects_exact_files_and_caches(monkeypatch, tmp_path):
+    import folder_paths
+    from comfy import bg_removal_model
+
+    loaded = []
+
+    class DummyModel:
+        def __init__(self):
+            self.image_size = 256
+            self.image_mean = [0.0, 0.0, 0.0]
+            self.image_std = [1.0, 1.0, 1.0]
+            self.config = {}
+
+        def encode_image(self, image):
+            return image
+
+    def resolve(_folder, filename):
+        assert _folder == "background_removal"
+        return str(tmp_path / filename)
+
+    def load(path):
+        loaded.append(path)
+        return DummyModel()
+
+    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", resolve)
+    monkeypatch.setattr(bg_removal_model, "load", load)
+    composite_nodes._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
+
+    birefnet = composite_nodes._load_internal_background_removal_model("birefnet")
+    assert composite_nodes._load_internal_background_removal_model("birefnet") is birefnet
+    lucida = composite_nodes._load_internal_background_removal_model("lucida")
+
+    assert [pathlib.Path(path).name for path in loaded] == [
+        "birefnet.safetensors",
+        "lucida.safetensors",
+    ]
+    assert birefnet.image_mean == [0.0, 0.0, 0.0]
+    assert lucida.image_size == 1024
+    assert lucida.image_mean == [0.485, 0.456, 0.406]
+    assert lucida.image_std == [0.229, 0.224, 0.225]
+    assert lucida.config["image_mean"] == lucida.image_mean
+
+
+def test_internal_background_removal_loader_reports_expected_filename(monkeypatch):
+    import folder_paths
+
+    composite_nodes._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
+    monkeypatch.setattr(
+        folder_paths,
+        "get_full_path_or_raise",
+        lambda *_args: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+
+    with pytest.raises(ValueError, match=r"models[\\/]background_removal[\\/]lucida\.safetensors"):
+        composite_nodes._load_internal_background_removal_model("lucida")
 
 
 def test_staged_compositor_preserves_exact_size_non_overlapping_foregrounds(monkeypatch):

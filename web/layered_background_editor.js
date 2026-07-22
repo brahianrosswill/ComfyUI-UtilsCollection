@@ -16,6 +16,11 @@ import {
   stepPlacementValue,
 } from "./placement_geometry.js";
 import { buildStagingPrompt } from "./staged_queue.js";
+import {
+  backgroundModelAppearance,
+  normalizeBackgroundModel,
+  toggleBackgroundModel,
+} from "./background_model_selection.js";
 
 const NODE_TYPES = new Set([
   "UC_LayeredBackgroundComposite",
@@ -68,6 +73,9 @@ class LayeredPlacementEditor {
     this.node = node;
     this.placementWidget = node.widgets?.find((widget) => widget.name === "placement_data");
     if (!this.placementWidget) throw new Error("Layered compositor placement_data widget was not created.");
+    this.modelWidget = node.widgets?.find((widget) => widget.name === "background_removal_model_name");
+    if (this.modelWidget) this.modelWidget.value = normalizeBackgroundModel(this.modelWidget.value);
+    this.modelSelectionStale = false;
     this.migrateLegacyWidgetOrder();
     const executionWidget = node.widgets?.find((widget) => widget.name === "execution_mode");
     if (typeof executionWidget?.value === "boolean") {
@@ -185,6 +193,22 @@ class LayeredPlacementEditor {
     this.paddingOverlay.append(paddingLabel, this.paddingSlider, this.paddingValueButton, this.paddingExactInput);
 
     if (this.isStagedComposite()) {
+      this.modelButton = element("button", {
+        position: "absolute",
+        left: "8px",
+        top: "8px",
+        height: "30px",
+        minWidth: "82px",
+        padding: "3px 11px",
+        borderRadius: "5px",
+        color: "#fff",
+        cursor: "pointer",
+      });
+      this.modelButton.type = "button";
+      this.modelButton.title = (
+        "Select the internally loaded background-removal model. A connected "
+        + "background_removal_model_opt input overrides this selection."
+      );
       this.stagingButton = element("button", {
         position: "absolute",
         right: "8px",
@@ -202,6 +226,7 @@ class LayeredPlacementEditor {
       this.stagingButton.title = "Refresh this node's retained cutouts and placement previews";
     }
     this.stage.append(this.canvas, this.status, this.paddingOverlay);
+    if (this.modelButton) this.stage.append(this.modelButton);
     if (this.stagingButton) this.stage.append(this.stagingButton);
 
     this.layerListGroup = element("div", { display: "flex", flexDirection: "column", gap: "3px" });
@@ -232,6 +257,7 @@ class LayeredPlacementEditor {
     this.paddingValueButton.addEventListener("click", () => this.openPaddingEditor());
     this.paddingExactInput.addEventListener("blur", () => this.commitPaddingEditor());
     this.paddingExactInput.addEventListener("keydown", (event) => this.paddingEditorKeyDown(event));
+    this.modelButton?.addEventListener("click", () => this.toggleBackgroundModel());
     this.stagingButton?.addEventListener("click", () => this.runStaging());
     for (const eventName of ["pointerdown", "pointermove", "pointerup", "wheel", "click", "dblclick"]) {
       this.root.addEventListener(eventName, (event) => event.stopPropagation());
@@ -245,11 +271,16 @@ class LayeredPlacementEditor {
     this.canvas.addEventListener("blur", () => this.finishKeyTransaction());
     this.resizeObserver = new ResizeObserver(() => this.requestDraw());
     this.resizeObserver.observe(this.stage);
+    this.syncModelButton();
   }
 
   installWidget() {
     this.placementWidget.computeSize = () => [0, -4];
     this.placementWidget.draw = () => {};
+    if (this.modelWidget) {
+      this.modelWidget.computeSize = () => [0, -4];
+      this.modelWidget.draw = () => {};
+    }
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
       hideOnZoom: false,
@@ -460,6 +491,26 @@ class LayeredPlacementEditor {
       return row;
     }));
     this.syncNumericControls();
+  }
+
+  syncModelButton() {
+    if (!this.modelButton) return;
+    const appearance = backgroundModelAppearance(this.modelWidget?.value);
+    this.modelButton.textContent = appearance.text;
+    this.modelButton.style.border = `1px solid ${appearance.border}`;
+    this.modelButton.style.background = appearance.background;
+  }
+
+  toggleBackgroundModel() {
+    if (!this.modelWidget) return;
+    this.node.graph?.beforeChange?.();
+    this.modelWidget.value = toggleBackgroundModel(this.modelWidget.value);
+    this.modelWidget.callback?.(this.modelWidget.value, app.canvas, this.node);
+    this.modelSelectionStale = true;
+    this.node.graph?.setDirtyCanvas?.(true, true);
+    this.node.graph?.afterChange?.();
+    this.syncModelButton();
+    this.requestDraw();
   }
 
   createLayerNumericControl(key, field, label, tooltip) {
@@ -711,6 +762,7 @@ class LayeredPlacementEditor {
     if (!metadata || metadata.version !== 1) return;
     this.metadata = metadata;
     this.metadataSignature = this.semanticSignature();
+    if (metadata.stage_mode !== "retained") this.modelSelectionStale = false;
     this.cutouts.clear();
     const generation = ++this.metadataGeneration;
     for (const layer of metadata.layers || []) {
@@ -841,7 +893,9 @@ class LayeredPlacementEditor {
     context.strokeRect(this.view.x, this.view.y, this.view.width, this.view.height);
     if (this.selected) this.drawHandles(context, this.selected, dimensions);
     const pending = layers.filter((key) => !this.layerMetadata(key)).length;
-    if (this.isStagedComposite() && !layers.length) {
+    if (this.isStagedComposite() && this.modelSelectionStale) {
+      this.status.textContent = "Removal model changed • use Run Staging to refresh previews";
+    } else if (this.isStagedComposite() && !layers.length) {
       this.status.textContent = this.usesRetainedStage()
         ? "No retained stage • use Run Staging to refresh previews"
         : "Use Run Staging to load a fresh foreground stage";

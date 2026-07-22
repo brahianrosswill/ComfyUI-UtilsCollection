@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import os
 
 import numpy as np
 import torch
@@ -36,6 +37,64 @@ _MASK_RESIZE_TOOLTIP = (
     "Mask resampling method. auto uses area when shrinking and bilinear when enlarging while preserving soft coverage; "
     "nearest-exact produces a hard binary edge."
 )
+_BACKGROUND_REMOVAL_MODEL_FILES = {
+    "birefnet": "birefnet.safetensors",
+    "lucida": "lucida.safetensors",
+}
+_LUCIDA_IMAGE_MEAN = [0.485, 0.456, 0.406]
+_LUCIDA_IMAGE_STD = [0.229, 0.224, 0.225]
+_MISSING = object()
+_INTERNAL_BACKGROUND_REMOVAL_CACHE = {"key": None, "model": None}
+
+
+def _load_internal_background_removal_model(model_name):
+    selected = str(model_name or "birefnet").lower()
+    filename = _BACKGROUND_REMOVAL_MODEL_FILES.get(selected)
+    if filename is None:
+        choices = ", ".join(_BACKGROUND_REMOVAL_MODEL_FILES)
+        raise ValueError(f"Unsupported internal background-removal model {model_name!r}; choose {choices}.")
+
+    import folder_paths
+    from comfy import bg_removal_model
+
+    try:
+        model_path = folder_paths.get_full_path_or_raise("background_removal", filename)
+    except Exception as exc:
+        expected = os.path.join("models", "background_removal", filename)
+        raise ValueError(
+            f"The selected {selected} background-removal model is missing. "
+            f"Install it as {expected}."
+        ) from exc
+
+    cache_key = (selected, os.path.normcase(os.path.abspath(model_path)))
+    if _INTERNAL_BACKGROUND_REMOVAL_CACHE["key"] == cache_key:
+        return _INTERNAL_BACKGROUND_REMOVAL_CACHE["model"]
+
+    try:
+        model = bg_removal_model.load(model_path)
+    except Exception as exc:
+        raise ValueError(
+            f"Comfy Core could not load {filename} as the {selected} background-removal model."
+        ) from exc
+    if model is None or not callable(getattr(model, "encode_image", None)):
+        raise ValueError(
+            f"Comfy Core did not recognize {filename} as a supported background-removal model."
+        )
+
+    if selected == "lucida":
+        model.image_size = 1024
+        model.image_mean = list(_LUCIDA_IMAGE_MEAN)
+        model.image_std = list(_LUCIDA_IMAGE_STD)
+        if isinstance(getattr(model, "config", None), dict):
+            model.config.update({
+                "image_size": model.image_size,
+                "image_mean": list(model.image_mean),
+                "image_std": list(model.image_std),
+            })
+
+    _INTERNAL_BACKGROUND_REMOVAL_CACHE["key"] = cache_key
+    _INTERNAL_BACKGROUND_REMOVAL_CACHE["model"] = model
+    return model
 
 
 def _resize_image(image, width, height, method, crop="disabled"):
@@ -894,6 +953,8 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
         "background": {"width": background_width, "height": background_height},
         "layers": [],
     }
+    if staged_foregrounds.get("background_removal_model_name"):
+        editor_metadata["background_removal_model_name"] = staged_foregrounds["background_removal_model_name"]
     for layer in layers:
         crop = layer["image"]
         alpha = layer["mask"][0]
@@ -1025,6 +1086,8 @@ def _composite_staged_foregrounds(
         "background": {"width": background_width, "height": background_height},
         "layers": [],
     }
+    if staged_foregrounds.get("background_removal_model_name"):
+        editor_metadata["background_removal_model_name"] = staged_foregrounds["background_removal_model_name"]
     if stage_mode:
         editor_metadata["stage_mode"] = stage_mode
     for layer in editor_layers:
@@ -1063,14 +1126,19 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             inputs=[
                 io.BackgroundRemoval.Input(
                     "background_removal_model",
+                    display_name="background_removal_model_opt",
+                    optional=True,
                     lazy=True,
-                    tooltip="Core background-removal model used when run_staging or full_run refreshes the foreground cutouts.",
+                    tooltip=(
+                        "Optional external Core background-removal model. When connected it overrides the internal "
+                        "BiRefNet/Lucida selector."
+                    ),
                 ),
                 io.Image.Input("background", tooltip="Single image used as the scene canvas."),
                 io.Combo.Input(
                     "execution_mode",
                     options=["run_staging", "run_staged", "full_run"],
-                    default="run_staging",
+                    default="full_run",
                     tooltip=(
                         "run_staging: refresh retained cutouts and placement previews only. "
                         "run_staged: composite the retained cutouts without evaluating foreground inputs. "
@@ -1090,6 +1158,15 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                     advanced=True,
                     tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
                 ),
+                io.Combo.Input(
+                    "background_removal_model_name",
+                    options=["birefnet", "lucida"],
+                    default="birefnet",
+                    tooltip=(
+                        "Internal model used when background_removal_model_opt is disconnected. Requires the exact "
+                        "checkpoint filename under models/background_removal."
+                    ),
+                ),
                 io.Autogrow.Input(
                     "foreground_images",
                     template=foreground_template,
@@ -1105,7 +1182,7 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
     def check_lazy_status(
         cls,
         execution_mode,
-        background_removal_model=None,
+        background_removal_model=_MISSING,
         foreground_images=None,
         **kwargs,
     ):
@@ -1126,7 +1203,6 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        background_removal_model,
         background,
         foreground_images,
         execution_mode,
@@ -1138,6 +1214,8 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
         feather_radius,
         image_resize_method="auto",
         mask_resize_method="auto",
+        background_removal_model_name="birefnet",
+        background_removal_model=None,
     ):
         node_id = str(cls.hidden.unique_id or "")
         if isinstance(execution_mode, bool):
@@ -1154,7 +1232,12 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             stage_mode = "retained"
         else:
             if background_removal_model is None:
-                raise ValueError("The background-removal model was not evaluated for a fresh stage.")
+                background_removal_model = _load_internal_background_removal_model(
+                    background_removal_model_name
+                )
+                effective_model_name = str(background_removal_model_name or "birefnet").lower()
+            else:
+                effective_model_name = "external"
             staged = _stage_layered_foregrounds(
                 background_removal_model,
                 foreground_images,
@@ -1165,6 +1248,7 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                 mask_resize_method,
                 placement_data,
             )
+            staged["background_removal_model_name"] = effective_model_name
             cls._staged_by_node[node_id] = staged
             if execution_mode == "run_staging":
                 return _preview_staged_foregrounds(background, staged, feather_radius)
