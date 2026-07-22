@@ -347,8 +347,8 @@ class UC_ConditioningConsensusBlend(io.ComfyNode):
             display_name="Conditioning Consensus Blender (Post-Encoder)",
             category="advanced/conditioning",
             inputs=[
+                TextBlendConfig.Input("text_blend_config", optional=True, tooltip="Optional configuration from UC_TextConsensusBlendConfig. Defaults to baseline CWB if disconnected."),
                 io.Autogrow.Input("conditioning_inputs", template=autogrow_template),
-                TextBlendConfig.Input("text_blend_config", optional=True, tooltip="Optional configuration from UC_TextConsensusBlendConfig. Defaults to baseline CWB if disconnected.")
             ],
             outputs=[
                 io.Conditioning.Output("conditioning")
@@ -952,8 +952,8 @@ class TextEncodeSystemEditPlusAdvanced(io.ComfyNode):
                     tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1127,8 +1127,8 @@ class TextEncodeKrea2SystemEditPlusAdvanced(io.ComfyNode):
                     tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1301,8 +1301,8 @@ class TextEncodeEditPlusAdvanced(io.ComfyNode):
                     tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1451,8 +1451,8 @@ class TextEncodeGemmaSystemEditPlusAdvanced(io.ComfyNode):
                     tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
                 ),
                 io.Vae.Input("vae", optional=True),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -1861,7 +1861,6 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     tooltip="Main prompt. With fusion off, image_input_N places active image N inline. With fusion on, use image_input_fusion (image_input_1 is accepted as an alias).",
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
-                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
@@ -1900,6 +1899,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -2148,7 +2148,6 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                     dynamic_prompts=True,
                     tooltip="Main user text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
                 ),
-                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
@@ -2187,6 +2186,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -2750,7 +2750,6 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     default="",
                     tooltip="Space-separated non-negative attention odds weights. Example: (arms:1.5) (painting:0) (photo:2)",
                 ),
-                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
                 io.Combo.Input(
                     "vlm_resolution",
                     options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
@@ -2790,6 +2789,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
             ],
             outputs=[
                 io.Model.Output(),

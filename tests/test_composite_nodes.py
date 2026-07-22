@@ -367,7 +367,7 @@ def test_composite_auto_resize_selects_direction_appropriate_methods():
     assert composite_nodes._composite_resize_method("nearest-exact", 100, 80, 50, 40) == "nearest-exact"
 
 
-def test_background_compositor_schemas_append_resize_and_workspace_controls():
+def test_background_compositor_schemas_place_variable_foregrounds_after_static_controls():
     schemas = [
         composite_nodes.UC_UnifiedBackgroundReplace.define_schema(),
         composite_nodes.UC_LayeredBackgroundComposite.define_schema(),
@@ -375,9 +375,12 @@ def test_background_compositor_schemas_append_resize_and_workspace_controls():
     ]
     unified, layered, staged = ([value.id for value in schema.inputs] for schema in schemas)
 
-    assert unified[-3:] == ["image_resize_method", "mask_resize_method", "workspace_padding"]
-    assert layered[-2:] == ["image_resize_method", "mask_resize_method"]
-    assert staged[-2:] == ["image_resize_method", "mask_resize_method"]
+    assert unified[-1] == "foreground_images"
+    assert unified[-4:-1] == ["image_resize_method", "mask_resize_method", "workspace_padding"]
+    assert layered[-1] == "foreground_images"
+    assert layered[-4:-1] == ["image_resize_method", "mask_resize_method", "placement_data"]
+    assert staged[-1] == "foreground_images"
+    assert staged[-4:-1] == ["image_resize_method", "mask_resize_method", "placement_data"]
     for schema in schemas:
         assert all(value.tooltip for value in schema.inputs)
 
@@ -599,6 +602,24 @@ def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
     assert image[..., 0].sum().item() == pytest.approx(100)
     assert placed_mask.sum().item() == pytest.approx(100)
     assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["crop_width"] == 4
+
+
+def test_staged_compositor_uses_embedded_alpha_without_background_removal(monkeypatch):
+    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    foreground = torch.zeros(1, 4, 5, 4)
+    foreground[..., 0] = 0.75
+    foreground[:, 1:3, 2:4, 3] = 0.5
+    model = _QueuedBackgroundModel([])
+
+    staged = composite_nodes._stage_layered_foregrounds(
+        model, {"foreground_0": foreground}, 0.5, 2, 1, 1,
+    )
+
+    layer = staged["layers"][0]
+    assert len(model.masks) == 0
+    assert layer["uses_embedded_alpha"] is True
+    assert layer["image"].shape == (1, 2, 2, 3)
+    assert torch.allclose(layer["mask"], torch.full((1, 2, 2), 0.5))
 
 
 def test_staged_layered_composite_tracks_and_applies_horizontal_flip(monkeypatch):

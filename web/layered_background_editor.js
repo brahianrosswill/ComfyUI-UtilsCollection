@@ -21,6 +21,7 @@ const NODE_TYPES = new Set([
 ]);
 const editors = new Set();
 let latestOutputs = {};
+const COMPOSITE_RESIZE_METHODS = new Set(["auto", "nearest-exact", "bilinear", "area", "bicubic", "lanczos"]);
 
 function descriptorUrl(descriptor) {
   if (!descriptor?.filename) return null;
@@ -46,6 +47,7 @@ class LayeredPlacementEditor {
     this.node = node;
     this.placementWidget = node.widgets?.find((widget) => widget.name === "placement_data");
     if (!this.placementWidget) throw new Error("Layered compositor placement_data widget was not created.");
+    this.migrateLegacyWidgetOrder();
     const executionWidget = node.widgets?.find((widget) => widget.name === "execution_mode");
     if (typeof executionWidget?.value === "boolean") {
       executionWidget.value = executionWidget.value ? "run_staged" : "run_staging";
@@ -315,7 +317,9 @@ class LayeredPlacementEditor {
   }
 
   semanticSignature() {
-    const sourceNames = ["background", ...this.connectedLayers()];
+    // Layer order is placement state, not source state. Keep this list canonical so
+    // reordering back-to-front never invalidates retained cutouts.
+    const sourceNames = ["background", ...this.connectedLayers().slice().sort(layerKeyCompare)];
     const links = sourceNames.map((name) => {
       const origin = this.inputOrigin(name);
       const preview = origin?.node?.imgs?.[0];
@@ -337,9 +341,9 @@ class LayeredPlacementEditor {
       this.ensureSize();
     }
     const signature = this.semanticSignature();
-    if (this.metadataSignature && signature !== this.metadataSignature) {
-      this.metadata = null;
-      this.metadataSignature = null;
+    if (this.metadataSignature && signature !== this.metadataSignature && !this.isStagedComposite()) {
+        this.metadata = null;
+        this.metadataSignature = null;
       this.cutouts.clear();
       this.metadataGeneration++;
     }
@@ -449,6 +453,58 @@ class LayeredPlacementEditor {
     }
   }
 
+  namedWidget(name) {
+    return this.node.widgets?.find((widget) => widget.name === name);
+  }
+
+  migrateLegacyWidgetOrder() {
+    const placement = this.placementWidget;
+    const maskThreshold = this.namedWidget("mask_threshold");
+    const borderCleanup = this.namedWidget("border_cleanup_width");
+    const artifactCleanup = this.namedWidget("artifact_cleanup_radius");
+    const gapFill = this.namedWidget("gap_fill_radius");
+    const feather = this.namedWidget("feather_radius");
+    const imageResize = this.namedWidget("image_resize_method");
+    const maskResize = this.namedWidget("mask_resize_method");
+    if (!placement || !maskThreshold || !borderCleanup || !artifactCleanup || !gapFill || !feather || !imageResize || !maskResize) return false;
+
+    const isPlacementJson = (value) => typeof value === "string" && value.trim().startsWith("{");
+    const isResizeMethod = (value) => COMPOSITE_RESIZE_METHODS.has(String(value));
+    if (this.isStagedComposite()) {
+      // Old staged order: ... gap, placement, feather, image resize, mask resize.
+      if (!isPlacementJson(feather.value) || !isResizeMethod(placement.value)) return false;
+      const oldPlacement = feather.value;
+      const oldFeather = imageResize.value;
+      const oldImageResize = maskResize.value;
+      const oldMaskResize = placement.value;
+      placement.value = oldPlacement;
+      feather.value = oldFeather;
+      imageResize.value = oldImageResize;
+      maskResize.value = oldMaskResize;
+      return true;
+    } else {
+      // Old layered order: placement preceded all cleanup and resize widgets.
+      if (!isPlacementJson(maskThreshold.value) || !isResizeMethod(placement.value)) return false;
+      const oldPlacement = maskThreshold.value;
+      const oldMaskThreshold = borderCleanup.value;
+      const oldBorderCleanup = artifactCleanup.value;
+      const oldArtifactCleanup = gapFill.value;
+      const oldGapFill = feather.value;
+      const oldFeather = imageResize.value;
+      const oldImageResize = maskResize.value;
+      const oldMaskResize = placement.value;
+      placement.value = oldPlacement;
+      maskThreshold.value = oldMaskThreshold;
+      borderCleanup.value = oldBorderCleanup;
+      artifactCleanup.value = oldArtifactCleanup;
+      gapFill.value = oldGapFill;
+      feather.value = oldFeather;
+      imageResize.value = oldImageResize;
+      maskResize.value = oldMaskResize;
+      return true;
+    }
+  }
+
   resolvePreliminaryLayers(layers, force) {
     const available = new Set(layers);
     for (const key of this.preliminaryLayers.keys()) {
@@ -521,7 +577,7 @@ class LayeredPlacementEditor {
     const sourceNames = ["background", ...this.connectedLayers()];
     const origins = sourceNames.map((name) => this.inputOrigin(name));
     if (!origins.some((origin) => String(origin?.link?.origin_id) === String(nodeId))) return;
-    if (sourceNames.slice(1).some((name) => String(this.inputOrigin(name)?.link?.origin_id) === String(nodeId))) {
+    if (!this.isStagedComposite() && sourceNames.slice(1).some((name) => String(this.inputOrigin(name)?.link?.origin_id) === String(nodeId))) {
       this.metadata = null;
       this.metadataSignature = null;
       this.cutouts.clear();
@@ -1042,7 +1098,15 @@ app.registerExtension({
     if (NODE_TYPES.has(node.comfyClass) || NODE_TYPES.has(node.type)) install(node);
   },
   loadedGraphNode(node) {
-    if (NODE_TYPES.has(node.comfyClass) || NODE_TYPES.has(node.type)) install(node).ensureSize();
+    if (NODE_TYPES.has(node.comfyClass) || NODE_TYPES.has(node.type)) {
+      const editor = install(node);
+      if (editor.migrateLegacyWidgetOrder()) {
+        editor.data = parsePlacementData(editor.placementWidget.value);
+        editor.node.graph?.setDirtyCanvas?.(true, true);
+        editor.refreshSources(true);
+      }
+      editor.ensureSize();
+    }
   },
   onNodeOutputsUpdated(outputs) {
     latestOutputs = { ...latestOutputs, ...outputs };

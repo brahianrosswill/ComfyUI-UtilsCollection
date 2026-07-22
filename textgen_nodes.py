@@ -361,7 +361,6 @@ class UC_TextGenerate(io.ComfyNode):
                     tooltip="Rescales connected image inputs to optimize performance and VRAM allocation."
                 ),
                 io.Int.Input("max_length", default=512, min=1, max=32768),
-                io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode"),
                 io.String.Input(
                     "formula",
                     default="",
@@ -375,8 +374,9 @@ class UC_TextGenerate(io.ComfyNode):
                     default=False,
                     tooltip="Backslash-escape generated parentheses as the final step, preserving them as literal text for downstream contextual-weight parsing.",
                 ),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
                 VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional pre-generation Qwen3-VL visual and DeepStack fusion configuration."),
+                io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode"),
+                io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
                 io.String.Output(display_name="generated_text"),
@@ -607,9 +607,9 @@ class UC_TextGenerateQwen35SystemPrompt(io.ComfyNode):
                     tooltip="System message injected before the user turn. Leave empty to skip the system block entirely."),
                 io.Image.Input("image", optional=True),
                 io.Int.Input("max_length", default=512, min=1, max=8192),
-                io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode"),
                 io.Boolean.Input("thinking", optional=True, default=False,
                     tooltip="Enable thinking mode. When False, suppresses thinking with <think>\\n</think>\\n."),
+                io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode"),
             ],
             outputs=[
                 io.String.Output(display_name="generated_text"),

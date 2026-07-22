@@ -5,6 +5,8 @@ import torch.nn.functional as F
 import hashlib
 import scipy
 import cv2
+import nodes
+import folder_paths
 from tqdm import tqdm
 from PIL import Image, ImageOps, ImageSequence, ImageDraw, ImageFont
 import kornia.morphology as morph
@@ -127,6 +129,54 @@ class UC_Image_Color_Noise(io.ComfyNode):
             return Image.new("RGB", (width, height), color="black")
 
         return Image.fromarray(noise_array, "RGB")
+
+
+class UC_LoadImageWithAlpha(io.ComfyNode):
+    """Core Load Image compatibility with an additional RGBA IMAGE output."""
+
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        input_directory = folder_paths.get_input_directory()
+        image_files = folder_paths.filter_files_content_types(
+            [name for name in os.listdir(input_directory) if os.path.isfile(os.path.join(input_directory, name))],
+            ["image"],
+        )
+        return io.Schema(
+            node_id="UC_LoadImageWithAlpha",
+            display_name="Load Image (Preserve Alpha)",
+            category="image/loaders",
+            inputs=[
+                io.Combo.Input(
+                    "image",
+                    options=sorted(image_files),
+                    upload=io.UploadType.image,
+                    image_folder=io.FolderType.input,
+                    tooltip="Image file to load. Matches Core Load Image while also exposing its alpha as a fourth IMAGE channel.",
+                ),
+            ],
+            outputs=[
+                io.Image.Output("image", display_name="IMAGE"),
+                io.Mask.Output("mask", display_name="MASK"),
+                io.Image.Output("image_rgba", display_name="IMAGE_RGBA"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image: str) -> io.NodeOutput:
+        rgb, mask = nodes.LoadImage().load_image(image)
+        if mask.ndim == 3 and mask.shape[:3] == rgb.shape[:3]:
+            alpha = (1.0 - mask).to(device=rgb.device, dtype=rgb.dtype).unsqueeze(-1)
+        else:
+            alpha = torch.ones((*rgb.shape[:3], 1), device=rgb.device, dtype=rgb.dtype)
+        return io.NodeOutput(rgb, mask, torch.cat((rgb, alpha), dim=-1))
+
+    @classmethod
+    def IS_CHANGED(cls, image: str):
+        return nodes.LoadImage.IS_CHANGED(image)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, image: str):
+        return nodes.LoadImage.VALIDATE_INPUTS(image)
 
 
 class UC_LoadImagePath(io.ComfyNode):

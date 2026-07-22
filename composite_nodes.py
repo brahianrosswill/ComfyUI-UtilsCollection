@@ -201,10 +201,17 @@ def _parse_layer_payload(value):
     if value is None or value == "":
         value = {}
     if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError as error:
-            raise ValueError(f"Layer placement data is not valid JSON: {error.msg}.") from error
+        if value.strip() in _COMPOSITE_RESIZE_METHODS:
+            logging.warning(
+                "Detected legacy layered-composite widget ordering; using default placement data. "
+                "Reload the workflow in the frontend once to migrate its saved values."
+            )
+            value = {}
+        else:
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as error:
+                raise ValueError(f"Layer placement data is not valid JSON: {error.msg}.") from error
     if not isinstance(value, dict):
         raise ValueError("Layer placement data must be a JSON object.")
     version = value.get("version", 1)
@@ -669,7 +676,6 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
             inputs=[
                 io.BackgroundRemoval.Input("background_removal_model", tooltip="Core background-removal model used to isolate every foreground."),
                 io.Image.Input("background", tooltip="Single image used as the shared output canvas."),
-                io.Autogrow.Input("foreground_images", template=foreground_template, tooltip="Images to isolate, resize, center, and composite in socket order."),
                 io.Float.Input("foreground_scale", default=0.90, min=0.05, max=10.0, step=0.01, tooltip="Fraction of the background's shortest side occupied by the foreground's longest bound. Values above 1 overscale and crop at the canvas edges."),
                 io.Float.Input("long_axis_shift", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Position along the background's longest axis: -1 is left/up, 0 is centered, and 1 is right/down."),
                 io.Float.Input("short_axis_shift", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Position along the background's shortest axis: -1 is up/left, 0 is centered, and 1 is down/right."),
@@ -681,6 +687,7 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
                 io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_IMAGE_RESIZE_TOOLTIP),
                 io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_MASK_RESIZE_TOOLTIP),
                 io.Float.Input("workspace_padding", default=0.5, min=0.0, max=1.0, step=0.05, advanced=True, tooltip="Permitted off-canvas placement margin, up to 25% of each background axis."),
+                io.Autogrow.Input("foreground_images", template=foreground_template, tooltip="Images to isolate, resize, center, and composite in socket order."),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -815,25 +822,32 @@ def _stage_layered_foregrounds(
     for key, foreground in foregrounds:
         if foreground.shape[-1] < 3:
             raise ValueError(f"Foreground input {key} must have at least three channels.")
+        embedded_alpha = foreground[..., 3] if foreground.shape[-1] >= 4 else None
         foreground = foreground[..., :3]
-        raw_mask = background_removal_model.encode_image(foreground)
-        if not torch.is_tensor(raw_mask):
-            raise ValueError(f"Background removal returned an invalid mask for {key}.")
-        if raw_mask.ndim == 4 and raw_mask.shape[1] == 1:
-            raw_mask = raw_mask[:, 0]
-        elif raw_mask.ndim == 4 and raw_mask.shape[-1] == 1:
-            raw_mask = raw_mask[..., 0]
-        if raw_mask.ndim != 3 or raw_mask.shape[0] != 1:
-            raise ValueError(f"Background removal must return one [batch, height, width] mask for {key}.")
-        if raw_mask.shape[-2:] != foreground.shape[1:3]:
-            raw_mask = _resize_composite_mask(raw_mask, foreground.shape[2], foreground.shape[1], mask_resize_method)
-        refined = _refine_foreground_mask(
-            raw_mask[0],
-            float(mask_threshold),
-            border_cleanup_width,
-            artifact_cleanup_radius,
-            gap_fill_radius,
-        )
+        uses_embedded_alpha = embedded_alpha is not None
+        if embedded_alpha is not None:
+            # A supplied alpha channel is an explicit foreground matte. Preserve
+            # it exactly instead of replacing it with a removal-model estimate.
+            refined = embedded_alpha[0].to(device=foreground.device, dtype=foreground.dtype).clamp(0.0, 1.0)
+        else:
+            raw_mask = background_removal_model.encode_image(foreground)
+            if not torch.is_tensor(raw_mask):
+                raise ValueError(f"Background removal returned an invalid mask for {key}.")
+            if raw_mask.ndim == 4 and raw_mask.shape[1] == 1:
+                raw_mask = raw_mask[:, 0]
+            elif raw_mask.ndim == 4 and raw_mask.shape[-1] == 1:
+                raw_mask = raw_mask[..., 0]
+            if raw_mask.ndim != 3 or raw_mask.shape[0] != 1:
+                raise ValueError(f"Background removal must return one [batch, height, width] mask for {key}.")
+            if raw_mask.shape[-2:] != foreground.shape[1:3]:
+                raw_mask = _resize_composite_mask(raw_mask, foreground.shape[2], foreground.shape[1], mask_resize_method)
+            refined = _refine_foreground_mask(
+                raw_mask[0],
+                float(mask_threshold),
+                border_cleanup_width,
+                artifact_cleanup_radius,
+                gap_fill_radius,
+            )
         points = torch.nonzero(refined > 0, as_tuple=False)
         if points.numel() == 0:
             raise ValueError(f"Background removal produced an empty foreground mask for {key}.")
@@ -852,6 +866,7 @@ def _stage_layered_foregrounds(
             "image": cropped_image,
             "mask": cropped_mask,
             "flip_horizontal": flip_horizontal,
+            "uses_embedded_alpha": uses_embedded_alpha,
         })
     return {"version": 1, "layers": layers}
 
@@ -876,7 +891,7 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
     for layer in layers:
         crop = layer["image"]
         alpha = layer["mask"][0]
-        if feather_radius:
+        if feather_radius and not layer.get("uses_embedded_alpha", False):
             alpha = _feather_mask(alpha, -int(feather_radius))
         entry = {
             "socket": layer["socket"],
@@ -954,7 +969,11 @@ def _composite_staged_foregrounds(
         resized_foreground = _resize_composite_image(crop, placed_width, placed_height, image_resize_method).to(scene)
         resized_mask = _resize_composite_mask(crop_mask, placed_width, placed_height, mask_resize_method).to(scene)
         resized_mask = resized_mask[0]
-        alpha = _feather_mask(resized_mask, -int(feather_radius)) if feather_radius else resized_mask
+        alpha = (
+            resized_mask
+            if layer.get("uses_embedded_alpha", False) or not feather_radius
+            else _feather_mask(resized_mask, -int(feather_radius))
+        )
         offset_x, offset_y = _placement_offsets(
             background_width, background_height, placed_width, placed_height, placement,
             workspace_padding if placement_version == 2 else 0.0,
@@ -978,7 +997,7 @@ def _composite_staged_foregrounds(
                 mask_region + placed_alpha * (1.0 - mask_region)
             )
         preview_alpha = crop_mask[0]
-        if feather_radius:
+        if feather_radius and not layer.get("uses_embedded_alpha", False):
             preview_alpha = _feather_mask(preview_alpha, -int(feather_radius))
         editor_layers.append({
             "socket": key,
@@ -1032,11 +1051,6 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                     tooltip="Core background-removal model used when run_staging or full_run refreshes the foreground cutouts.",
                 ),
                 io.Image.Input("background", tooltip="Single image used as the scene canvas."),
-                io.Autogrow.Input(
-                    "foreground_images",
-                    template=foreground_template,
-                    tooltip="Foregrounds staged and composited from foreground_0 at the back to the highest socket at the front.",
-                ),
                 io.Combo.Input(
                     "execution_mode",
                     options=["run_staging", "run_staged", "full_run"],
@@ -1051,15 +1065,20 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                 io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True, tooltip=_BORDER_CLEANUP_TOOLTIP),
                 io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_ARTIFACT_CLEANUP_TOOLTIP),
                 io.Int.Input("gap_fill_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_GAP_FILL_TOOLTIP),
+                io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_FEATHER_TOOLTIP),
+                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_IMAGE_RESIZE_TOOLTIP),
+                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_MASK_RESIZE_TOOLTIP),
                 io.String.Input(
                     "placement_data",
                     default='{"version":2,"workspace_padding":0.5,"layers":{}}',
                     advanced=True,
                     tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
                 ),
-                io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_FEATHER_TOOLTIP),
-                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_IMAGE_RESIZE_TOOLTIP),
-                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_MASK_RESIZE_TOOLTIP),
+                io.Autogrow.Input(
+                    "foreground_images",
+                    template=foreground_template,
+                    tooltip="Foregrounds staged and composited from foreground_0 at the back to the highest socket at the front.",
+                ),
             ],
             outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
             hidden=[io.Hidden.unique_id],
@@ -1162,17 +1181,6 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                     tooltip="Core background-removal model used to isolate every foreground layer.",
                 ),
                 io.Image.Input("background", tooltip="Single image used as the scene canvas."),
-                io.Autogrow.Input(
-                    "foreground_images",
-                    template=foreground_template,
-                    tooltip="One image per socket, composited from foreground_0 at the back to the highest socket at the front.",
-                ),
-                io.String.Input(
-                    "placement_data",
-                    default='{"version":2,"workspace_padding":0.5,"layers":{}}',
-                    advanced=True,
-                    tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
-                ),
                 io.Float.Input("mask_threshold", default=0.50, min=0.0, max=1.0, step=0.01, tooltip=_MASK_THRESHOLD_TOOLTIP),
                 io.Int.Input("border_cleanup_width", default=2, min=0, max=64, step=1, advanced=True, tooltip=_BORDER_CLEANUP_TOOLTIP),
                 io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_ARTIFACT_CLEANUP_TOOLTIP),
@@ -1180,6 +1188,17 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
                 io.Int.Input("feather_radius", default=2, min=0, max=64, step=1, advanced=True, tooltip=_FEATHER_TOOLTIP),
                 io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_IMAGE_RESIZE_TOOLTIP),
                 io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto", advanced=True, tooltip=_MASK_RESIZE_TOOLTIP),
+                io.String.Input(
+                    "placement_data",
+                    default='{"version":2,"workspace_padding":0.5,"layers":{}}',
+                    advanced=True,
+                    tooltip="Versioned per-layer placement data managed by the LiteGraph scene editor.",
+                ),
+                io.Autogrow.Input(
+                    "foreground_images",
+                    template=foreground_template,
+                    tooltip="One image per socket, composited from foreground_0 at the back to the highest socket at the front.",
+                ),
             ],
             outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
         )
