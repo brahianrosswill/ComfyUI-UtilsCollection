@@ -7,6 +7,7 @@ export const DEFAULT_PLACEMENT = Object.freeze({
 });
 export const LEGACY_DEFAULT_PLACEMENT = Object.freeze({ scale: 0.9, long_axis_shift: 0, short_axis_shift: 0 });
 export const DEFAULT_WORKSPACE_PADDING = 0.5;
+export const DEFAULT_FACE_CORNERS = Object.freeze([[-1, -1], [1, -1], [1, 1], [-1, 1]]);
 
 const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 export const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
@@ -18,7 +19,7 @@ export function stepPlacementValue(field, value, delta) {
   return clamp(Math.round((finite(value, fallback) + finite(delta, 0)) * 100) / 100, minimum, 10);
 }
 
-export function normalizePlacement(value = {}, version = 2) {
+export function normalizePlacement(value = {}, version = 2, face = false) {
   const scale = clamp(finite(value.scale, DEFAULT_PLACEMENT.scale), 0.05, 10);
   if (version === 1 && value.center_x === undefined && value.center_y === undefined) {
     return {
@@ -29,23 +30,81 @@ export function normalizePlacement(value = {}, version = 2) {
       flip_vertical: value.flip_vertical === true,
     };
   }
-  return {
+  const normalized = {
     scale,
     center_x: clamp(finite(value.center_x, 0.5), -10, 10),
     center_y: clamp(finite(value.center_y, 0.5), -10, 10),
     flip_horizontal: value.flip_horizontal === true,
     flip_vertical: value.flip_vertical === true,
   };
+  if (version === 3 && (face || value.rotation !== undefined || value.corners !== undefined || value.included !== undefined)) {
+    normalized.rotation = normalizeRotation(value.rotation);
+    normalized.corners = normalizeQuad(value.corners);
+    normalized.included = value.included !== false;
+  }
+  return normalized;
+}
+
+export const normalizeRotation = (value) => ((finite(value, 0) + 180) % 360 + 360) % 360 - 180;
+
+export function quadArea(points) {
+  return Math.abs(points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % 4];
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0)) / 2;
+}
+
+export function isValidQuad(points) {
+  if (!Array.isArray(points) || points.length !== 4 || points.some(
+    (point) => !Array.isArray(point) || point.length !== 2 || point.some((v) => !Number.isFinite(Number(v))),
+  )) return false;
+  const cross = points.map((a, index) => {
+    const b = points[(index + 1) % 4], c = points[(index + 2) % 4];
+    return (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+  });
+  return quadArea(points) >= 1e-4 && (cross.every((v) => v > 1e-6) || cross.every((v) => v < -1e-6));
+}
+
+export function normalizeQuad(value) {
+  const points = Array.isArray(value) ? value.map((point) => [
+    clamp(finite(point?.[0], 0), -1, 1), clamp(finite(point?.[1], 0), -1, 1),
+  ]) : DEFAULT_FACE_CORNERS.map((point) => [...point]);
+  return isValidQuad(points) ? points : DEFAULT_FACE_CORNERS.map((point) => [...point]);
+}
+
+export function dragQuadCorner(corners, index, x, y) {
+  const candidate = normalizeQuad(corners).map((point) => [...point]);
+  candidate[index] = [clamp(finite(x, candidate[index][0]), -1, 1), clamp(finite(y, candidate[index][1]), -1, 1)];
+  return isValidQuad(candidate) ? candidate : normalizeQuad(corners);
+}
+
+export function deformQuadCentroidLocked(corners, point, deltaX, deltaY) {
+  const original = normalizeQuad(corners);
+  const weights = original.map((corner) => 1 / Math.max(1e-6, Math.hypot(corner[0] - point[0], corner[1] - point[1])));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let candidate = original.map((corner, index) => [
+    corner[0] + deltaX * weights[index] / total,
+    corner[1] + deltaY * weights[index] / total,
+  ]);
+  const shift = candidate.reduce((sum, corner, index) => [
+    sum[0] + corner[0] - original[index][0], sum[1] + corner[1] - original[index][1],
+  ], [0, 0]).map((value) => value / 4);
+  candidate = candidate.map((corner) => [
+    corner[0] - shift[0], corner[1] - shift[1],
+  ]);
+  const extent = Math.max(1, ...candidate.flat().map(Math.abs));
+  candidate = candidate.map((corner) => [corner[0] / extent, corner[1] / extent]);
+  return isValidQuad(candidate) ? candidate : original;
 }
 
 export function parsePlacementData(value) {
   try {
     const data = typeof value === "string" ? JSON.parse(value || "{}") : value;
     const version = data?.version ?? 1;
-    if (!data || typeof data !== "object" || ![1, 2].includes(version)) throw new Error();
+    if (!data || typeof data !== "object" || ![1, 2, 3].includes(version)) throw new Error();
     const layers = {};
     for (const [key, placement] of Object.entries(data.layers || {})) {
-      if (placement && typeof placement === "object") layers[key] = normalizePlacement(placement, version);
+      if (placement && typeof placement === "object") layers[key] = normalizePlacement(placement, version, key.includes("_face_"));
     }
     const layer_order = Array.isArray(data.layer_order)
       ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
@@ -59,7 +118,7 @@ export function parsePlacementData(value) {
 export function serializePlacementData(data) {
   const layers = {};
   for (const key of Object.keys(data.layers || {}).sort(layerKeyCompare)) {
-    layers[key] = normalizePlacement(data.layers[key], data.version ?? 2);
+    layers[key] = normalizePlacement(data.layers[key], data.version ?? 2, key.includes("_face_"));
   }
   return JSON.stringify({
     version: data.version ?? 2,
@@ -118,13 +177,17 @@ export function placementToRect(backgroundWidth, backgroundHeight, aspect, value
 export function rectToPlacement(backgroundWidth, backgroundHeight, rect, prior = {}) {
   const longest = Math.max(rect.width, rect.height);
   const scale = longest / Math.min(backgroundWidth, backgroundHeight);
-  return normalizePlacement({
+  const placement = {
     scale,
     center_x: (rect.x + rect.width / 2) / backgroundWidth,
     center_y: (rect.y + rect.height / 2) / backgroundHeight,
     flip_horizontal: prior.flip_horizontal === true,
     flip_vertical: prior.flip_vertical === true,
-  });
+  };
+  for (const field of ["rotation", "corners", "included"]) {
+    if (prior[field] !== undefined) placement[field] = prior[field];
+  }
+  return placement;
 }
 
 export function moveRect(backgroundWidth, backgroundHeight, rect, deltaX, deltaY, workspacePadding = 0) {

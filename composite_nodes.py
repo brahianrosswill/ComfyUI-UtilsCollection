@@ -11,10 +11,17 @@ from PIL import Image, ImageDraw
 from comfy_api.latest import io, ui
 from nodes import MAX_RESOLUTION
 from .helper_functions import resize_nchw
+from .staged_face_helpers import (
+    detect_or_warn,
+    load_face_model,
+    projective_warp,
+)
 
 
 FaceDetectionType = io.Custom("FACE_DETECTION_MODEL")
 FaceCompositeOptionsType = io.Custom("UC_FACE_COMPOSITE_OPTIONS")
+StagedBackgroundOptionsType = io.Custom("UC_STAGED_LAYERED_BACKGROUND_OPTIONS")
+StagedFaceOptionsType = io.Custom("UC_STAGED_MEDIAPIPE_FACE_OPTIONS")
 
 _RESIZE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
 _COMPOSITE_RESIZE_METHODS = ["auto", *_RESIZE_METHODS]
@@ -274,7 +281,7 @@ def _parse_layer_payload(value):
     if not isinstance(value, dict):
         raise ValueError("Layer placement data must be a JSON object.")
     version = value.get("version", 1)
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise ValueError(f"Unsupported layer placement data version: {version}.")
     layers = value.get("layers", {})
     if not isinstance(layers, dict):
@@ -301,9 +308,9 @@ def _parse_layer_placements(value):
     for key, placement in layers.items():
         if not isinstance(key, str) or not isinstance(placement, dict):
             raise ValueError("Every layer placement must be an object keyed by its foreground socket name.")
-        result = dict(_DEFAULT_LAYER_PLACEMENT_V2 if version == 2 else _DEFAULT_LAYER_PLACEMENT)
+        result = dict(_DEFAULT_LAYER_PLACEMENT_V2 if version >= 2 else _DEFAULT_LAYER_PLACEMENT)
         fields = [("scale", 0.05, 10.0)]
-        if version == 2:
+        if version >= 2:
             fields.extend((("center_x", -10.0, 10.0), ("center_y", -10.0, 10.0)))
         else:
             fields.extend((("long_axis_shift", -1.0, 1.0), ("short_axis_shift", -1.0, 1.0)))
@@ -323,9 +330,53 @@ def _parse_layer_placements(value):
             if not isinstance(flip_value, bool):
                 raise ValueError(f"Layer {key} field {flip_field} must be Boolean.")
             result[flip_field] = flip_value
+        if version == 3 and "_face_" in key:
+            rotation = placement.get("rotation", 0.0)
+            if isinstance(rotation, bool):
+                raise ValueError(f"Layer {key} field rotation must be numeric.")
+            try:
+                rotation = float(rotation)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Layer {key} field rotation must be numeric.") from error
+            if not math.isfinite(rotation):
+                raise ValueError(f"Layer {key} field rotation must be finite.")
+            result["rotation"] = ((rotation + 180.0) % 360.0) - 180.0
+            included = placement.get("included", True)
+            if not isinstance(included, bool):
+                raise ValueError(f"Layer {key} field included must be Boolean.")
+            result["included"] = included
+            corners = placement.get("corners", [[-1, -1], [1, -1], [1, 1], [-1, 1]])
+            result["corners"] = _validate_quad(corners, key)
         result["_version"] = version
         parsed[key] = result
     return parsed
+
+
+def _validate_quad(corners, key="face"):
+    if not isinstance(corners, list) or len(corners) != 4:
+        raise ValueError(f"Layer {key} corners must contain four points.")
+    points = []
+    for point in corners:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError(f"Layer {key} corners must contain [x, y] points.")
+        x, y = point
+        if isinstance(x, bool) or isinstance(y, bool):
+            raise ValueError(f"Layer {key} corner coordinates must be numeric.")
+        x, y = float(x), float(y)
+        if not math.isfinite(x) or not math.isfinite(y) or not (-1 <= x <= 1 and -1 <= y <= 1):
+            raise ValueError(f"Layer {key} corner coordinates must be within [-1, 1].")
+        points.append([x, y])
+    cross = []
+    for index in range(4):
+        a, b, c = points[index], points[(index + 1) % 4], points[(index + 2) % 4]
+        cross.append((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
+    area = abs(sum(
+        points[i][0] * points[(i + 1) % 4][1] - points[(i + 1) % 4][0] * points[i][1]
+        for i in range(4)
+    )) * 0.5
+    if area < 1e-4 or not (all(value > 1e-6 for value in cross) or all(value < -1e-6 for value in cross)):
+        raise ValueError(f"Layer {key} corners must form a convex, non-zero-area quadrilateral.")
+    return points
 
 
 def _ordered_layer_keys(value, available_keys):
@@ -936,6 +987,75 @@ def _stage_layered_foregrounds(
     return {"version": 1, "layers": layers}
 
 
+def _stage_face_foregrounds(
+    background_removal_model,
+    face_detection_model,
+    foreground_images,
+    background_options,
+    face_options,
+    placement_data=None,
+):
+    staged = _stage_layered_foregrounds(
+        background_removal_model, foreground_images,
+        background_options["mask_threshold"], background_options["border_cleanup_width"],
+        background_options["artifact_cleanup_radius"], background_options["gap_fill_radius"],
+        background_options["mask_resize_method"], placement_data,
+    )
+    ordinary = {layer["socket"]: layer for layer in staged["layers"]}
+    result, warning_count = [], 0
+    ring = _ordered_ring(face_detection_model.connection_sets["face_oval"])
+    for key, original in _ordered_single_foregrounds(foreground_images):
+        result.append(ordinary[key])
+        rgb = original[..., :3]
+        embedded_alpha = original[..., 3] if original.shape[-1] >= 4 else None
+        if embedded_alpha is None:
+            full_alpha = background_removal_model.encode_image(rgb)
+            if full_alpha.ndim == 4:
+                full_alpha = full_alpha[:, 0] if full_alpha.shape[1] == 1 else full_alpha[..., 0]
+            if full_alpha.shape[-2:] != rgb.shape[1:3]:
+                full_alpha = _resize_composite_mask(
+                    full_alpha, rgb.shape[2], rgb.shape[1], background_options["mask_resize_method"]
+                )
+            full_alpha = full_alpha[0].to(rgb)
+        else:
+            full_alpha = embedded_alpha[0].to(rgb)
+        image_uint8 = rgb.mul(255).add(0.5).clamp(0, 255).to(torch.uint8).cpu().numpy()[0]
+        faces, failed = detect_or_warn(
+            face_detection_model, image_uint8, face_options["maximum_faces"],
+            face_options["detection_threshold"], key,
+        )
+        if failed:
+            warning_count += 1
+            continue
+        for face_index, face in enumerate(faces):
+            points = face["landmarks_xy"][ring]
+            face_mask = _polygon_mask(
+                rgb.shape[1], rgb.shape[2], points, rgb.device, rgb.dtype
+            )
+            face_mask = face_mask * full_alpha.clamp(0, 1)
+            x1, y1, x2, y2 = _expanded_box(
+                face["bbox_xyxy"], face_options["bbox_expansion"], rgb.shape[2], rgb.shape[1]
+            )
+            crop_mask = face_mask[y1:y2, x1:x2]
+            crop_mask = _expand_mask(crop_mask, face_options["mask_expansion"]).clamp(0, 1)[None]
+            if not torch.any(crop_mask > 0):
+                continue
+            socket = f"{key}_face_{face_index}"
+            result.append({
+                "socket": socket,
+                "image": rgb[:, y1:y2, x1:x2],
+                "mask": crop_mask,
+                "is_face": True,
+                "parent_socket": key,
+                "uses_embedded_alpha": True,
+                "default_scale": face_options["initial_face_scale"],
+                "feather_radius": face_options["face_feather_radius"],
+            })
+    staged["layers"] = result
+    staged["face_warning_count"] = warning_count
+    return staged
+
+
 def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
     if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
         raise ValueError("Staged Layered Background Composite requires exactly one background image.")
@@ -958,14 +1078,16 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
     for layer in layers:
         crop = layer["image"]
         alpha = layer["mask"][0]
-        if feather_radius and not layer.get("uses_embedded_alpha", False):
-            alpha = _feather_mask(alpha, -int(feather_radius))
+        layer_feather = int(layer.get("feather_radius", feather_radius))
+        if layer_feather and (layer.get("is_face") or not layer.get("uses_embedded_alpha", False)):
+            alpha = _feather_mask(alpha, -layer_feather)
         entry = {
             "socket": layer["socket"],
             "crop_width": crop.shape[2],
             "crop_height": crop.shape[1],
             "flip_horizontal": bool(layer.get("flip_horizontal", False)),
             "flip_vertical": bool(layer.get("flip_vertical", False)),
+            "is_face": bool(layer.get("is_face", False)),
         }
         try:
             rgba = torch.cat((crop[0], alpha.unsqueeze(-1)), dim=-1).unsqueeze(0)
@@ -1023,8 +1145,11 @@ def _composite_staged_foregrounds(
         crop_height, crop_width = crop.shape[1:3]
         placement = placements.get(
             key,
-            {**(_DEFAULT_LAYER_PLACEMENT_V2 if placement_version == 2 else _DEFAULT_LAYER_PLACEMENT), "_version": placement_version},
+            {**(_DEFAULT_LAYER_PLACEMENT_V2 if placement_version >= 2 else _DEFAULT_LAYER_PLACEMENT), "_version": placement_version},
         )
+        if key not in placements and layer.get("default_scale") is not None:
+            placement["scale"] = float(layer["default_scale"])
+        excluded = bool(layer.get("is_face") and not placement.get("included", True))
         staged_flip = bool(layer.get("flip_horizontal", False))
         desired_flip = bool(placement.get("flip_horizontal", False))
         if staged_flip != desired_flip:
@@ -1041,17 +1166,24 @@ def _composite_staged_foregrounds(
         placed_width = max(1, round(crop_width * scale))
         resized_foreground = _resize_composite_image(crop, placed_width, placed_height, image_resize_method).to(scene)
         resized_mask = _resize_composite_mask(crop_mask, placed_width, placed_height, mask_resize_method).to(scene)
+        if layer.get("is_face") and placement_version == 3:
+            resized_foreground, resized_mask = projective_warp(
+                resized_foreground, resized_mask,
+                placement.get("corners", [[-1, -1], [1, -1], [1, 1], [-1, 1]]),
+                placement.get("rotation", 0.0),
+            )
         resized_mask = resized_mask[0]
+        layer_feather = int(layer.get("feather_radius", feather_radius))
         alpha = (
             resized_mask
-            if layer.get("uses_embedded_alpha", False) or not feather_radius
-            else _feather_mask(resized_mask, -int(feather_radius))
+            if (layer.get("uses_embedded_alpha", False) and not layer.get("is_face")) or not layer_feather
+            else _feather_mask(resized_mask, -layer_feather)
         )
         offset_x, offset_y = _placement_offsets(
             background_width, background_height, placed_width, placed_height, placement,
-            workspace_padding if placement_version == 2 else 0.0,
+            workspace_padding if placement_version >= 2 else 0.0,
         )
-        slices = _visible_placement_slices(
+        slices = None if excluded else _visible_placement_slices(
             background_width, background_height, placed_width, placed_height, offset_x, offset_y
         )
         if slices is not None:
@@ -1070,8 +1202,8 @@ def _composite_staged_foregrounds(
                 mask_region + placed_alpha * (1.0 - mask_region)
             )
         preview_alpha = crop_mask[0]
-        if feather_radius and not layer.get("uses_embedded_alpha", False):
-            preview_alpha = _feather_mask(preview_alpha, -int(feather_radius))
+        if layer_feather and (layer.get("is_face") or not layer.get("uses_embedded_alpha", False)):
+            preview_alpha = _feather_mask(preview_alpha, -layer_feather)
         editor_layers.append({
             "socket": key,
             "crop_width": crop_width,
@@ -1079,6 +1211,8 @@ def _composite_staged_foregrounds(
             "preview_tensor": torch.cat((crop[0], preview_alpha.unsqueeze(-1)), dim=-1).unsqueeze(0),
             "flip_horizontal": desired_flip,
             "flip_vertical": desired_flip_vertical,
+            "is_face": bool(layer.get("is_face", False)),
+            "included": not excluded,
         })
 
     editor_metadata = {
@@ -1093,7 +1227,7 @@ def _composite_staged_foregrounds(
     for layer in editor_layers:
         entry = {
             key: layer[key]
-            for key in ("socket", "crop_width", "crop_height", "flip_horizontal", "flip_vertical")
+            for key in ("socket", "crop_width", "crop_height", "flip_horizontal", "flip_vertical", "is_face", "included")
         }
         try:
             entry["preview"] = _save_editor_preview(
@@ -1103,6 +1237,136 @@ def _composite_staged_foregrounds(
             logging.warning("Unable to create staged editor cutout preview for %s.", layer["socket"], exc_info=True)
         editor_metadata["layers"].append(entry)
     return io.NodeOutput(scene, combined_mask, ui={"uc_layered_scene_editor": [editor_metadata]})
+
+
+class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
+    DEFAULTS = {
+        "mask_threshold": 0.5, "border_cleanup_width": 2, "artifact_cleanup_radius": 2,
+        "gap_fill_radius": 2, "feather_radius": 2,
+        "image_resize_method": "auto", "mask_resize_method": "auto",
+    }
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_StagedLayeredBackgroundCompositeOptions",
+            display_name="Staged Layered Background Composite Options",
+            category="utils/image",
+            inputs=[
+                io.Float.Input("mask_threshold", default=0.5, min=0, max=1, step=0.01),
+                io.Int.Input("border_cleanup_width", default=2, min=0, max=64),
+                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64),
+                io.Int.Input("gap_fill_radius", default=2, min=0, max=64),
+                io.Int.Input("feather_radius", default=2, min=0, max=64),
+                io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto"),
+                io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto"),
+            ],
+            outputs=[StagedBackgroundOptionsType.Output()],
+        )
+
+    @classmethod
+    def execute(cls, **kwargs):
+        return io.NodeOutput(cls.DEFAULTS | kwargs)
+
+
+class UC_StagedMediaPipeFaceOptions(io.ComfyNode):
+    DEFAULTS = {
+        "detection_threshold": 0.25, "maximum_faces": 16, "bbox_expansion": 64,
+        "mask_expansion": 0, "face_feather_radius": 8, "initial_face_scale": 0.25,
+    }
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_StagedMediaPipeFaceOptions",
+            display_name="Staged MediaPipe Face Options",
+            category="utils/image",
+            inputs=[
+                io.Float.Input("detection_threshold", default=0.25, min=0, max=1, step=0.01),
+                io.Int.Input("maximum_faces", default=16, min=1, max=16),
+                io.Int.Input("bbox_expansion", default=64, min=0, max=MAX_RESOLUTION),
+                io.Int.Input("mask_expansion", default=0, min=-MAX_RESOLUTION, max=MAX_RESOLUTION),
+                io.Int.Input("face_feather_radius", default=8, min=0, max=512),
+                io.Float.Input("initial_face_scale", default=0.25, min=0.05, max=10, step=0.01),
+            ],
+            outputs=[StagedFaceOptionsType.Output()],
+        )
+
+    @classmethod
+    def execute(cls, **kwargs):
+        result = cls.DEFAULTS | kwargs
+        result["maximum_faces"] = min(16, int(result["maximum_faces"]))
+        return io.NodeOutput(result)
+
+
+class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
+    _staged_by_node = {}
+
+    @classmethod
+    def define_schema(cls):
+        foreground_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("foreground", lazy=True), prefix="foreground_", min=1, max=50
+        )
+        return io.Schema(
+            node_id="UC_StagedMediaPipeFaceBackgroundComposite",
+            display_name="Staged MediaPipe Face Background Composite",
+            category="utils/image",
+            inputs=[
+                io.Image.Input("background"),
+                StagedBackgroundOptionsType.Input("background_options", optional=True),
+                StagedFaceOptionsType.Input("face_options", optional=True),
+                io.Combo.Input("execution_mode", options=["run_staging", "run_staged", "full_run"], default="full_run"),
+                io.String.Input("placement_data", default='{"version":3,"workspace_padding":0.5,"layers":{}}', advanced=True),
+                io.Combo.Input("background_removal_model_name", options=["birefnet", "lucida"], default="birefnet"),
+                io.Autogrow.Input("foreground_images", template=foreground_template),
+            ],
+            outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
+            hidden=[io.Hidden.unique_id],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def check_lazy_status(cls, execution_mode, foreground_images=None, **kwargs):
+        if execution_mode == "run_staged":
+            return []
+        required = []
+        for value in (foreground_images or {}).values():
+            if isinstance(value, tuple) and len(value) == 2 and value[0] is None and value[1]:
+                required.append(value[1])
+        return required
+
+    @classmethod
+    def execute(
+        cls, background, foreground_images, execution_mode, placement_data,
+        background_removal_model_name="birefnet", background_options=None, face_options=None,
+    ):
+        node_id = str(cls.hidden.unique_id or "")
+        background_options = UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS | (background_options or {})
+        face_options = UC_StagedMediaPipeFaceOptions.DEFAULTS | (face_options or {})
+        if execution_mode == "run_staged":
+            if node_id not in cls._staged_by_node:
+                raise ValueError("No retained face-aware stage is available. Run staging first.")
+            staged, stage_mode = cls._staged_by_node[node_id], "retained"
+        elif execution_mode in ("run_staging", "full_run"):
+            removal_model = _load_internal_background_removal_model(background_removal_model_name)
+            face_model = load_face_model()
+            staged = _stage_face_foregrounds(
+                removal_model, face_model, foreground_images,
+                background_options, face_options, placement_data,
+            )
+            staged["background_removal_model_name"] = str(background_removal_model_name).lower()
+            cls._staged_by_node[node_id] = staged
+            if execution_mode == "run_staging":
+                return _preview_staged_foregrounds(background, staged, background_options["feather_radius"])
+            stage_mode = "full_run"
+        else:
+            raise ValueError(f"Unsupported staged compositor execution mode: {execution_mode!r}.")
+        return _composite_staged_foregrounds(
+            background, staged, placement_data, background_options["feather_radius"],
+            stage_mode=stage_mode,
+            image_resize_method=background_options["image_resize_method"],
+            mask_resize_method=background_options["mask_resize_method"],
+        )
 
 
 class UC_StagedLayeredBackgroundComposite(io.ComfyNode):

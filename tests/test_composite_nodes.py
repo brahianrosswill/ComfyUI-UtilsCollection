@@ -1014,3 +1014,46 @@ def test_face_composite_rejects_batches_and_missing_faces():
     model.detect_batch = lambda *args, **kwargs: [[]]
     with pytest.raises(ValueError, match="No face was detected"):
         composite_nodes.UC_MediaPipeFaceComposite.execute(model, _BackgroundModel(), source[:1], target)
+
+
+def test_staged_face_layers_are_stable_ordered_and_intersect_alpha():
+    image = torch.ones(1, 20, 20, 4)
+    image[..., 3] = 0
+    image[:, 4:16, 4:16, 3] = 1
+    model = _FaceModel()
+    options = composite_nodes.UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS
+    face_options = composite_nodes.UC_StagedMediaPipeFaceOptions.DEFAULTS | {
+        "bbox_expansion": 0, "maximum_faces": 2,
+    }
+
+    staged = composite_nodes._stage_face_foregrounds(
+        _BackgroundModel(), model, {"foreground_0": image}, options, face_options,
+    )
+
+    assert [layer["socket"] for layer in staged["layers"]] == [
+        "foreground_0", "foreground_0_face_0", "foreground_0_face_1",
+    ]
+    assert all(layer["mask"].sum() > 0 for layer in staged["layers"][1:])
+    assert staged["layers"][1]["mask"][0, 0, 0] == 0
+    assert [call[2] for call in model.calls] == [0.25]
+
+
+def test_staged_face_detection_failure_is_nonfatal():
+    model = _FaceModel()
+    model.detect_batch = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("detector"))
+    staged = composite_nodes._stage_face_foregrounds(
+        _BackgroundModel(), model, {"foreground_0": torch.ones(1, 20, 20, 3)},
+        composite_nodes.UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS,
+        composite_nodes.UC_StagedMediaPipeFaceOptions.DEFAULTS,
+    )
+    assert [layer["socket"] for layer in staged["layers"]] == ["foreground_0"]
+    assert staged["face_warning_count"] == 1
+
+
+def test_projective_warp_applies_identical_support_to_rgb_and_alpha():
+    image = torch.ones(1, 9, 9, 3)
+    mask = torch.ones(1, 9, 9)
+    warped_image, warped_mask = composite_nodes.projective_warp(
+        image, mask, [[-0.8, -0.8], [0.8, -1], [0.7, 0.8], [-0.9, 0.7]], 12,
+    )
+    assert torch.allclose(warped_image[..., 0], warped_mask, atol=1e-6)

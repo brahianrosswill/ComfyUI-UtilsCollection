@@ -3,6 +3,8 @@ import { api } from "../../scripts/api.js";
 import {
   DEFAULT_PLACEMENT,
   DEFAULT_WORKSPACE_PADDING,
+  deformQuadCentroidLocked,
+  dragQuadCorner,
   drawRect,
   layerKeyCompare,
   moveRect,
@@ -25,6 +27,7 @@ import {
 const NODE_TYPES = new Set([
   "UC_LayeredBackgroundComposite",
   "UC_StagedLayeredBackgroundComposite",
+  "UC_StagedMediaPipeFaceBackgroundComposite",
 ]);
 const editors = new Set();
 let latestOutputs = {};
@@ -113,6 +116,8 @@ class LayeredPlacementEditor {
       flexDirection: "column",
       gap: "6px",
       width: "100%",
+      height: "100%",
+      minHeight: "0",
       padding: "4px",
       color: "var(--input-text, #ddd)",
       font: "12px sans-serif",
@@ -120,7 +125,8 @@ class LayeredPlacementEditor {
     this.stage = element("div", {
       position: "relative",
       minHeight: "260px",
-      flex: "1 1 auto",
+      height: "260px",
+      flex: "0 0 auto",
       overflow: "hidden",
       border: "1px solid rgba(255,255,255,.18)",
       borderRadius: "5px",
@@ -229,16 +235,25 @@ class LayeredPlacementEditor {
     if (this.modelButton) this.stage.append(this.modelButton);
     if (this.stagingButton) this.stage.append(this.stagingButton);
 
-    this.layerListGroup = element("div", { display: "flex", flexDirection: "column", gap: "3px" });
+    this.layerListGroup = element("div", {
+      display: "flex",
+      flex: "1 1 240px",
+      minHeight: "180px",
+      overflow: "hidden",
+      flexDirection: "column",
+      gap: "3px",
+    });
     const layerCaption = document.createElement("span");
     layerCaption.textContent = "Layer order (back → front)";
     layerCaption.style.opacity = ".78";
     this.layerList = element("div", {
       display: "flex",
+      flex: "1 1 auto",
+      minHeight: "0",
       flexDirection: "column",
       gap: "3px",
-      maxHeight: "224px",
       overflowY: "auto",
+      overflowX: "hidden",
       padding: "3px",
       border: "1px solid rgba(255,255,255,.16)",
       borderRadius: "4px",
@@ -308,6 +323,15 @@ class LayeredPlacementEditor {
     });
   }
 
+  updateStageHeight() {
+    const width = this.stage.clientWidth || this.node.size?.[0] || 440;
+    const dimensions = this.dimensions();
+    const aspect = dimensions ? dimensions.width / dimensions.height : 16 / 9;
+    const height = Math.max(260, Math.min(560, width / Math.max(aspect, 0.5)));
+    const value = `${Math.round(height)}px`;
+    if (this.stage.style.height !== value) this.stage.style.height = value;
+  }
+
   wrapNodeLifecycle() {
     const originalExecuted = this.node.onExecuted;
     this.node.onExecuted = (output) => {
@@ -332,7 +356,10 @@ class LayeredPlacementEditor {
     const direct = (this.node.inputs || [])
       .filter((input) => /foreground_\d+$/.test(input.name) && input.link != null)
       .map((input) => input.name.match(/foreground_\d+$/)[0]);
-    if (direct.length) return this.orderLayers(direct);
+    const detectedFaces = (this.metadata?.layers || [])
+      .filter((layer) => layer.is_face)
+      .map((layer) => layer.socket);
+    if (direct.length) return this.orderLayers([...direct, ...detectedFaces]);
     return this.orderLayers((this.metadata?.layers || []).map((layer) => layer.socket));
   }
 
@@ -345,8 +372,8 @@ class LayeredPlacementEditor {
   }
 
   isStagedComposite() {
-    return this.node.comfyClass === "UC_StagedLayeredBackgroundComposite"
-      || this.node.type === "UC_StagedLayeredBackgroundComposite";
+    return ["UC_StagedLayeredBackgroundComposite", "UC_StagedMediaPipeFaceBackgroundComposite"]
+      .includes(this.node.comfyClass || this.node.type);
   }
 
   usesRetainedStage() {
@@ -408,10 +435,10 @@ class LayeredPlacementEditor {
       const selected = key === this.selected;
       const row = element("div", {
         display: "flex",
-        flexWrap: "wrap",
+        flexWrap: "nowrap",
         alignItems: "center",
         gap: "6px",
-        minHeight: "48px",
+        minHeight: "52px",
         padding: "4px 6px",
         border: `1px solid ${selected ? "#65c9ff" : "rgba(255,255,255,.14)"}`,
         borderRadius: "3px",
@@ -440,10 +467,13 @@ class LayeredPlacementEditor {
       position.textContent = index === 0 ? "back" : index === layers.length - 1 ? "front" : String(index + 1);
       const controls = element("div", {
         display: "flex",
-        flex: "4 1 540px",
-        flexWrap: "wrap",
-        gap: "8px",
+        flex: "1 1 auto",
+        minWidth: "0",
+        flexWrap: "nowrap",
+        gap: "6px",
         alignItems: "center",
+        overflowX: "auto",
+        overflowY: "hidden",
       });
       const numericInputs = {};
       for (const [field, label, tooltip] of [
@@ -459,7 +489,28 @@ class LayeredPlacementEditor {
       const flipVertical = this.createLayerAction("Flip V", "Mirror this foreground vertically", () => this.toggleVerticalFlip(key));
       const reset = this.createLayerAction("Reset", "Reset this foreground placement", () => this.resetLayer(key));
       controls.append(flip, flipVertical, reset);
-      this.rowControls.set(key, { inputs: numericInputs, flip, flipVertical, reset });
+      const face = key.includes("_face_");
+      let include, warp;
+      if (face) {
+        const rotation = this.createLayerNumericControl(key, "rotation", "Rotation °", "Face rotation in degrees");
+        rotation.decrement.title = "Rotate left one degree";
+        rotation.increment.title = "Rotate right one degree";
+        rotation.decrement.addEventListener("click", (event) => {
+          event.stopImmediatePropagation(); this.stepFaceRotation(key, -1);
+        }, true);
+        rotation.increment.addEventListener("click", (event) => {
+          event.stopImmediatePropagation(); this.stepFaceRotation(key, 1);
+        }, true);
+        numericInputs.rotation = rotation.input;
+        include = this.createLayerAction("Include", "Include or exclude this face", () => this.toggleFaceIncluded(key));
+        warp = this.createLayerAction("Warp", "Toggle four-corner warp editing", () => {
+          this.warpLayer = this.warpLayer === key ? null : key;
+          this.layerListSignature = null;
+          this.syncLayerList(this.connectedLayers());
+        });
+        controls.append(rotation.root, warp, include);
+      }
+      this.rowControls.set(key, { inputs: numericInputs, flip, flipVertical, reset, include, warp, row });
       row.append(grip, name, position, controls);
       row.addEventListener("click", () => this.selectLayer(key));
       grip.addEventListener("dragstart", (event) => {
@@ -517,8 +568,9 @@ class LayeredPlacementEditor {
     const root = element("div", {
       boxSizing: "border-box",
       display: "flex",
-      flex: "1 1 170px",
-      minWidth: "160px",
+      flex: "1 1 184px",
+      minWidth: "184px",
+      maxWidth: "260px",
       height: "40px",
       alignItems: "center",
       gap: "4px",
@@ -534,9 +586,9 @@ class LayeredPlacementEditor {
     const increment = this.createStepButton("▶", `${label}: increase by 0.01`);
     const input = element("input", {
       boxSizing: "border-box",
-      flex: "1 1 54px",
-      minWidth: "48px",
-      width: "54px",
+      flex: "0 0 76px",
+      minWidth: "76px",
+      width: "76px",
       height: "32px",
       border: "1px solid rgba(255,255,255,.2)",
       borderRadius: "4px",
@@ -575,12 +627,13 @@ class LayeredPlacementEditor {
     });
     root.addEventListener("click", (event) => event.stopPropagation());
     root.append(caption, decrement, input, increment);
-    return { root, input };
+    return { root, input, decrement, increment };
   }
 
   createStepButton(text, title) {
     const button = element("button", {
-      flex: "0 0 32px",
+      flex: "1 1 32px",
+      maxWidth: "64px",
       width: "32px",
       height: "32px",
       padding: "0",
@@ -808,10 +861,13 @@ class LayeredPlacementEditor {
   }
 
   layerPlacement(key) {
-    const fallback = this.data.version === 1
+    const face = key.includes("_face_");
+    const fallback = face
+      ? { ...DEFAULT_PLACEMENT, scale: 0.25, rotation: 0, corners: [[-1, -1], [1, -1], [1, 1], [-1, 1]], included: true }
+      : this.data.version === 1
       ? { scale: DEFAULT_PLACEMENT.scale, long_axis_shift: 0, short_axis_shift: 0 }
       : DEFAULT_PLACEMENT;
-    return normalizePlacement(this.data.layers[key] || fallback, this.data.version);
+    return normalizePlacement(this.data.layers[key] || fallback, face ? 3 : this.data.version, face);
   }
 
   dimensions() {
@@ -853,6 +909,7 @@ class LayeredPlacementEditor {
   }
 
   requestDraw() {
+    this.updateStageHeight();
     if (!this.drawFrame) this.drawFrame = requestAnimationFrame(() => {
       this.drawFrame = 0;
       this.draw();
@@ -926,8 +983,15 @@ class LayeredPlacementEditor {
   drawLayer(context, key, dimensions) {
     const rect = this.toCanvasRect(this.rectFor(key, dimensions));
     const preview = this.cutouts.get(key) || this.preliminaryLayers.get(key);
-    if (preview) {
-      const placement = this.layerPlacement(key);
+    const placement = this.layerPlacement(key);
+    const rotation = Number(placement.rotation || 0) * Math.PI / 180;
+    const centerX = rect.x + rect.width / 2;
+    const centerY = rect.y + rect.height / 2;
+    context.save();
+    context.translate(centerX, centerY);
+    context.rotate(rotation);
+    context.translate(-centerX, -centerY);
+    if (preview && placement.included !== false) {
       const desiredFlip = placement.flip_horizontal === true;
       const desiredFlipVertical = placement.flip_vertical === true;
       const previewFlip = this.layerMetadata(key)?.flip_horizontal === true;
@@ -958,6 +1022,7 @@ class LayeredPlacementEditor {
     context.strokeStyle = key === this.selected ? "#65c9ff" : "rgba(255,255,255,.88)";
     context.strokeRect(rect.x, rect.y, rect.width, rect.height);
     context.restore();
+    context.restore();
   }
 
   handlePoints(key, dimensions) {
@@ -966,11 +1031,44 @@ class LayeredPlacementEditor {
     const right = rect.x + rect.width;
     const top = rect.y;
     const bottom = rect.y + rect.height;
-    return { nw: { x: left, y: top }, ne: { x: right, y: top }, sw: { x: left, y: bottom }, se: { x: right, y: bottom } };
+    const points = { nw: { x: left, y: top }, ne: { x: right, y: top }, sw: { x: left, y: bottom }, se: { x: right, y: bottom } };
+    const angle = Number(this.layerPlacement(key).rotation || 0) * Math.PI / 180;
+    if (!angle) return points;
+    const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+    for (const point of Object.values(points)) {
+      const x = point.x - cx, y = point.y - cy;
+      point.x = cx + x * Math.cos(angle) - y * Math.sin(angle);
+      point.y = cy + x * Math.sin(angle) + y * Math.cos(angle);
+    }
+    return points;
+  }
+
+  faceQuadPoints(key, dimensions) {
+    const rect = this.toCanvasRect(this.rectFor(key, dimensions));
+    const placement = this.layerPlacement(key);
+    const angle = Number(placement.rotation || 0) * Math.PI / 180;
+    const cosine = Math.cos(angle), sine = Math.sin(angle);
+    const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+    return placement.corners.map(([nx, ny]) => {
+      const x = nx * rect.width / 2, y = ny * rect.height / 2;
+      return { x: cx + x * cosine - y * sine, y: cy + x * sine + y * cosine };
+    });
   }
 
   drawHandles(context, key, dimensions) {
-    for (const point of Object.values(this.handlePoints(key, dimensions))) {
+    const points = this.warpLayer === key
+      ? this.faceQuadPoints(key, dimensions)
+      : Object.values(this.handlePoints(key, dimensions));
+    if (this.warpLayer === key) {
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) context.lineTo(point.x, point.y);
+      context.closePath();
+      context.strokeStyle = "#ff9bd2";
+      context.lineWidth = 2;
+      context.stroke();
+    }
+    for (const point of points) {
       context.fillStyle = "#111";
       context.fillRect(point.x - 5, point.y - 5, 10, 10);
       context.fillStyle = "#fff";
@@ -1000,7 +1098,16 @@ class LayeredPlacementEditor {
     const backgroundPoint = this.backgroundPoint(canvasPoint);
     let action = null;
     let handle = null;
-    if (this.selected) {
+    if (this.selected && this.warpLayer === this.selected) {
+      const cornerIndex = this.faceQuadPoints(this.selected, dimensions).findIndex((point) => (
+        Math.hypot(canvasPoint.x - point.x, canvasPoint.y - point.y) <= 12
+      ));
+      if (cornerIndex >= 0) {
+        action = "warp_corner";
+        handle = cornerIndex;
+      }
+    }
+    if (this.selected && this.warpLayer !== this.selected) {
       for (const [name, point] of Object.entries(this.handlePoints(this.selected, dimensions))) {
         if (Math.hypot(canvasPoint.x - point.x, canvasPoint.y - point.y) <= 12) {
           action = "resize";
@@ -1014,7 +1121,7 @@ class LayeredPlacementEditor {
         const rect = this.rectFor(key, dimensions);
         if (backgroundPoint.x >= rect.x && backgroundPoint.x <= rect.x + rect.width && backgroundPoint.y >= rect.y && backgroundPoint.y <= rect.y + rect.height) {
           this.selectLayer(key);
-          action = "move";
+          action = this.warpLayer === key ? "warp_deform" : "move";
           break;
         }
       }
@@ -1037,6 +1144,7 @@ class LayeredPlacementEditor {
       pointerId: event.pointerId,
       changed: false,
       view: { ...this.view },
+      startPlacement: this.layerPlacement(this.selected),
     };
     this.canvas.setPointerCapture(event.pointerId);
   }
@@ -1050,7 +1158,27 @@ class LayeredPlacementEditor {
     const deltaX = point.x - this.gesture.startPoint.x;
     const deltaY = point.y - this.gesture.startPoint.y;
     let rect;
-    if (this.gesture.action === "move") {
+    if (this.gesture.action === "warp_corner" || this.gesture.action === "warp_deform") {
+      const start = this.gesture.startPlacement;
+      const canvasRect = this.toCanvasRect(this.gesture.startRect);
+      const cx = canvasRect.x + canvasRect.width / 2;
+      const cy = canvasRect.y + canvasRect.height / 2;
+      const angle = -Number(start.rotation || 0) * Math.PI / 180;
+      const cosine = Math.cos(angle), sine = Math.sin(angle);
+      const localX = ((canvasPoint.x - cx) * cosine - (canvasPoint.y - cy) * sine) * 2 / canvasRect.width;
+      const localY = ((canvasPoint.x - cx) * sine + (canvasPoint.y - cy) * cosine) * 2 / canvasRect.height;
+      let corners;
+      if (this.gesture.action === "warp_corner") {
+        corners = dragQuadCorner(start.corners, this.gesture.handle, localX, localY);
+      } else {
+        const dx = deltaX * this.view.scale * 2 / canvasRect.width;
+        const dy = deltaY * this.view.scale * 2 / canvasRect.height;
+        corners = deformQuadCentroidLocked(start.corners, [localX - dx, localY - dy], dx, dy);
+      }
+      this.gesture.changed = true;
+      this.queuePlacement(this.gesture.key, { ...start, corners });
+      return;
+    } else if (this.gesture.action === "move") {
       rect = moveRect(
         dimensions.width, dimensions.height, this.gesture.startRect, deltaX, deltaY,
         this.data.workspace_padding,
@@ -1130,8 +1258,8 @@ class LayeredPlacementEditor {
         this.data.layers = migrated;
       }
     }
-    this.data.version = 2;
-    this.data.layers[key] = normalizePlacement(placement, 2);
+    this.data.version = key.includes("_face_") || this.data.version === 3 ? 3 : 2;
+    this.data.layers[key] = normalizePlacement(placement, this.data.version, key.includes("_face_"));
     this.placementWidget.value = serializePlacementData(this.data);
     this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
     this.node.graph?.setDirtyCanvas?.(true, true);
@@ -1158,7 +1286,8 @@ class LayeredPlacementEditor {
           )
         : DEFAULT_PLACEMENT;
       for (const [field, input] of Object.entries(controls.inputs)) {
-        if (document.activeElement !== input) input.value = Number(placement[field]).toFixed(4);
+        const value = field === "rotation" ? this.layerPlacement(key).rotation ?? 0 : placement[field];
+        if (document.activeElement !== input) input.value = Number(value).toFixed(field === "rotation" ? 0 : 4);
       }
       controls.flip.setAttribute("aria-pressed", String(placement.flip_horizontal === true));
       controls.flip.style.background = placement.flip_horizontal
@@ -1168,6 +1297,15 @@ class LayeredPlacementEditor {
       controls.flipVertical.style.background = placement.flip_vertical
         ? "rgba(64,180,255,.30)"
         : "rgba(0,0,0,.25)";
+      if (controls.include) {
+        const included = this.layerPlacement(key).included !== false;
+        controls.include.textContent = included ? "Exclude" : "Include";
+        controls.row.style.opacity = included ? "1" : ".48";
+      }
+      if (controls.warp) {
+        controls.warp.setAttribute("aria-pressed", String(this.warpLayer === key));
+        controls.warp.style.background = this.warpLayer === key ? "rgba(64,180,255,.30)" : "rgba(0,0,0,.25)";
+      }
     }
     const padding = normalizeWorkspacePadding(
       this.data.workspace_padding ?? DEFAULT_WORKSPACE_PADDING,
@@ -1265,7 +1403,9 @@ class LayeredPlacementEditor {
       return;
     }
     const placement = {
-      ...rectToPlacement(dimensions.width, dimensions.height, this.rectFor(key, dimensions)),
+      ...rectToPlacement(
+        dimensions.width, dimensions.height, this.rectFor(key, dimensions), this.layerPlacement(key),
+      ),
       flip_horizontal: this.layerPlacement(key).flip_horizontal,
       flip_vertical: this.layerPlacement(key).flip_vertical,
       [field]: normalizedValue,
@@ -1291,7 +1431,13 @@ class LayeredPlacementEditor {
   resetLayer(key) {
     this.node.graph?.beforeChange?.();
     this.selected = key;
-    this.queuePlacement(key, DEFAULT_PLACEMENT);
+    this.queuePlacement(key, key.includes("_face_") ? {
+      ...DEFAULT_PLACEMENT,
+      scale: 0.25,
+      rotation: 0,
+      corners: [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+      included: true,
+    } : DEFAULT_PLACEMENT);
     this.flushPlacement();
     this.node.graph?.afterChange?.();
     this.layerListSignature = null;
@@ -1323,6 +1469,25 @@ class LayeredPlacementEditor {
     this.node.graph?.afterChange?.();
     this.layerListSignature = null;
     this.syncLayerList(this.connectedLayers());
+  }
+
+  updateFacePlacement(key, changes) {
+    this.node.graph?.beforeChange?.();
+    this.selected = key;
+    this.queuePlacement(key, { ...this.layerPlacement(key), ...changes });
+    this.flushPlacement();
+    this.node.graph?.afterChange?.();
+    this.layerListSignature = null;
+    this.syncLayerList(this.connectedLayers());
+  }
+
+  stepFaceRotation(key, delta) {
+    const rotation = Number(this.layerPlacement(key).rotation || 0);
+    this.updateFacePlacement(key, { rotation: ((rotation + delta + 180) % 360 + 360) % 360 - 180 });
+  }
+
+  toggleFaceIncluded(key) {
+    this.updateFacePlacement(key, { included: this.layerPlacement(key).included === false });
   }
 
   async runStaging() {

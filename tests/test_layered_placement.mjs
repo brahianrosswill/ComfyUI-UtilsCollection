@@ -11,6 +11,10 @@ import {
   resizeRectFromDelta,
   serializePlacementData,
   stepPlacementValue,
+  deformQuadCentroidLocked,
+  dragQuadCorner,
+  isValidQuad,
+  normalizeRotation,
 } from "../web/placement_geometry.js";
 
 const close = (actual, expected, tolerance = 1e-9) => assert.ok(
@@ -146,4 +150,35 @@ test("layer arrow controls step cleanly and respect placement limits", () => {
   assert.equal(stepPlacementValue("scale", 0.05, -0.01), 0.05);
   assert.equal(stepPlacementValue("center_x", 0.5, -0.01), 0.49);
   assert.equal(stepPlacementValue("center_y", 10, 0.01), 10);
+});
+
+test("version 3 normalizes face transforms deterministically", () => {
+  const parsed = parsePlacementData('{"version":3,"layers":{"foreground_0_face_0":{"rotation":181,"included":false}}}');
+  assert.equal(parsed.layers.foreground_0_face_0.rotation, -179);
+  assert.equal(parsed.layers.foreground_0_face_0.included, false);
+  assert.equal(normalizeRotation(-181), 179);
+  assert.match(serializePlacementData(parsed), /"version":3/);
+});
+
+test("rect edits preserve every face-specific transform field", () => {
+  const prior = {
+    scale: 0.25, center_x: 0.5, center_y: 0.5,
+    flip_horizontal: true, flip_vertical: false,
+    rotation: 37, corners: [[-0.8, -1], [1, -0.9], [0.9, 1], [-1, 0.8]],
+    included: false,
+  };
+  const edited = rectToPlacement(100, 100, { x: 20, y: 25, width: 40, height: 40 }, prior);
+  assert.equal(edited.rotation, 37);
+  assert.deepEqual(edited.corners, prior.corners);
+  assert.equal(edited.included, false);
+});
+
+test("quad corner and weighted deformation preserve valid centroid-locked geometry", () => {
+  const quad = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  const dragged = dragQuadCorner(quad, 0, -0.7, -0.8);
+  assert.equal(isValidQuad(dragged), true);
+  const deformed = deformQuadCentroidLocked(quad, [0.7, 0.7], 0.2, -0.1);
+  assert.equal(isValidQuad(deformed), true);
+  const centroid = (points) => points.reduce((sum, p) => [sum[0] + p[0] / 4, sum[1] + p[1] / 4], [0, 0]);
+  assert.ok(centroid(deformed).every((v) => Math.abs(v) < 1e-12));
 });
