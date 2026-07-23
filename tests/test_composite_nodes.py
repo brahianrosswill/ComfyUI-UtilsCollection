@@ -18,7 +18,7 @@ from comfy.cli_args import args as cli_args
 prior_cpu = cli_args.cpu
 cli_args.cpu = True
 try:
-    from utils_collection_composite_test import composite_nodes, image_nodes
+    from utils_collection_composite_test import composite_nodes, image_nodes, model_assets
     from utils_collection_composite_test.helper_functions import resize_nchw
 finally:
     cli_args.cpu = prior_cpu
@@ -797,15 +797,15 @@ def test_internal_background_removal_loader_selects_exact_files_and_caches(monke
         def encode_image(self, image):
             return image
 
-    def resolve(_folder, filename):
-        assert _folder == "background_removal"
-        return str(tmp_path / filename)
-
     def load(path):
         loaded.append(path)
         return DummyModel()
 
-    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", resolve)
+    monkeypatch.setattr(
+        composite_nodes,
+        "ensure_huggingface_model",
+        lambda category, filename, repo_id, repo_path: str(tmp_path / filename),
+    )
     monkeypatch.setattr(bg_removal_model, "load", load)
     composite_nodes._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
 
@@ -824,18 +824,86 @@ def test_internal_background_removal_loader_selects_exact_files_and_caches(monke
     assert lucida.config["image_mean"] == lucida.image_mean
 
 
-def test_internal_background_removal_loader_reports_expected_filename(monkeypatch):
-    import folder_paths
-
+def test_internal_background_removal_loader_reports_download_failure(monkeypatch):
     composite_nodes._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
     monkeypatch.setattr(
-        folder_paths,
-        "get_full_path_or_raise",
-        lambda *_args: (_ for _ in ()).throw(FileNotFoundError()),
+        composite_nodes,
+        "ensure_huggingface_model",
+        lambda *_args: (_ for _ in ()).throw(
+            ValueError("Unable to download Comfy-Org/BiRefNet/background_removal/lucida.safetensors")
+        ),
     )
 
-    with pytest.raises(ValueError, match=r"models[\\/]background_removal[\\/]lucida\.safetensors"):
+    with pytest.raises(ValueError, match=r"Comfy-Org/BiRefNet/background_removal/lucida\.safetensors"):
         composite_nodes._load_internal_background_removal_model("lucida")
+
+
+def test_huggingface_model_download_flattens_repo_subdirectory(monkeypatch, tmp_path):
+    import folder_paths
+    import requests
+
+    registered = tmp_path / "custom-removal-location"
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            assert chunk_size == 1024 * 1024
+            yield b"weights"
+
+    monkeypatch.setattr(
+        folder_paths, "get_full_path_or_raise",
+        lambda *_args: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    monkeypatch.setattr(folder_paths, "get_folder_paths", lambda category: [str(registered)])
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda url, **kwargs: calls.append((url, kwargs)) or Response(),
+    )
+
+    result = model_assets.ensure_huggingface_model(
+        "background_removal", "birefnet.safetensors",
+        "Comfy-Org/BiRefNet", "background_removal/birefnet.safetensors",
+    )
+
+    assert pathlib.Path(result) == registered / "birefnet.safetensors"
+    assert pathlib.Path(result).read_bytes() == b"weights"
+    assert calls == [(
+        "https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/"
+        "background_removal/birefnet.safetensors",
+        {"stream": True, "allow_redirects": True, "timeout": (10, 300)},
+    )]
+    assert not (registered / "background_removal").exists()
+
+
+def test_huggingface_model_download_is_skipped_when_registered_file_exists(monkeypatch, tmp_path):
+    import folder_paths
+    import requests
+
+    existing = tmp_path / "detection" / "mediapipe_face_fp32.safetensors"
+    existing.parent.mkdir()
+    existing.write_bytes(b"present")
+    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda *_args: str(existing))
+    monkeypatch.setattr(
+        requests, "get",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("downloaded existing model")),
+    )
+
+    result = model_assets.ensure_huggingface_model(
+        "detection", existing.name,
+        "Comfy-Org/mediapipe", f"detection/{existing.name}",
+    )
+
+    assert result == str(existing)
 
 
 def test_staged_compositor_preserves_exact_size_non_overlapping_foregrounds(monkeypatch):

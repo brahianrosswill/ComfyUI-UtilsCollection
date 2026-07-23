@@ -6,23 +6,23 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .model_assets import ensure_huggingface_model
+
 
 _FACE_MODEL_CACHE = {"path": None, "model": None}
 
 
 def load_face_model():
     import comfy.utils
-    import folder_paths
     from comfy_extras.nodes_mediapipe import FaceLandmarkerModel
 
     filename = "mediapipe_face_fp32.safetensors"
-    try:
-        path = folder_paths.get_full_path_or_raise("detection", filename)
-    except Exception as exc:
-        raise ValueError(
-            f"The MediaPipe face model is missing. Install it as "
-            f"{os.path.join('models', 'detection', filename)}."
-        ) from exc
+    path = ensure_huggingface_model(
+        "detection",
+        filename,
+        "Comfy-Org/mediapipe",
+        f"detection/{filename}",
+    )
     path = os.path.normcase(os.path.abspath(path))
     if _FACE_MODEL_CACHE["path"] == path:
         return _FACE_MODEL_CACHE["model"]

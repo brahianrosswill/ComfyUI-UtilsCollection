@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 from comfy_api.latest import io, ui
 from nodes import MAX_RESOLUTION
 from .helper_functions import resize_nchw
+from .model_assets import ensure_huggingface_model
 from .staged_face_helpers import (
     detect_or_warn,
     load_face_model,
@@ -61,17 +62,14 @@ def _load_internal_background_removal_model(model_name):
         choices = ", ".join(_BACKGROUND_REMOVAL_MODEL_FILES)
         raise ValueError(f"Unsupported internal background-removal model {model_name!r}; choose {choices}.")
 
-    import folder_paths
     from comfy import bg_removal_model
 
-    try:
-        model_path = folder_paths.get_full_path_or_raise("background_removal", filename)
-    except Exception as exc:
-        expected = os.path.join("models", "background_removal", filename)
-        raise ValueError(
-            f"The selected {selected} background-removal model is missing. "
-            f"Install it as {expected}."
-        ) from exc
+    model_path = ensure_huggingface_model(
+        "background_removal",
+        filename,
+        "Comfy-Org/BiRefNet",
+        f"background_removal/{filename}",
+    )
 
     cache_key = (selected, os.path.normcase(os.path.abspath(model_path)))
     if _INTERNAL_BACKGROUND_REMOVAL_CACHE["key"] == cache_key:
