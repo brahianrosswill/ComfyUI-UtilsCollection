@@ -1,3 +1,4 @@
+import json
 import pathlib
 import sys
 import types
@@ -165,6 +166,8 @@ def test_mask_expansion_and_feather_support_contraction():
     assert torch.equal(outward[2:7, 2:7], mask[2:7, 2:7])
     assert inward[:2].sum() == 0
     assert inward[:, :2].sum() == 0
+    assert torch.all(inward <= mask)
+    assert inward[2, 4] < inward[4, 4]
 
 
 class _QueuedBackgroundModel:
@@ -1125,3 +1128,212 @@ def test_projective_warp_applies_identical_support_to_rgb_and_alpha():
         image, mask, [[-0.8, -0.8], [0.8, -1], [0.7, 0.8], [-0.9, 0.7]], 12,
     )
     assert torch.allclose(warped_image[..., 0], warped_mask, atol=1e-6)
+
+
+def test_version_three_warp_applies_to_ordinary_foreground():
+    staged = {
+        "version": 1,
+        "layers": [{
+            "socket": "foreground_0",
+            "image": torch.ones(1, 5, 5, 3),
+            "mask": torch.ones(1, 5, 5),
+            "uses_embedded_alpha": True,
+            "is_face": False,
+        }],
+    }
+    placement = json.dumps({
+        "version": 3,
+        "layers": {
+            "foreground_0": {
+                "scale": 0.5,
+                "center_x": 0.5,
+                "center_y": 0.5,
+                "rotation": 0,
+                "corners": [[-0.6, -0.6], [0.6, -0.6], [0.6, 0.6], [-0.6, 0.6]],
+            },
+        },
+    })
+    image, mask = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3), staged, placement, 0,
+    ).result
+    assert torch.allclose(image[..., 0], mask, atol=1e-6)
+    assert mask.sum() < 25
+
+
+def test_staged_soft_blend_does_not_blend_with_background():
+    staged = {
+        "version": 1,
+        "layers": [{
+            "socket": "foreground_0",
+            "image": torch.ones(1, 5, 5, 3),
+            "mask": torch.ones(1, 5, 5),
+            "uses_embedded_alpha": True,
+            "blend_factor": 0.5,
+        }],
+    }
+    image, mask = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3),
+        staged,
+        '{"version":3,"workspace_padding":0,"layers":{"foreground_0":{"scale":0.5}}}',
+        0,
+    ).result
+    assert torch.allclose(image[..., 0], mask)
+    assert mask.max() == 1
+
+
+def test_staged_soft_blend_maps_zero_to_half_over_underlying_foreground():
+    staged = {
+        "version": 1,
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.full((1, 5, 5, 3), 0.2),
+                "mask": torch.ones(1, 5, 5),
+                "uses_embedded_alpha": True,
+            },
+            {
+                "socket": "foreground_1",
+                "image": torch.ones(1, 5, 5, 3),
+                "mask": torch.ones(1, 5, 5),
+                "uses_embedded_alpha": True,
+                "blend_factor": 0.5,
+            },
+        ],
+    }
+    placement = (
+        '{"version":3,"workspace_padding":0,"layers":{'
+        '"foreground_0":{"scale":0.5},"foreground_1":{"scale":0.5}}}'
+    )
+    image, mask = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3), staged, placement, 0,
+    ).result
+    assert image.max().item() == pytest.approx(0.6)
+    assert mask.max() == 1
+
+
+def test_staged_soft_blend_uses_accumulated_coverage_past_excluded_layer():
+    staged = {
+        "version": 1,
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.full((1, 5, 5, 3), 0.2),
+                "mask": torch.ones(1, 5, 5),
+                "uses_embedded_alpha": True,
+            },
+            {
+                "socket": "foreground_1",
+                "image": torch.zeros(1, 5, 5, 3),
+                "mask": torch.ones(1, 5, 5),
+                "uses_embedded_alpha": True,
+            },
+            {
+                "socket": "foreground_2",
+                "image": torch.ones(1, 5, 5, 3),
+                "mask": torch.ones(1, 5, 5),
+                "uses_embedded_alpha": True,
+                "blend_factor": 0.5,
+            },
+        ],
+    }
+    placement = (
+        '{"version":3,"workspace_padding":0,"layers":{'
+        '"foreground_0":{"scale":0.5},'
+        '"foreground_1":{"scale":0.5,"included":false},'
+        '"foreground_2":{"scale":0.5}}}'
+    )
+    image, mask = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3), staged, placement, 0,
+    ).result
+    assert image.max().item() == pytest.approx(0.6)
+    assert mask.max() == 1
+
+
+def test_staged_blend_options_apply_separate_ordinary_and_face_factors():
+    staged = {
+        "version": 1,
+        "layers": [
+            {"socket": "foreground_0"},
+            {"socket": "foreground_0_face_0", "is_face": True},
+        ],
+    }
+    blended = composite_nodes._apply_staged_layer_options(staged, 0.2, 0.8, 12)
+    assert [layer["blend_factor"] for layer in blended["layers"]] == pytest.approx([0.6, 0.9])
+    assert blended["layers"][1]["feather_radius"] == 12
+    assert "blend_factor" not in staged["layers"][0]
+    diagnostic = composite_nodes._apply_staged_layer_options(staged, 1.0, -1.0, 4)
+    assert diagnostic["layers"][1]["blend_factor"] == 0
+
+
+def test_version_three_exclusion_applies_to_ordinary_foreground():
+    staged = {
+        "version": 1,
+        "layers": [{
+            "socket": "foreground_0",
+            "image": torch.ones(1, 5, 5, 3),
+            "mask": torch.ones(1, 5, 5),
+            "uses_embedded_alpha": True,
+            "is_face": False,
+        }],
+    }
+    placement = json.dumps({
+        "version": 3,
+        "layers": {"foreground_0": {"included": False}},
+    })
+    image, mask = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3), staged, placement, 0,
+    ).result
+    assert torch.count_nonzero(image) == 0
+    assert torch.count_nonzero(mask) == 0
+
+
+def test_face_feather_is_applied_to_final_composite_alpha():
+    staged = {
+        "version": 1,
+        "layers": [{
+            "socket": "foreground_0_face_0",
+            "image": torch.ones(1, 9, 9, 3),
+            "mask": torch.ones(1, 9, 9),
+            "uses_embedded_alpha": True,
+            "is_face": True,
+            "feather_radius": 4,
+        }],
+    }
+    image, mask = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 18, 18, 3),
+        staged,
+        '{"version":3,"workspace_padding":0,"layers":{"foreground_0_face_0":{"scale":0.5}}}',
+        0,
+    ).result
+    support = mask[0, 5:14, 5:14]
+    assert support[4, 4] > support[0, 4]
+    assert torch.allclose(image[..., 0], mask)
+
+
+def test_final_face_feather_scales_with_placed_face(monkeypatch):
+    radii = []
+    original = composite_nodes._feather_mask
+
+    def capture(mask, radius):
+        radii.append(radius)
+        return original(mask, radius)
+
+    monkeypatch.setattr(composite_nodes, "_feather_mask", capture)
+    staged = {
+        "version": 1,
+        "layers": [{
+            "socket": "foreground_0_face_0",
+            "image": torch.ones(1, 9, 9, 3),
+            "mask": torch.ones(1, 9, 9),
+            "uses_embedded_alpha": True,
+            "is_face": True,
+            "feather_radius": 4,
+        }],
+    }
+    composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 36, 36, 3),
+        staged,
+        '{"version":3,"workspace_padding":0,"layers":{"foreground_0_face_0":{"scale":0.5}}}',
+        0,
+    )
+    assert radii[:2] == [-8, -4]

@@ -7,6 +7,7 @@ import {
   moveRect,
   parsePlacementData,
   placementToRect,
+  projectQuadPoint,
   rectToPlacement,
   resizeRectFromDelta,
   serializePlacementData,
@@ -147,6 +148,8 @@ test("vertical flip survives placement normalization and geometry edits", () => 
 
 test("layer arrow controls step cleanly and respect placement limits", () => {
   assert.equal(stepPlacementValue("scale", 0.9, 0.01), 0.91);
+  assert.equal(stepPlacementValue("center_x", 0.2734, 0.002), 0.2754);
+  assert.equal(stepPlacementValue("center_x", 0.2734, 0.005), 0.2784);
   assert.equal(stepPlacementValue("scale", 0.05, -0.01), 0.05);
   assert.equal(stepPlacementValue("center_x", 0.5, -0.01), 0.49);
   assert.equal(stepPlacementValue("center_y", 10, 0.01), 10);
@@ -158,6 +161,17 @@ test("version 3 normalizes face transforms deterministically", () => {
   assert.equal(parsed.layers.foreground_0_face_0.included, false);
   assert.equal(normalizeRotation(-181), 179);
   assert.match(serializePlacementData(parsed), /"version":3/);
+});
+
+test("version 3 normalizes ordinary foreground transforms deterministically", () => {
+  const parsed = parsePlacementData('{"version":3,"layers":{"foreground_0":{"rotation":-181,"corners":[[-0.8,-1],[1,-0.9],[0.9,1],[-1,0.8]]}}}');
+  assert.equal(parsed.layers.foreground_0.rotation, 179);
+  assert.deepEqual(parsed.layers.foreground_0.corners, [[-0.8, -1], [1, -0.9], [0.9, 1], [-1, 0.8]]);
+  assert.equal(parsed.layers.foreground_0.included, true);
+  assert.equal(
+    serializePlacementData(parsed),
+    '{"version":3,"workspace_padding":0.5,"layer_order":[],"layers":{"foreground_0":{"scale":0.9,"center_x":0.5,"center_y":0.5,"flip_horizontal":false,"flip_vertical":false,"rotation":179,"corners":[[-0.8,-1],[1,-0.9],[0.9,1],[-1,0.8]],"included":true}}}',
+  );
 });
 
 test("rect edits preserve every face-specific transform field", () => {
@@ -181,4 +195,32 @@ test("quad corner and weighted deformation preserve valid centroid-locked geomet
   assert.equal(isValidQuad(deformed), true);
   const centroid = (points) => points.reduce((sum, p) => [sum[0] + p[0] / 4, sum[1] + p[1] / 4], [0, 0]);
   assert.ok(centroid(deformed).every((v) => Math.abs(v) < 1e-12));
+});
+
+test("interior deformation turns the quad toward the drag direction without moving its centroid", () => {
+  const quad = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  const deformed = deformQuadCentroidLocked(quad, [0.8, 0], 0.3, 0);
+  assert.equal(isValidQuad(deformed), true);
+  const leftHeight = deformed[3][1] - deformed[0][1];
+  const rightHeight = deformed[2][1] - deformed[1][1];
+  assert.ok(rightHeight < leftHeight);
+  const movement = deformed.reduce((sum, point, index) => [
+    sum[0] + point[0] - quad[index][0],
+    sum[1] + point[1] - quad[index][1],
+  ], [0, 0]);
+  assert.ok(movement.every((value) => Math.abs(value) < 1e-12));
+});
+
+test("projective quad mapping reaches corners and maps finite interior coordinates", () => {
+  const quad = [[-1, -1], [0.7, -0.8], [0.8, 0.6], [-0.9, 1]];
+  for (const [actual, expected] of [
+    [projectQuadPoint(quad, 0, 0), quad[0]],
+    [projectQuadPoint(quad, 1, 0), quad[1]],
+    [projectQuadPoint(quad, 1, 1), quad[2]],
+    [projectQuadPoint(quad, 0, 1), quad[3]],
+  ]) {
+    close(actual[0], expected[0]);
+    close(actual[1], expected[1]);
+  }
+  assert.ok(projectQuadPoint(quad, 0.5, 0.5).every(Number.isFinite));
 });

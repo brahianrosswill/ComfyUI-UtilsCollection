@@ -16,7 +16,8 @@ export const normalizeWorkspacePadding = (value) => clamp(finite(value, DEFAULT_
 export function stepPlacementValue(field, value, delta) {
   const minimum = field === "scale" ? 0.05 : -10;
   const fallback = field === "scale" ? DEFAULT_PLACEMENT.scale : 0.5;
-  return clamp(Math.round((finite(value, fallback) + finite(delta, 0)) * 100) / 100, minimum, 10);
+  const adjusted = finite(value, fallback) + finite(delta, 0);
+  return clamp(Math.round(adjusted * 1e10) / 1e10, minimum, 10);
 }
 
 export function normalizePlacement(value = {}, version = 2, face = false) {
@@ -37,9 +38,11 @@ export function normalizePlacement(value = {}, version = 2, face = false) {
     flip_horizontal: value.flip_horizontal === true,
     flip_vertical: value.flip_vertical === true,
   };
-  if (version === 3 && (face || value.rotation !== undefined || value.corners !== undefined || value.included !== undefined)) {
+  if (version === 3) {
     normalized.rotation = normalizeRotation(value.rotation);
     normalized.corners = normalizeQuad(value.corners);
+  }
+  if (version === 3) {
     normalized.included = value.included !== false;
   }
   return normalized;
@@ -82,19 +85,77 @@ export function deformQuadCentroidLocked(corners, point, deltaX, deltaY) {
   const original = normalizeQuad(corners);
   const weights = original.map((corner) => 1 / Math.max(1e-6, Math.hypot(corner[0] - point[0], corner[1] - point[1])));
   const total = weights.reduce((a, b) => a + b, 0);
-  let candidate = original.map((corner, index) => [
-    corner[0] + deltaX * weights[index] / total,
-    corner[1] + deltaY * weights[index] / total,
+  const movement = original.map((_, index) => [
+    deltaX * weights[index] / total,
+    deltaY * weights[index] / total,
   ]);
-  const shift = candidate.reduce((sum, corner, index) => [
-    sum[0] + corner[0] - original[index][0], sum[1] + corner[1] - original[index][1],
-  ], [0, 0]).map((value) => value / 4);
-  candidate = candidate.map((corner) => [
-    corner[0] - shift[0], corner[1] - shift[1],
+  const horizontalDirection = Math.sign(deltaX);
+  const verticalDirection = Math.sign(deltaY);
+  for (let index = 0; index < original.length; index++) {
+    const [cornerX, cornerY] = original[index];
+    const horizontalInfluence = horizontalDirection ? (1 + horizontalDirection * cornerX) / 2 : 0;
+    const verticalInfluence = verticalDirection ? (1 + verticalDirection * cornerY) / 2 : 0;
+    movement[index][1] -= cornerY * Math.abs(deltaX) * 0.8 * horizontalInfluence;
+    movement[index][0] -= cornerX * Math.abs(deltaY) * 0.8 * verticalInfluence;
+  }
+  const average = movement.reduce(
+    (sum, value) => [sum[0] + value[0] / 4, sum[1] + value[1] / 4],
+    [0, 0],
+  );
+  const centered = movement.map(([x, y]) => [x - average[0], y - average[1]]);
+  for (let axis = 0; axis < 2; axis++) {
+    const lower = original.map((corner) => -1 - corner[axis]);
+    const upper = original.map((corner) => 1 - corner[axis]);
+    let low = -4, high = 4;
+    for (let iteration = 0; iteration < 48; iteration++) {
+      const lambda = (low + high) / 2;
+      const sum = centered.reduce(
+        (value, movementValue, index) => value + clamp(movementValue[axis] - lambda, lower[index], upper[index]),
+        0,
+      );
+      if (sum > 0) low = lambda;
+      else high = lambda;
+    }
+    const lambda = (low + high) / 2;
+    for (let index = 0; index < centered.length; index++) {
+      centered[index][axis] = clamp(centered[index][axis] - lambda, lower[index], upper[index]);
+    }
+  }
+  const at = (amount) => original.map((corner, index) => [
+    corner[0] + centered[index][0] * amount,
+    corner[1] + centered[index][1] * amount,
   ]);
-  const extent = Math.max(1, ...candidate.flat().map(Math.abs));
-  candidate = candidate.map((corner) => [corner[0] / extent, corner[1] / extent]);
-  return isValidQuad(candidate) ? candidate : original;
+  let amount = 1;
+  let candidate = at(amount);
+  if (isValidQuad(candidate)) return candidate;
+  for (let iteration = 0; iteration < 20; iteration++) {
+    amount *= 0.5;
+    candidate = at(amount);
+    if (isValidQuad(candidate)) return candidate;
+  }
+  return original;
+}
+
+export function projectQuadPoint(corners, u, v) {
+  const [topLeft, topRight, bottomRight, bottomLeft] = normalizeQuad(corners);
+  const dx1 = topRight[0] - bottomRight[0];
+  const dx2 = bottomLeft[0] - bottomRight[0];
+  const dx3 = topLeft[0] - topRight[0] + bottomRight[0] - bottomLeft[0];
+  const dy1 = topRight[1] - bottomRight[1];
+  const dy2 = bottomLeft[1] - bottomRight[1];
+  const dy3 = topLeft[1] - topRight[1] + bottomRight[1] - bottomLeft[1];
+  const denominator = dx1 * dy2 - dx2 * dy1;
+  const g = Math.abs(denominator) < 1e-12 ? 0 : (dx3 * dy2 - dx2 * dy3) / denominator;
+  const h = Math.abs(denominator) < 1e-12 ? 0 : (dx1 * dy3 - dx3 * dy1) / denominator;
+  const a = topRight[0] - topLeft[0] + g * topRight[0];
+  const b = bottomLeft[0] - topLeft[0] + h * bottomLeft[0];
+  const d = topRight[1] - topLeft[1] + g * topRight[1];
+  const e = bottomLeft[1] - topLeft[1] + h * bottomLeft[1];
+  const scale = g * u + h * v + 1;
+  return [
+    (a * u + b * v + topLeft[0]) / scale,
+    (d * u + e * v + topLeft[1]) / scale,
+  ];
 }
 
 export function parsePlacementData(value) {

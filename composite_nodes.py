@@ -180,10 +180,13 @@ def _expand_mask(mask, amount):
 def _feather_mask(mask, radius):
     if radius == 0:
         return mask
-    blurred = _blur_mask(mask.unsqueeze(0), abs(int(radius)))[0].clamp(0.0, 1.0)
-    if radius > 0:
-        return torch.maximum(mask, blurred)
-    return torch.minimum(mask, blurred)
+    radius = int(radius)
+    if radius < 0:
+        contracted = _expand_mask(mask, -max(1, math.ceil(abs(radius) / 2)))
+        blurred = _blur_mask(contracted.unsqueeze(0), abs(radius))[0].clamp(0.0, 1.0)
+        return torch.minimum(mask, blurred)
+    blurred = _blur_mask(mask.unsqueeze(0), radius)[0].clamp(0.0, 1.0)
+    return torch.maximum(mask, blurred)
 
 
 def _binary_dilate(mask, radius):
@@ -328,7 +331,7 @@ def _parse_layer_placements(value):
             if not isinstance(flip_value, bool):
                 raise ValueError(f"Layer {key} field {flip_field} must be Boolean.")
             result[flip_field] = flip_value
-        if version == 3 and "_face_" in key:
+        if version == 3:
             rotation = placement.get("rotation", 0.0)
             if isinstance(rotation, bool):
                 raise ValueError(f"Layer {key} field rotation must be numeric.")
@@ -339,12 +342,12 @@ def _parse_layer_placements(value):
             if not math.isfinite(rotation):
                 raise ValueError(f"Layer {key} field rotation must be finite.")
             result["rotation"] = ((rotation + 180.0) % 360.0) - 180.0
+            corners = placement.get("corners", [[-1, -1], [1, -1], [1, 1], [-1, 1]])
+            result["corners"] = _validate_quad(corners, key)
             included = placement.get("included", True)
             if not isinstance(included, bool):
                 raise ValueError(f"Layer {key} field included must be Boolean.")
             result["included"] = included
-            corners = placement.get("corners", [[-1, -1], [1, -1], [1, 1], [-1, 1]])
-            result["corners"] = _validate_quad(corners, key)
         result["_version"] = version
         parsed[key] = result
     return parsed
@@ -1054,6 +1057,22 @@ def _stage_face_foregrounds(
     return staged
 
 
+def _apply_staged_layer_options(staged, foreground_blend, face_blend, face_feather_radius):
+    foreground_factor = 0.5 + 0.5 * float(foreground_blend)
+    face_factor = 0.5 + 0.5 * float(face_blend)
+    return {
+        **staged,
+        "layers": [
+            {
+                **layer,
+                "blend_factor": face_factor if layer.get("is_face") else foreground_factor,
+                **({"feather_radius": int(face_feather_radius)} if layer.get("is_face") else {}),
+            }
+            for layer in staged["layers"]
+        ],
+    }
+
+
 def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
     if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
         raise ValueError("Staged Layered Background Composite requires exactly one background image.")
@@ -1086,6 +1105,7 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
             "flip_horizontal": bool(layer.get("flip_horizontal", False)),
             "flip_vertical": bool(layer.get("flip_vertical", False)),
             "is_face": bool(layer.get("is_face", False)),
+            "blend_factor": float(layer.get("blend_factor", 1.0)),
         }
         try:
             rgba = torch.cat((crop[0], alpha.unsqueeze(-1)), dim=-1).unsqueeze(0)
@@ -1147,7 +1167,7 @@ def _composite_staged_foregrounds(
         )
         if key not in placements and layer.get("default_scale") is not None:
             placement["scale"] = float(layer["default_scale"])
-        excluded = bool(layer.get("is_face") and not placement.get("included", True))
+        excluded = not placement.get("included", True)
         staged_flip = bool(layer.get("flip_horizontal", False))
         desired_flip = bool(placement.get("flip_horizontal", False))
         if staged_flip != desired_flip:
@@ -1164,7 +1184,7 @@ def _composite_staged_foregrounds(
         placed_width = max(1, round(crop_width * scale))
         resized_foreground = _resize_composite_image(crop, placed_width, placed_height, image_resize_method).to(scene)
         resized_mask = _resize_composite_mask(crop_mask, placed_width, placed_height, mask_resize_method).to(scene)
-        if layer.get("is_face") and placement_version == 3:
+        if placement_version == 3:
             resized_foreground, resized_mask = projective_warp(
                 resized_foreground, resized_mask,
                 placement.get("corners", [[-1, -1], [1, -1], [1, 1], [-1, 1]]),
@@ -1172,10 +1192,15 @@ def _composite_staged_foregrounds(
             )
         resized_mask = resized_mask[0]
         layer_feather = int(layer.get("feather_radius", feather_radius))
+        placed_feather = (
+            max(1, round(layer_feather * scale))
+            if layer.get("is_face") and layer_feather
+            else layer_feather
+        )
         alpha = (
             resized_mask
-            if (layer.get("uses_embedded_alpha", False) and not layer.get("is_face")) or not layer_feather
-            else _feather_mask(resized_mask, -layer_feather)
+            if (layer.get("uses_embedded_alpha", False) and not layer.get("is_face")) or not placed_feather
+            else _feather_mask(resized_mask, -placed_feather)
         )
         offset_x, offset_y = _placement_offsets(
             background_width, background_height, placed_width, placed_height, placement,
@@ -1189,15 +1214,17 @@ def _composite_staged_foregrounds(
                 destination_top, destination_bottom, destination_left, destination_right,
                 source_top, source_bottom, source_left, source_right,
             ) = slices
-            placed_alpha = alpha[source_top:source_bottom, source_left:source_right]
+            base_alpha = alpha[source_top:source_bottom, source_left:source_right]
+            mask_region = combined_mask[0, destination_top:destination_bottom, destination_left:destination_right]
+            blend_factor = float(layer.get("blend_factor", 1.0))
+            placed_alpha = base_alpha * (1.0 - mask_region * (1.0 - blend_factor))
             placed_foreground = resized_foreground[0, source_top:source_bottom, source_left:source_right]
             region = scene[0, destination_top:destination_bottom, destination_left:destination_right]
             scene[0, destination_top:destination_bottom, destination_left:destination_right] = (
                 region * (1.0 - placed_alpha.unsqueeze(-1)) + placed_foreground * placed_alpha.unsqueeze(-1)
             )
-            mask_region = combined_mask[0, destination_top:destination_bottom, destination_left:destination_right]
             combined_mask[0, destination_top:destination_bottom, destination_left:destination_right] = (
-                mask_region + placed_alpha * (1.0 - mask_region)
+                mask_region + base_alpha * (1.0 - mask_region)
             )
         preview_alpha = crop_mask[0]
         if layer_feather and (layer.get("is_face") or not layer.get("uses_embedded_alpha", False)):
@@ -1211,6 +1238,7 @@ def _composite_staged_foregrounds(
             "flip_vertical": desired_flip_vertical,
             "is_face": bool(layer.get("is_face", False)),
             "included": not excluded,
+            "blend_factor": float(layer.get("blend_factor", 1.0)),
         })
 
     editor_metadata = {
@@ -1225,7 +1253,10 @@ def _composite_staged_foregrounds(
     for layer in editor_layers:
         entry = {
             key: layer[key]
-            for key in ("socket", "crop_width", "crop_height", "flip_horizontal", "flip_vertical", "is_face", "included")
+            for key in (
+                "socket", "crop_width", "crop_height", "flip_horizontal", "flip_vertical",
+                "is_face", "included", "blend_factor",
+            )
         }
         try:
             entry["preview"] = _save_editor_preview(
@@ -1242,6 +1273,7 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
         "mask_threshold": 0.5, "border_cleanup_width": 2, "artifact_cleanup_radius": 2,
         "gap_fill_radius": 2, "feather_radius": 2,
         "image_resize_method": "auto", "mask_resize_method": "auto",
+        "foreground_blend": 1.0,
     }
 
     @classmethod
@@ -1258,6 +1290,13 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
                 io.Int.Input("feather_radius", default=2, min=0, max=64),
                 io.Combo.Input("image_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto"),
                 io.Combo.Input("mask_resize_method", options=_COMPOSITE_RESIZE_METHODS, default="auto"),
+                io.Float.Input(
+                    "foreground_blend", default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip=(
+                        "1.0 is fully foreground; 0.0 is a 50/50 normal blend where another foreground or face "
+                        "is underneath. Background-only areas remain fully foreground."
+                    ),
+                ),
             ],
             outputs=[StagedBackgroundOptionsType.Output()],
         )
@@ -1271,6 +1310,7 @@ class UC_StagedMediaPipeFaceOptions(io.ComfyNode):
     DEFAULTS = {
         "detection_threshold": 0.25, "maximum_faces": 16, "bbox_expansion": 64,
         "mask_expansion": 0, "face_feather_radius": 8, "initial_face_scale": 0.25,
+        "face_blend": 1.0,
     }
 
     @classmethod
@@ -1286,6 +1326,13 @@ class UC_StagedMediaPipeFaceOptions(io.ComfyNode):
                 io.Int.Input("mask_expansion", default=0, min=-MAX_RESOLUTION, max=MAX_RESOLUTION),
                 io.Int.Input("face_feather_radius", default=8, min=0, max=512),
                 io.Float.Input("initial_face_scale", default=0.25, min=0.05, max=10, step=0.01),
+                io.Float.Input(
+                    "face_blend", default=1.0, min=0.0, max=1.0, step=0.01,
+                    tooltip=(
+                        "1.0 is fully face; 0.0 is a 50/50 normal blend where another foreground or face is "
+                        "underneath. Background-only areas remain fully face."
+                    ),
+                ),
             ],
             outputs=[StagedFaceOptionsType.Output()],
         )
@@ -1355,10 +1402,22 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
             staged["background_removal_model_name"] = str(background_removal_model_name).lower()
             cls._staged_by_node[node_id] = staged
             if execution_mode == "run_staging":
-                return _preview_staged_foregrounds(background, staged, background_options["feather_radius"])
+                preview_stage = _apply_staged_layer_options(
+                    staged,
+                    background_options["foreground_blend"],
+                    face_options["face_blend"],
+                    face_options["face_feather_radius"],
+                )
+                return _preview_staged_foregrounds(background, preview_stage, background_options["feather_radius"])
             stage_mode = "full_run"
         else:
             raise ValueError(f"Unsupported staged compositor execution mode: {execution_mode!r}.")
+        staged = _apply_staged_layer_options(
+            staged,
+            background_options["foreground_blend"],
+            face_options["face_blend"],
+            face_options["face_feather_radius"],
+        )
         return _composite_staged_foregrounds(
             background, staged, placement_data, background_options["feather_radius"],
             stage_mode=stage_mode,

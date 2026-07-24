@@ -23,6 +23,7 @@ import {
   normalizeBackgroundModel,
   toggleBackgroundModel,
 } from "./background_model_selection.js";
+import { drawProjectiveImage } from "./perspective_preview.js";
 
 const NODE_TYPES = new Set([
   "UC_LayeredBackgroundComposite",
@@ -101,6 +102,10 @@ class LayeredPlacementEditor {
     this.pendingPlacement = null;
     this.gesture = null;
     this.keyTransaction = false;
+    this.layerBuffer = document.createElement("canvas");
+    this.layerOutside = document.createElement("canvas");
+    this.layerScratch = document.createElement("canvas");
+    this.layerCoverage = document.createElement("canvas");
     this.disposed = false;
     this.createDom();
     this.installWidget();
@@ -125,8 +130,7 @@ class LayeredPlacementEditor {
     this.stage = element("div", {
       position: "relative",
       minHeight: "260px",
-      height: "260px",
-      flex: "0 0 auto",
+      flex: "1 0 260px",
       overflow: "hidden",
       border: "1px solid rgba(255,255,255,.18)",
       borderRadius: "5px",
@@ -237,8 +241,7 @@ class LayeredPlacementEditor {
 
     this.layerListGroup = element("div", {
       display: "flex",
-      flex: "1 1 240px",
-      minHeight: "180px",
+      flex: "0 0 auto",
       overflow: "hidden",
       flexDirection: "column",
       gap: "3px",
@@ -248,8 +251,8 @@ class LayeredPlacementEditor {
     layerCaption.style.opacity = ".78";
     this.layerList = element("div", {
       display: "flex",
-      flex: "1 1 auto",
-      minHeight: "0",
+      flex: "0 1 auto",
+      maxHeight: "224px",
       flexDirection: "column",
       gap: "3px",
       overflowY: "auto",
@@ -299,15 +302,9 @@ class LayeredPlacementEditor {
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => 358 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 7) * 52,
+      getMinHeight: () => 358 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 2.5) * 52,
     });
     widget.serialize = false;
-    const placementIndex = this.node.widgets.indexOf(this.placementWidget);
-    const editorIndex = this.node.widgets.indexOf(widget);
-    if (placementIndex >= 0 && editorIndex >= 0) {
-      this.node.widgets.splice(editorIndex, 1);
-      this.node.widgets.splice(placementIndex, 0, widget);
-    }
     this.ensureSize();
   }
 
@@ -321,15 +318,6 @@ class LayeredPlacementEditor {
       ]);
       this.node.graph?.setDirtyCanvas?.(true, true);
     });
-  }
-
-  updateStageHeight() {
-    const width = this.stage.clientWidth || this.node.size?.[0] || 440;
-    const dimensions = this.dimensions();
-    const aspect = dimensions ? dimensions.width / dimensions.height : 16 / 9;
-    const height = Math.max(260, Math.min(560, width / Math.max(aspect, 0.5)));
-    const value = `${Math.round(height)}px`;
-    if (this.stage.style.height !== value) this.stage.style.height = value;
   }
 
   wrapNodeLifecycle() {
@@ -461,8 +449,53 @@ class LayeredPlacementEditor {
       grip.textContent = "⠿";
       grip.title = "Drag to change stacking order";
       grip.draggable = true;
-      const name = element("span", { flex: "1 1 110px", minWidth: "90px", overflow: "hidden", textOverflow: "ellipsis" });
-      name.textContent = key;
+      const reorderButtons = element("div", {
+        display: "flex",
+        flex: "0 0 24px",
+        flexDirection: "column",
+        gap: "2px",
+      });
+      const reorderButton = (text, title, disabled, callback) => {
+        const button = element("button", {
+          width: "24px",
+          height: "20px",
+          padding: "0",
+          border: "1px solid rgba(255,255,255,.2)",
+          borderRadius: "3px",
+          color: "inherit",
+          background: "rgba(0,0,0,.25)",
+          cursor: disabled ? "default" : "pointer",
+          fontSize: "12px",
+          lineHeight: "1",
+          opacity: disabled ? ".35" : "1",
+        });
+        button.type = "button";
+        button.textContent = text;
+        button.title = title;
+        button.disabled = disabled;
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (!disabled) callback();
+        });
+        return button;
+      };
+      reorderButtons.append(
+        reorderButton("▲", "Move one layer toward the back", index === 0, () => {
+          this.dropLayer(key, layers[index - 1], false);
+        }),
+        reorderButton("▼", "Move one layer toward the front", index === layers.length - 1, () => {
+          this.dropLayer(key, layers[index + 1], true);
+        }),
+      );
+      const name = element("span", {
+        flex: "0 0 48px",
+        width: "48px",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      });
+      name.textContent = key.replace(/^foreground_/, "").replace("_face_", "_f_");
+      name.title = key;
       const position = element("span", { flex: "0 0 auto", opacity: ".65", fontSize: "11px" });
       position.textContent = index === 0 ? "back" : index === layers.length - 1 ? "front" : String(index + 1);
       const controls = element("div", {
@@ -478,8 +511,8 @@ class LayeredPlacementEditor {
       const numericInputs = {};
       for (const [field, label, tooltip] of [
         ["scale", "Scale", "Foreground size relative to the background"],
-        ["center_x", "Center X", "Horizontal center divided by background width"],
-        ["center_y", "Center Y", "Vertical center divided by background height"],
+        ["center_x", "X", "Horizontal center divided by background width"],
+        ["center_y", "Y", "Vertical center divided by background height"],
       ]) {
         const numeric = this.createLayerNumericControl(key, field, label, tooltip);
         numericInputs[field] = numeric.input;
@@ -489,29 +522,32 @@ class LayeredPlacementEditor {
       const flipVertical = this.createLayerAction("Flip V", "Mirror this foreground vertically", () => this.toggleVerticalFlip(key));
       const reset = this.createLayerAction("Reset", "Reset this foreground placement", () => this.resetLayer(key));
       controls.append(flip, flipVertical, reset);
-      const face = key.includes("_face_");
-      let include, warp;
-      if (face) {
-        const rotation = this.createLayerNumericControl(key, "rotation", "Rotation °", "Face rotation in degrees");
-        rotation.decrement.title = "Rotate left one degree";
-        rotation.increment.title = "Rotate right one degree";
-        rotation.decrement.addEventListener("click", (event) => {
-          event.stopImmediatePropagation(); this.stepFaceRotation(key, -1);
-        }, true);
-        rotation.increment.addEventListener("click", (event) => {
-          event.stopImmediatePropagation(); this.stepFaceRotation(key, 1);
-        }, true);
-        numericInputs.rotation = rotation.input;
-        include = this.createLayerAction("Include", "Include or exclude this face", () => this.toggleFaceIncluded(key));
-        warp = this.createLayerAction("Warp", "Toggle four-corner warp editing", () => {
-          this.warpLayer = this.warpLayer === key ? null : key;
-          this.layerListSignature = null;
-          this.syncLayerList(this.connectedLayers());
-        });
-        controls.append(rotation.root, warp, include);
-      }
+      const rotation = this.createLayerNumericControl(key, "rotation", "Rot°", "Layer rotation in degrees");
+      rotation.decrement.title = "Rotate left one degree";
+      rotation.increment.title = "Rotate right one degree";
+      rotation.decrement.addEventListener("click", (event) => {
+        event.stopImmediatePropagation(); this.stepLayerRotation(key, -1);
+      }, true);
+      rotation.increment.addEventListener("click", (event) => {
+        event.stopImmediatePropagation(); this.stepLayerRotation(key, 1);
+      }, true);
+      numericInputs.rotation = rotation.input;
+      const warp = this.createLayerAction("Warp", "Toggle four-corner warp editing", () => {
+        const enabling = this.warpLayer !== key;
+        if (enabling && this.data.version !== 3) {
+          this.updateLayerTransform(key, {
+            rotation: 0,
+            corners: [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+          });
+        }
+        this.warpLayer = enabling ? key : null;
+        this.layerListSignature = null;
+        this.syncLayerList(this.connectedLayers());
+      });
+      const include = this.createLayerAction("Incl", "Include or exclude this layer", () => this.toggleLayerIncluded(key));
+      controls.append(rotation.root, warp, include);
       this.rowControls.set(key, { inputs: numericInputs, flip, flipVertical, reset, include, warp, row });
-      row.append(grip, name, position, controls);
+      row.append(grip, reorderButtons, name, position, controls);
       row.addEventListener("click", () => this.selectLayer(key));
       grip.addEventListener("dragstart", (event) => {
         this.draggedLayer = key;
@@ -582,8 +618,8 @@ class LayeredPlacementEditor {
     root.title = tooltip;
     const caption = element("span", { flex: "0 0 auto", opacity: ".78", whiteSpace: "nowrap" });
     caption.textContent = label;
-    const decrement = this.createStepButton("◀", `${label}: decrease by 0.01`);
-    const increment = this.createStepButton("▶", `${label}: increase by 0.01`);
+    const decrement = this.createStepButton("◀", `${label}: decrease by 0.002`);
+    const increment = this.createStepButton("▶", `${label}: increase by 0.002`);
     const input = element("input", {
       boxSizing: "border-box",
       flex: "0 0 76px",
@@ -619,11 +655,11 @@ class LayeredPlacementEditor {
     });
     decrement.addEventListener("click", (event) => {
       event.stopPropagation();
-      this.stepLayerValue(key, field, -0.01);
+      this.stepLayerValue(key, field, -0.002);
     });
     increment.addEventListener("click", (event) => {
       event.stopPropagation();
-      this.stepLayerValue(key, field, 0.01);
+      this.stepLayerValue(key, field, 0.002);
     });
     root.addEventListener("click", (event) => event.stopPropagation());
     root.append(caption, decrement, input, increment);
@@ -909,7 +945,6 @@ class LayeredPlacementEditor {
   }
 
   requestDraw() {
-    this.updateStageHeight();
     if (!this.drawFrame) this.drawFrame = requestAnimationFrame(() => {
       this.drawFrame = 0;
       this.draw();
@@ -944,7 +979,7 @@ class LayeredPlacementEditor {
     context.globalAlpha = 0.72;
     context.drawImage(this.backgroundImage, this.view.x, this.view.y, this.view.width, this.view.height);
     context.globalAlpha = 1;
-    for (const key of layers) this.drawLayer(context, key, dimensions);
+    this.drawLayers(context, layers, dimensions, width, height, dpr);
     context.lineWidth = 2;
     context.strokeStyle = "rgba(255,255,255,.65)";
     context.strokeRect(this.view.x, this.view.y, this.view.width, this.view.height);
@@ -980,25 +1015,81 @@ class LayeredPlacementEditor {
     };
   }
 
-  drawLayer(context, key, dimensions) {
+  drawLayers(context, layers, dimensions, width, height, dpr) {
+    const pixelWidth = Math.round(width * dpr), pixelHeight = Math.round(height * dpr);
+    for (const canvas of [this.layerBuffer, this.layerOutside, this.layerScratch, this.layerCoverage]) {
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
+    }
+    const coverage = this.layerCoverage.getContext("2d");
+    coverage.setTransform(1, 0, 0, 1, 0, 0);
+    coverage.clearRect(0, 0, pixelWidth, pixelHeight);
+    for (const key of layers) {
+      const layer = this.layerBuffer.getContext("2d");
+      layer.setTransform(1, 0, 0, 1, 0, 0);
+      layer.clearRect(0, 0, pixelWidth, pixelHeight);
+      layer.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this.drawLayer(layer, key, dimensions, "content");
+
+      const blendFactor = Math.max(0, Math.min(1, Number(this.layerMetadata(key)?.blend_factor ?? 1)));
+      const scratch = this.layerScratch.getContext("2d");
+      scratch.setTransform(1, 0, 0, 1, 0, 0);
+      scratch.clearRect(0, 0, pixelWidth, pixelHeight);
+      scratch.globalCompositeOperation = "source-over";
+      scratch.globalAlpha = blendFactor;
+      scratch.drawImage(this.layerBuffer, 0, 0);
+      if (blendFactor < 1) {
+        const outside = this.layerOutside.getContext("2d");
+        outside.setTransform(1, 0, 0, 1, 0, 0);
+        outside.clearRect(0, 0, pixelWidth, pixelHeight);
+        outside.globalCompositeOperation = "source-over";
+        outside.globalAlpha = 1;
+        outside.drawImage(this.layerBuffer, 0, 0);
+        outside.globalCompositeOperation = "destination-out";
+        outside.drawImage(this.layerCoverage, 0, 0);
+        outside.globalCompositeOperation = "source-over";
+        scratch.globalCompositeOperation = "lighter";
+        scratch.globalAlpha = 1 - blendFactor;
+        scratch.drawImage(this.layerOutside, 0, 0);
+      }
+      context.save();
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.globalAlpha = 1;
+      context.drawImage(this.layerScratch, 0, 0);
+      context.restore();
+      coverage.globalCompositeOperation = "source-over";
+      coverage.drawImage(this.layerBuffer, 0, 0);
+      this.drawLayer(context, key, dimensions, "overlay");
+    }
+  }
+
+  drawLayer(context, key, dimensions, mode = "all") {
     const rect = this.toCanvasRect(this.rectFor(key, dimensions));
     const preview = this.cutouts.get(key) || this.preliminaryLayers.get(key);
     const placement = this.layerPlacement(key);
     const rotation = Number(placement.rotation || 0) * Math.PI / 180;
+    const defaultCorners = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    const warped = Array.isArray(placement.corners) && placement.corners.some(
+      (point, index) => point.some((value, axis) => value !== defaultCorners[index][axis]),
+    );
     const centerX = rect.x + rect.width / 2;
     const centerY = rect.y + rect.height / 2;
     context.save();
     context.translate(centerX, centerY);
     context.rotate(rotation);
     context.translate(-centerX, -centerY);
-    if (preview && placement.included !== false) {
+    if (mode !== "overlay" && preview && placement.included !== false) {
       const desiredFlip = placement.flip_horizontal === true;
       const desiredFlipVertical = placement.flip_vertical === true;
       const previewFlip = this.layerMetadata(key)?.flip_horizontal === true;
       const previewFlipVertical = this.layerMetadata(key)?.flip_vertical === true;
       const flipHorizontal = desiredFlip !== previewFlip;
       const flipVertical = desiredFlipVertical !== previewFlipVertical;
-      if (flipHorizontal || flipVertical) {
+      if (warped) {
+        drawProjectiveImage(context, preview, rect, placement.corners, flipHorizontal, flipVertical);
+      } else if (flipHorizontal || flipVertical) {
         context.save();
         context.translate(
           rect.x + (flipHorizontal ? rect.width : 0),
@@ -1011,16 +1102,27 @@ class LayeredPlacementEditor {
         context.drawImage(preview, rect.x, rect.y, rect.width, rect.height);
       }
     }
+    if (mode === "content") {
+      context.restore();
+      return;
+    }
+    const outline = warped
+      ? placement.corners.map(([x, y]) => [centerX + x * rect.width / 2, centerY + y * rect.height / 2])
+      : [[rect.x, rect.y], [rect.x + rect.width, rect.y], [rect.x + rect.width, rect.y + rect.height], [rect.x, rect.y + rect.height]];
+    context.beginPath();
+    context.moveTo(...outline[0]);
+    for (const point of outline.slice(1)) context.lineTo(...point);
+    context.closePath();
     context.fillStyle = key === this.selected ? "rgba(64,180,255,.16)" : "rgba(255,255,255,.055)";
-    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+    context.fill();
     context.save();
     context.setLineDash(this.layerMetadata(key) ? [] : [6, 4]);
     context.lineWidth = key === this.selected ? 4 : 3;
     context.strokeStyle = "rgba(0,0,0,.8)";
-    context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    context.stroke();
     context.lineWidth = key === this.selected ? 2 : 1;
     context.strokeStyle = key === this.selected ? "#65c9ff" : "rgba(255,255,255,.88)";
-    context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    context.stroke();
     context.restore();
     context.restore();
   }
@@ -1171,8 +1273,10 @@ class LayeredPlacementEditor {
       if (this.gesture.action === "warp_corner") {
         corners = dragQuadCorner(start.corners, this.gesture.handle, localX, localY);
       } else {
-        const dx = deltaX * this.view.scale * 2 / canvasRect.width;
-        const dy = deltaY * this.view.scale * 2 / canvasRect.height;
+        const canvasDeltaX = deltaX * this.gesture.view.scale;
+        const canvasDeltaY = deltaY * this.gesture.view.scale;
+        const dx = (canvasDeltaX * cosine - canvasDeltaY * sine) * 2 / canvasRect.width;
+        const dy = (canvasDeltaX * sine + canvasDeltaY * cosine) * 2 / canvasRect.height;
         corners = deformQuadCentroidLocked(start.corners, [localX - dx, localY - dy], dx, dy);
       }
       this.gesture.changed = true;
@@ -1258,7 +1362,8 @@ class LayeredPlacementEditor {
         this.data.layers = migrated;
       }
     }
-    this.data.version = key.includes("_face_") || this.data.version === 3 ? 3 : 2;
+    const hasTransform = placement.rotation !== undefined || placement.corners !== undefined || placement.included !== undefined;
+    this.data.version = key.includes("_face_") || hasTransform || this.data.version === 3 ? 3 : 2;
     this.data.layers[key] = normalizePlacement(placement, this.data.version, key.includes("_face_"));
     this.placementWidget.value = serializePlacementData(this.data);
     this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
@@ -1299,7 +1404,7 @@ class LayeredPlacementEditor {
         : "rgba(0,0,0,.25)";
       if (controls.include) {
         const included = this.layerPlacement(key).included !== false;
-        controls.include.textContent = included ? "Exclude" : "Include";
+        controls.include.textContent = included ? "Excl" : "Incl";
         controls.row.style.opacity = included ? "1" : ".48";
       }
       if (controls.warp) {
@@ -1333,6 +1438,7 @@ class LayeredPlacementEditor {
     this.layerListSignature = null;
     this.syncLayerList(layers);
     this.syncNumericControls();
+    this.rowControls.get(dragged)?.row.scrollIntoView?.({ block: "nearest" });
     this.requestDraw();
   }
 
@@ -1431,13 +1537,13 @@ class LayeredPlacementEditor {
   resetLayer(key) {
     this.node.graph?.beforeChange?.();
     this.selected = key;
-    this.queuePlacement(key, key.includes("_face_") ? {
+    this.queuePlacement(key, {
       ...DEFAULT_PLACEMENT,
-      scale: 0.25,
+      ...(key.includes("_face_") ? { scale: 0.25 } : {}),
       rotation: 0,
       corners: [[-1, -1], [1, -1], [1, 1], [-1, 1]],
       included: true,
-    } : DEFAULT_PLACEMENT);
+    });
     this.flushPlacement();
     this.node.graph?.afterChange?.();
     this.layerListSignature = null;
@@ -1471,7 +1577,7 @@ class LayeredPlacementEditor {
     this.syncLayerList(this.connectedLayers());
   }
 
-  updateFacePlacement(key, changes) {
+  updateLayerTransform(key, changes) {
     this.node.graph?.beforeChange?.();
     this.selected = key;
     this.queuePlacement(key, { ...this.layerPlacement(key), ...changes });
@@ -1481,13 +1587,13 @@ class LayeredPlacementEditor {
     this.syncLayerList(this.connectedLayers());
   }
 
-  stepFaceRotation(key, delta) {
+  stepLayerRotation(key, delta) {
     const rotation = Number(this.layerPlacement(key).rotation || 0);
-    this.updateFacePlacement(key, { rotation: ((rotation + delta + 180) % 360 + 360) % 360 - 180 });
+    this.updateLayerTransform(key, { rotation: ((rotation + delta + 180) % 360 + 360) % 360 - 180 });
   }
 
-  toggleFaceIncluded(key) {
-    this.updateFacePlacement(key, { included: this.layerPlacement(key).included === false });
+  toggleLayerIncluded(key) {
+    this.updateLayerTransform(key, { included: this.layerPlacement(key).included === false });
   }
 
   async runStaging() {
