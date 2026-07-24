@@ -7,6 +7,82 @@ import torch
 from comfy_api.latest import io
 from comfy_extras.nodes_logic import SwitchNode, SoftSwitchNode
 
+_MAX_SEED = 0xFFFFFFFFFFFFFFFF
+SeedClusterType = io.Custom("UC_SEED_CLUSTER")
+
+
+class UC_SeedCluster(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_SeedCluster",
+            display_name="SeedCluster",
+            category="utils/primitive",
+            inputs=[
+                io.Int.Input(
+                    "seed",
+                    default=0,
+                    min=0,
+                    max=_MAX_SEED,
+                    control_after_generate=True,
+                    tooltip="Main seed using ComfyUI's generation-time seed control.",
+                ),
+                io.Int.Input(
+                    "increment",
+                    default=1,
+                    min=1,
+                    max=_MAX_SEED,
+                    step=1,
+                    tooltip="Amount added between consecutive seeds; values wrap within ComfyUI's seed range.",
+                ),
+            ],
+            outputs=[
+                io.Int.Output("seed", display_name="seed"),
+                SeedClusterType.Output(
+                    "seed_cluster",
+                    display_name="seed_cluster",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, seed: int, increment: int) -> io.NodeOutput:
+        seed = int(seed) % (_MAX_SEED + 1)
+        cluster = [
+            (seed + index * int(increment)) % (_MAX_SEED + 1)
+            for index in range(8)
+        ]
+        return io.NodeOutput(seed, cluster)
+
+
+class UC_FromSeedCluster(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_FromSeedCluster",
+            display_name="FromSeedCluster",
+            category="utils/primitive",
+            inputs=[
+                SeedClusterType.Input(
+                    "seed_cluster",
+                    tooltip="Seed list produced by SeedCluster.",
+                ),
+            ],
+            outputs=[
+                io.Int.Output(f"seed_{index}", display_name=f"seed_{index}")
+                for index in range(1, 9)
+            ],
+        )
+
+    @classmethod
+    def execute(cls, seed_cluster: list[int]) -> io.NodeOutput:
+        cluster = [int(seed) % (_MAX_SEED + 1) for seed in seed_cluster[:8]]
+        if not cluster:
+            raise ValueError("FromSeedCluster requires at least one seed.")
+        cluster.extend([cluster[-1]] * (8 - len(cluster)))
+        return io.NodeOutput(*cluster)
+
+
 class UC_SwitchInverseNode(SwitchNode):
     @classmethod
     def define_schema(cls):

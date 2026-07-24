@@ -81,6 +81,8 @@ class SamplingUtils(ComfyExtension):
             UC_SwitchInverseNode,
             UC_SoftSwitchInverseNode,
             UC_IntegerRangeRandom,
+            UC_SeedCluster,
+            UC_FromSeedCluster,
             UC_GetJsonValue,
             UC_ImageMatchPropertiesNode,
             UC_OpticalFlowComposite,
