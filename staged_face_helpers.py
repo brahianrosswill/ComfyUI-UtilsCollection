@@ -1,10 +1,8 @@
 import logging
-import math
 import os
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from .model_assets import ensure_huggingface_model
 
@@ -76,27 +74,14 @@ def _merge_cluster(cluster):
     return merged
 
 
-def _run_detection(model, image_uint8, maximum_faces, threshold):
+def _run_detection_batch(model, images_uint8, maximum_faces, threshold):
     return model.detect_batch(
-        [image_uint8], num_faces=max(1, int(maximum_faces)) * 3,
+        images_uint8, num_faces=max(1, int(maximum_faces)) * 3,
         score_thresh=threshold, variant="full",
-    )[0] or []
+    )
 
 
-def detect_faces_adaptive(model, image_uint8, maximum_faces, threshold):
-    threshold = min(max(float(threshold), 0.01), 1.0)
-    candidates = _run_detection(model, image_uint8, maximum_faces, threshold)
-    # Lower confidence only as a recovery path. Running every lower threshold
-    # unconditionally turns detector noise into dozens of placeable layers.
-    if not candidates:
-        candidates = _run_detection(
-            model, image_uint8, maximum_faces, max(0.05, round(threshold * 0.7, 4))
-        )
-    if not candidates:
-        candidates = _run_detection(
-            model, image_uint8, maximum_faces, max(0.05, round(threshold * 0.5, 4))
-        )
-
+def _merged_faces(candidates, maximum_faces):
     clusters = []
     for face in sorted(candidates, key=lambda item: float(item.get("score", 0.0)), reverse=True):
         matching = next((cluster for cluster in clusters if any(_same_face(face, other) for other in cluster)), None)
@@ -109,51 +94,62 @@ def detect_faces_adaptive(model, image_uint8, maximum_faces, threshold):
     return merged[:max(1, int(maximum_faces))]
 
 
+def detect_faces_adaptive(model, image_uint8, maximum_faces, threshold):
+    results, failed = detect_many_or_warn(
+        model, [("", image_uint8)], maximum_faces, threshold
+    )
+    if failed:
+        raise RuntimeError("MediaPipe face detection failed.")
+    return results[""]
+
+
+def detect_many_or_warn(model, images, maximum_faces, threshold):
+    threshold = min(max(float(threshold), 0.01), 1.0)
+    thresholds = []
+    for value in (threshold, max(0.05, round(threshold * 0.7, 4)), max(0.05, round(threshold * 0.5, 4))):
+        if value not in thresholds:
+            thresholds.append(value)
+
+    results = {socket: [] for socket, _ in images}
+    pending = list(images)
+    failed = set()
+    for pass_threshold in thresholds:
+        if not pending:
+            break
+        try:
+            batches = _run_detection_batch(
+                model, [image for _, image in pending], maximum_faces, pass_threshold
+            )
+            pass_results = list(zip(pending, batches))
+        except Exception:
+            pass_results = []
+            for item in pending:
+                try:
+                    batches = _run_detection_batch(
+                        model, [item[1]], maximum_faces, pass_threshold
+                    )
+                    pass_results.append((item, batches[0]))
+                except Exception:
+                    failed.add(item[0])
+                    logging.warning(
+                        "MediaPipe face detection failed for %s; retaining ordinary foreground only.",
+                        item[0], exc_info=True,
+                    )
+
+        next_pending = []
+        for (socket, image), candidates in pass_results:
+            if socket in failed:
+                continue
+            if candidates:
+                results[socket] = _merged_faces(candidates, maximum_faces)
+            else:
+                next_pending.append((socket, image))
+        pending = next_pending
+    return results, failed
+
+
 def detect_or_warn(model, image_uint8, maximum_faces, threshold, socket):
-    try:
-        return detect_faces_adaptive(model, image_uint8, maximum_faces, threshold), False
-    except Exception:
-        logging.warning(
-            "MediaPipe face detection failed for %s; retaining ordinary foreground only.",
-            socket, exc_info=True,
-        )
-        return [], True
-
-
-def projective_warp(image, mask, corners, rotation=0.0):
-    """Warp BHWC RGB and BHW alpha through the same inverse homography."""
-    device, dtype = image.device, image.dtype
-    destination = torch.tensor(corners, device=device, dtype=dtype)
-    angle = math.radians(float(rotation))
-    matrix = destination.new_tensor([
-        [math.cos(angle), -math.sin(angle)],
-        [math.sin(angle), math.cos(angle)],
-    ])
-    destination = destination @ matrix.T
-    source = destination.new_tensor([[-1, -1], [1, -1], [1, 1], [-1, 1]])
-    rows, values = [], []
-    for (x, y), (u, v) in zip(source, destination):
-        zero, one = x.new_tensor(0), x.new_tensor(1)
-        rows.extend([
-            torch.stack((x, y, one, zero, zero, zero, -u*x, -u*y)),
-            torch.stack((zero, zero, zero, x, y, one, -v*x, -v*y)),
-        ])
-        values.extend((u, v))
-    solved = torch.linalg.solve(torch.stack(rows), torch.stack(values))
-    inverse = torch.linalg.inv(torch.cat((solved, solved.new_ones(1))).reshape(3, 3))
-    height, width = image.shape[1:3]
-    ys = torch.linspace(-1, 1, height, device=device, dtype=dtype)
-    xs = torch.linspace(-1, 1, width, device=device, dtype=dtype)
-    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
-    homogeneous = torch.stack((xx, yy, torch.ones_like(xx)), dim=-1)
-    mapped = homogeneous @ inverse.T
-    grid = mapped[..., :2] / mapped[..., 2:].clamp(min=1e-8)
-    warped_image = F.grid_sample(
-        image.movedim(-1, 1), grid.unsqueeze(0), mode="bilinear",
-        padding_mode="zeros", align_corners=True,
-    ).movedim(1, -1)
-    warped_mask = F.grid_sample(
-        mask.unsqueeze(1), grid.unsqueeze(0), mode="bilinear",
-        padding_mode="zeros", align_corners=True,
-    ).squeeze(1)
-    return warped_image, warped_mask
+    results, failed = detect_many_or_warn(
+        model, [(socket, image_uint8)], maximum_faces, threshold
+    )
+    return results[socket], socket in failed

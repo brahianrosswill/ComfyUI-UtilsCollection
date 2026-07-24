@@ -13,8 +13,12 @@ from nodes import MAX_RESOLUTION
 from .helper_functions import resize_nchw
 from .model_assets import ensure_huggingface_model
 from .staged_face_helpers import (
-    detect_or_warn,
+    detect_many_or_warn,
     load_face_model,
+)
+from .staged_compositor_helpers import (
+    RetainedStageCache,
+    cached_layer_preview,
     projective_warp,
 )
 
@@ -925,11 +929,13 @@ def _stage_layered_foregrounds(
     gap_fill_radius,
     mask_resize_method="auto",
     placement_data=None,
+    retain_full_alpha=False,
 ):
     foregrounds = _ordered_single_foregrounds(foreground_images)
     if not foregrounds:
         raise ValueError("Layered foreground staging requires at least one foreground image.")
     layers = []
+    full_alpha_by_socket = {}
     placements = _parse_layer_placements(placement_data)
     for key, foreground in foregrounds:
         if foreground.shape[-1] < 3:
@@ -941,6 +947,7 @@ def _stage_layered_foregrounds(
             # A supplied alpha channel is an explicit foreground matte. Preserve
             # it exactly instead of replacing it with a removal-model estimate.
             refined = embedded_alpha[0].to(device=foreground.device, dtype=foreground.dtype).clamp(0.0, 1.0)
+            full_alpha = refined
         else:
             raw_mask = background_removal_model.encode_image(foreground)
             if not torch.is_tensor(raw_mask):
@@ -953,6 +960,7 @@ def _stage_layered_foregrounds(
                 raise ValueError(f"Background removal must return one [batch, height, width] mask for {key}.")
             if raw_mask.shape[-2:] != foreground.shape[1:3]:
                 raw_mask = _resize_composite_mask(raw_mask, foreground.shape[2], foreground.shape[1], mask_resize_method)
+            full_alpha = raw_mask[0].to(device=foreground.device, dtype=foreground.dtype).clamp(0.0, 1.0)
             refined = _refine_foreground_mask(
                 raw_mask[0],
                 float(mask_threshold),
@@ -960,6 +968,8 @@ def _stage_layered_foregrounds(
                 artifact_cleanup_radius,
                 gap_fill_radius,
             )
+        if retain_full_alpha:
+            full_alpha_by_socket[key] = full_alpha
         points = torch.nonzero(refined > 0, as_tuple=False)
         if points.numel() == 0:
             raise ValueError(f"Background removal produced an empty foreground mask for {key}.")
@@ -985,7 +995,8 @@ def _stage_layered_foregrounds(
             "flip_vertical": flip_vertical,
             "uses_embedded_alpha": uses_embedded_alpha,
         })
-    return {"version": 1, "layers": layers}
+    staged = {"version": 1, "layers": layers}
+    return (staged, full_alpha_by_socket) if retain_full_alpha else staged
 
 
 def _stage_face_foregrounds(
@@ -996,48 +1007,47 @@ def _stage_face_foregrounds(
     face_options,
     placement_data=None,
 ):
-    staged = _stage_layered_foregrounds(
+    staged, full_alpha_by_socket = _stage_layered_foregrounds(
         background_removal_model, foreground_images,
         background_options["mask_threshold"], background_options["border_cleanup_width"],
         background_options["artifact_cleanup_radius"], background_options["gap_fill_radius"],
-        background_options["mask_resize_method"], placement_data,
+        background_options["mask_resize_method"], placement_data, retain_full_alpha=True,
     )
     ordinary = {layer["socket"]: layer for layer in staged["layers"]}
     result, warning_count = [], 0
     ring = _ordered_ring(face_detection_model.connection_sets["face_oval"])
-    for key, original in _ordered_single_foregrounds(foreground_images):
+    foregrounds = _ordered_single_foregrounds(foreground_images)
+    detection_inputs = []
+    for key, original in foregrounds:
+        rgb = original[..., :3]
+        detection_inputs.append((
+            key,
+            rgb.mul(255).add(0.5).clamp(0, 255).to(torch.uint8).cpu().numpy()[0],
+        ))
+    detected_by_socket, failed_sockets = detect_many_or_warn(
+        face_detection_model,
+        detection_inputs,
+        face_options["maximum_faces"],
+        face_options["detection_threshold"],
+    )
+    warning_count = len(failed_sockets)
+
+    for key, original in foregrounds:
         result.append(ordinary[key])
         rgb = original[..., :3]
-        embedded_alpha = original[..., 3] if original.shape[-1] >= 4 else None
-        if embedded_alpha is None:
-            full_alpha = background_removal_model.encode_image(rgb)
-            if full_alpha.ndim == 4:
-                full_alpha = full_alpha[:, 0] if full_alpha.shape[1] == 1 else full_alpha[..., 0]
-            if full_alpha.shape[-2:] != rgb.shape[1:3]:
-                full_alpha = _resize_composite_mask(
-                    full_alpha, rgb.shape[2], rgb.shape[1], background_options["mask_resize_method"]
-                )
-            full_alpha = full_alpha[0].to(rgb)
-        else:
-            full_alpha = embedded_alpha[0].to(rgb)
-        image_uint8 = rgb.mul(255).add(0.5).clamp(0, 255).to(torch.uint8).cpu().numpy()[0]
-        faces, failed = detect_or_warn(
-            face_detection_model, image_uint8, face_options["maximum_faces"],
-            face_options["detection_threshold"], key,
-        )
-        if failed:
-            warning_count += 1
+        if key in failed_sockets:
             continue
+        full_alpha = full_alpha_by_socket[key]
+        faces = detected_by_socket[key]
         for face_index, face in enumerate(faces):
-            points = face["landmarks_xy"][ring]
-            face_mask = _polygon_mask(
-                rgb.shape[1], rgb.shape[2], points, rgb.device, rgb.dtype
-            )
-            face_mask = face_mask * full_alpha.clamp(0, 1)
             x1, y1, x2, y2 = _expanded_box(
                 face["bbox_xyxy"], face_options["bbox_expansion"], rgb.shape[2], rgb.shape[1]
             )
-            crop_mask = face_mask[y1:y2, x1:x2]
+            points = face["landmarks_xy"][ring] - np.asarray([x1, y1], dtype=np.float32)
+            crop_mask = _polygon_mask(
+                y2 - y1, x2 - x1, points, rgb.device, rgb.dtype
+            )
+            crop_mask = crop_mask * full_alpha[y1:y2, x1:x2].to(crop_mask)
             crop_mask = _expand_mask(crop_mask, face_options["mask_expansion"]).clamp(0, 1)[None]
             if not torch.any(crop_mask > 0):
                 continue
@@ -1094,10 +1104,10 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
         editor_metadata["background_removal_model_name"] = staged_foregrounds["background_removal_model_name"]
     for layer in layers:
         crop = layer["image"]
-        alpha = layer["mask"][0]
         layer_feather = int(layer.get("feather_radius", feather_radius))
-        if layer_feather and (layer.get("is_face") or not layer.get("uses_embedded_alpha", False)):
-            alpha = _feather_mask(alpha, -layer_feather)
+        applies_feather = bool(
+            layer_feather and (layer.get("is_face") or not layer.get("uses_embedded_alpha", False))
+        )
         entry = {
             "socket": layer["socket"],
             "crop_width": crop.shape[2],
@@ -1108,8 +1118,19 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
             "blend_factor": float(layer.get("blend_factor", 1.0)),
         }
         try:
-            rgba = torch.cat((crop[0], alpha.unsqueeze(-1)), dim=-1).unsqueeze(0)
-            entry["preview"] = _save_editor_preview(rgba, f"UC_layered_{layer['socket']}")
+            def build_preview_tensor():
+                alpha = layer["mask"][0]
+                if applies_feather:
+                    alpha = _feather_mask(alpha, -layer_feather)
+                return torch.cat((crop[0], alpha.unsqueeze(-1)), dim=-1).unsqueeze(0)
+
+            entry["preview"] = cached_layer_preview(
+                staged_foregrounds,
+                layer["socket"],
+                ("rgba-v1", layer_feather if applies_feather else 0),
+                build_preview_tensor,
+                lambda image: _save_editor_preview(image, f"UC_layered_{layer['socket']}"),
+            )
         except Exception:
             logging.warning(
                 "Unable to create staged editor cutout preview for %s.",
@@ -1160,6 +1181,8 @@ def _composite_staged_foregrounds(
         key = layer["socket"]
         crop = layer["image"]
         crop_mask = layer["mask"]
+        preview_crop = crop
+        preview_mask = crop_mask
         crop_height, crop_width = crop.shape[1:3]
         placement = placements.get(
             key,
@@ -1226,16 +1249,18 @@ def _composite_staged_foregrounds(
             combined_mask[0, destination_top:destination_bottom, destination_left:destination_right] = (
                 mask_region + base_alpha * (1.0 - mask_region)
             )
-        preview_alpha = crop_mask[0]
-        if layer_feather and (layer.get("is_face") or not layer.get("uses_embedded_alpha", False)):
-            preview_alpha = _feather_mask(preview_alpha, -layer_feather)
         editor_layers.append({
             "socket": key,
             "crop_width": crop_width,
             "crop_height": crop_height,
-            "preview_tensor": torch.cat((crop[0], preview_alpha.unsqueeze(-1)), dim=-1).unsqueeze(0),
-            "flip_horizontal": desired_flip,
-            "flip_vertical": desired_flip_vertical,
+            "preview_crop": preview_crop,
+            "preview_mask": preview_mask,
+            "preview_feather": layer_feather,
+            "preview_applies_feather": bool(
+                layer_feather and (layer.get("is_face") or not layer.get("uses_embedded_alpha", False))
+            ),
+            "flip_horizontal": staged_flip,
+            "flip_vertical": staged_flip_vertical,
             "is_face": bool(layer.get("is_face", False)),
             "included": not excluded,
             "blend_factor": float(layer.get("blend_factor", 1.0)),
@@ -1259,8 +1284,22 @@ def _composite_staged_foregrounds(
             )
         }
         try:
-            entry["preview"] = _save_editor_preview(
-                layer["preview_tensor"], f"UC_layered_{layer['socket']}"
+            def build_preview_tensor():
+                alpha = layer["preview_mask"][0]
+                if layer["preview_applies_feather"]:
+                    alpha = _feather_mask(alpha, -layer["preview_feather"])
+                return torch.cat(
+                    (layer["preview_crop"][0], alpha.unsqueeze(-1)), dim=-1
+                ).unsqueeze(0)
+
+            entry["preview"] = cached_layer_preview(
+                staged_foregrounds,
+                layer["socket"],
+                ("rgba-v1", layer["preview_feather"] if layer["preview_applies_feather"] else 0),
+                build_preview_tensor,
+                lambda image: _save_editor_preview(
+                    image, f"UC_layered_{layer['socket']}"
+                ),
             )
         except Exception:
             logging.warning("Unable to create staged editor cutout preview for %s.", layer["socket"], exc_info=True)
@@ -1345,7 +1384,7 @@ class UC_StagedMediaPipeFaceOptions(io.ComfyNode):
 
 
 class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
-    _staged_by_node = {}
+    _staged_by_node = RetainedStageCache(max_entries=8)
 
     @classmethod
     def define_schema(cls):
@@ -1401,6 +1440,7 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
             )
             staged["background_removal_model_name"] = str(background_removal_model_name).lower()
             cls._staged_by_node[node_id] = staged
+            staged = cls._staged_by_node[node_id]
             if execution_mode == "run_staging":
                 preview_stage = _apply_staged_layer_options(
                     staged,
