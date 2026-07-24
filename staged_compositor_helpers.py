@@ -81,19 +81,33 @@ def is_identity_projective_transform(corners, rotation):
 
 
 def projective_warp(image, mask, corners, rotation=0.0):
-    """Warp BHWC RGB and BHW alpha through one shared inverse homography."""
+    """Warp BHWC RGB and BHW alpha in pixel space through one inverse homography."""
     if is_identity_projective_transform(corners, rotation):
         return image, mask
 
     device, dtype = image.device, image.dtype
+    height, width = image.shape[1:3]
+    half_width = max(width - 1, 1) / 2
+    half_height = max(height - 1, 1) / 2
     destination = torch.tensor(corners, device=device, dtype=dtype)
+    destination = destination * destination.new_tensor((half_width, half_height))
     angle = torch.deg2rad(destination.new_tensor(float(rotation)))
     matrix = torch.stack((
         torch.stack((torch.cos(angle), -torch.sin(angle))),
         torch.stack((torch.sin(angle), torch.cos(angle))),
     ))
     destination = destination @ matrix.T
-    source = destination.new_tensor(_DEFAULT_CORNERS)
+    minimum = destination.amin(dim=0)
+    maximum = destination.amax(dim=0)
+    output_width = max(1, int(torch.ceil(maximum[0] - minimum[0] - 1e-6).item()) + 1)
+    output_height = max(1, int(torch.ceil(maximum[1] - minimum[1] - 1e-6).item()) + 1)
+    destination = destination - minimum
+    source = destination.new_tensor((
+        (0.0, 0.0),
+        (float(width - 1), 0.0),
+        (float(width - 1), float(height - 1)),
+        (0.0, float(height - 1)),
+    ))
     rows, values = [], []
     for (x, y), (u, v) in zip(source, destination):
         zero, one = x.new_tensor(0), x.new_tensor(1)
@@ -104,13 +118,16 @@ def projective_warp(image, mask, corners, rotation=0.0):
         values.extend((u, v))
     solved = torch.linalg.solve(torch.stack(rows), torch.stack(values))
     inverse = torch.linalg.inv(torch.cat((solved, solved.new_ones(1))).reshape(3, 3))
-    height, width = image.shape[1:3]
-    ys = torch.linspace(-1, 1, height, device=device, dtype=dtype)
-    xs = torch.linspace(-1, 1, width, device=device, dtype=dtype)
+    ys = torch.arange(output_height, device=device, dtype=dtype)
+    xs = torch.arange(output_width, device=device, dtype=dtype)
     yy, xx = torch.meshgrid(ys, xs, indexing="ij")
     homogeneous = torch.stack((xx, yy, torch.ones_like(xx)), dim=-1)
     mapped = homogeneous @ inverse.T
-    grid = mapped[..., :2] / mapped[..., 2:].clamp(min=1e-8)
+    mapped = mapped[..., :2] / mapped[..., 2:].clamp(min=1e-8)
+    grid = torch.stack((
+        mapped[..., 0] * (2.0 / max(width - 1, 1)) - 1.0,
+        mapped[..., 1] * (2.0 / max(height - 1, 1)) - 1.0,
+    ), dim=-1)
     rgba = torch.cat((image.movedim(-1, 1), mask.unsqueeze(1)), dim=1)
     warped = F.grid_sample(
         rgba, grid.unsqueeze(0), mode="bilinear",

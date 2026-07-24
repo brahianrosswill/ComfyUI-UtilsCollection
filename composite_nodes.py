@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 from comfy_api.latest import io, ui
 from nodes import MAX_RESOLUTION
 from .helper_functions import resize_nchw
-from .model_assets import ensure_huggingface_model
+from .model_assets import require_huggingface_model
 from .staged_face_helpers import (
     detect_many_or_warn,
     load_face_model,
@@ -68,7 +68,7 @@ def _load_internal_background_removal_model(model_name):
 
     from comfy import bg_removal_model
 
-    model_path = ensure_huggingface_model(
+    model_path = require_huggingface_model(
         "background_removal",
         filename,
         "Comfy-Org/BiRefNet",
@@ -1213,6 +1213,7 @@ def _composite_staged_foregrounds(
                 placement.get("corners", [[-1, -1], [1, -1], [1, 1], [-1, 1]]),
                 placement.get("rotation", 0.0),
             )
+            placed_height, placed_width = resized_foreground.shape[1:3]
         resized_mask = resized_mask[0]
         layer_feather = int(layer.get("feather_radius", feather_radius))
         placed_feather = (

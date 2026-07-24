@@ -4,7 +4,7 @@ import os
 import numpy as np
 import torch
 
-from .model_assets import ensure_huggingface_model
+from .model_assets import require_huggingface_model
 
 
 _FACE_MODEL_CACHE = {"path": None, "model": None}
@@ -15,7 +15,7 @@ def load_face_model():
     from comfy_extras.nodes_mediapipe import FaceLandmarkerModel
 
     filename = "mediapipe_face_fp32.safetensors"
-    path = ensure_huggingface_model(
+    path = require_huggingface_model(
         "detection",
         filename,
         "Comfy-Org/mediapipe",

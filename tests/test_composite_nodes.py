@@ -811,7 +811,7 @@ def test_internal_background_removal_loader_selects_exact_files_and_caches(monke
 
     monkeypatch.setattr(
         composite_nodes,
-        "ensure_huggingface_model",
+        "require_huggingface_model",
         lambda category, filename, repo_id, repo_path: str(tmp_path / filename),
     )
     monkeypatch.setattr(bg_removal_model, "load", load)
@@ -832,81 +832,65 @@ def test_internal_background_removal_loader_selects_exact_files_and_caches(monke
     assert lucida.config["image_mean"] == lucida.image_mean
 
 
-def test_internal_background_removal_loader_reports_download_failure(monkeypatch):
+def test_internal_background_removal_loader_reports_missing_model(monkeypatch):
     composite_nodes._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
     monkeypatch.setattr(
         composite_nodes,
-        "ensure_huggingface_model",
+        "require_huggingface_model",
         lambda *_args: (_ for _ in ()).throw(
-            ValueError("Unable to download Comfy-Org/BiRefNet/background_removal/lucida.safetensors")
+            ValueError(
+                "Required model lucida.safetensors was not found. Download it from "
+                "https://huggingface.co/Comfy-Org/BiRefNet/blob/main/"
+                "background_removal/lucida.safetensors"
+            )
         ),
     )
 
-    with pytest.raises(ValueError, match=r"Comfy-Org/BiRefNet/background_removal/lucida\.safetensors"):
+    with pytest.raises(
+        ValueError,
+        match=r"Comfy-Org/BiRefNet/blob/main/background_removal/lucida\.safetensors",
+    ):
         composite_nodes._load_internal_background_removal_model("lucida")
 
 
-def test_huggingface_model_download_flattens_repo_subdirectory(monkeypatch, tmp_path):
+def test_required_huggingface_model_reports_url_and_registered_locations(monkeypatch, tmp_path):
     import folder_paths
-    import requests
 
-    registered = tmp_path / "custom-removal-location"
-    calls = []
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def raise_for_status(self):
-            return None
-
-        def iter_content(self, chunk_size):
-            assert chunk_size == 1024 * 1024
-            yield b"weights"
+    first = tmp_path / "custom-removal-location"
+    second = tmp_path / "other-removal-location"
 
     monkeypatch.setattr(
         folder_paths, "get_full_path_or_raise",
         lambda *_args: (_ for _ in ()).throw(FileNotFoundError()),
     )
-    monkeypatch.setattr(folder_paths, "get_folder_paths", lambda category: [str(registered)])
     monkeypatch.setattr(
-        requests,
-        "get",
-        lambda url, **kwargs: calls.append((url, kwargs)) or Response(),
+        folder_paths, "get_folder_paths", lambda category: [str(first), str(second)],
     )
 
-    result = model_assets.ensure_huggingface_model(
-        "background_removal", "birefnet.safetensors",
-        "Comfy-Org/BiRefNet", "background_removal/birefnet.safetensors",
-    )
+    with pytest.raises(ValueError) as raised:
+        model_assets.require_huggingface_model(
+            "background_removal", "birefnet.safetensors",
+            "Comfy-Org/BiRefNet", "background_removal/birefnet.safetensors",
+        )
 
-    assert pathlib.Path(result) == registered / "birefnet.safetensors"
-    assert pathlib.Path(result).read_bytes() == b"weights"
-    assert calls == [(
-        "https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/"
-        "background_removal/birefnet.safetensors",
-        {"stream": True, "allow_redirects": True, "timeout": (10, 300)},
-    )]
-    assert not (registered / "background_removal").exists()
+    message = str(raised.value)
+    assert (
+        "https://huggingface.co/Comfy-Org/BiRefNet/blob/main/"
+        "background_removal/birefnet.safetensors"
+    ) in message
+    assert str(first / "birefnet.safetensors") in message
+    assert str(second / "birefnet.safetensors") in message
 
 
-def test_huggingface_model_download_is_skipped_when_registered_file_exists(monkeypatch, tmp_path):
+def test_required_huggingface_model_returns_registered_file(monkeypatch, tmp_path):
     import folder_paths
-    import requests
 
     existing = tmp_path / "detection" / "mediapipe_face_fp32.safetensors"
     existing.parent.mkdir()
     existing.write_bytes(b"present")
     monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda *_args: str(existing))
-    monkeypatch.setattr(
-        requests, "get",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("downloaded existing model")),
-    )
 
-    result = model_assets.ensure_huggingface_model(
+    result = model_assets.require_huggingface_model(
         "detection", existing.name,
         "Comfy-Org/mediapipe", f"detection/{existing.name}",
     )
@@ -1133,6 +1117,60 @@ def test_projective_warp_applies_identical_support_to_rgb_and_alpha():
         image, mask, [[-0.8, -0.8], [0.8, -1], [0.7, 0.8], [-0.9, 0.7]], 12,
     )
     assert torch.allclose(warped_image[..., 0], warped_mask, atol=1e-6)
+
+
+def test_projective_warp_rotates_non_square_layer_without_distortion():
+    image = torch.zeros(1, 3, 7, 3)
+    mask = torch.zeros(1, 3, 7)
+    image[:, 1, :, 0] = 1
+    mask[:, 1, :] = 1
+
+    warped_image, warped_mask = composite_nodes.projective_warp(
+        image, mask, [[-1, -1], [1, -1], [1, 1], [-1, 1]], 90,
+    )
+
+    assert warped_image.shape[1:3] == (7, 3)
+    assert warped_mask.shape[1:] == (7, 3)
+    assert torch.allclose(warped_image[..., 0], warped_mask, atol=1e-6)
+    assert torch.allclose(warped_mask[:, :, 1], torch.ones(1, 7), atol=1e-5)
+    assert torch.allclose(
+        warped_mask[:, :, (0, 2)], torch.zeros(1, 7, 2), atol=1e-6,
+    )
+
+
+def test_staged_rotation_uses_expanded_bounds_and_preserves_center():
+    staged = {
+        "version": 1,
+        "layers": [{
+            "socket": "foreground_0",
+            "image": torch.ones(1, 3, 7, 3),
+            "mask": torch.ones(1, 3, 7),
+            "uses_embedded_alpha": True,
+            "is_face": False,
+        }],
+    }
+    placement = json.dumps({
+        "version": 3,
+        "layers": {
+            "foreground_0": {
+                "scale": 0.35,
+                "center_x": 0.5,
+                "center_y": 0.5,
+                "rotation": 90,
+                "corners": [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+            },
+        },
+    })
+
+    _, mask = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 20, 20, 3), staged, placement, 0,
+    ).result
+    points = torch.nonzero(mask[0] > 0.99)
+
+    assert points[:, 0].min() == 6
+    assert points[:, 0].max() == 12
+    assert points[:, 1].min() == 8
+    assert points[:, 1].max() == 10
 
 
 def test_version_three_warp_applies_to_ordinary_foreground():
