@@ -734,7 +734,7 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     execution_input = next(value for value in schema.inputs if value.id == "execution_mode")
     selector_input = next(value for value in schema.inputs if value.id == "background_removal_model_name")
     assert schema.is_output_node is True
-    assert schema.display_name == "Staged Layered Background Composite (Read tooltip)"
+    assert schema.display_name == "Staged Background Composite"
     assert "Run only this node" in schema.description
     assert execution_input.options == ["run_staging", "run_staged", "full_run"]
     assert execution_input.default == "full_run"

@@ -55,6 +55,7 @@ def test_seed_cluster_generates_main_and_incremented_seed_list():
     assert seed.max == 0xFFFFFFFFFFFFFFFF
     assert schema.outputs[1].io_type == "UC_SEED_CLUSTER"
     assert schema.outputs[1].is_output_list is False
+    assert schema.outputs[1].display_name == "Cluster"
     assert UC_SeedCluster.execute(8, 2).result == (
         8,
         [8, 10, 12, 14, 16, 18, 20, 22],
@@ -76,6 +77,8 @@ def test_from_seed_cluster_unpacks_and_fills_eight_integer_outputs():
     assert schema.node_id == "UC_FromSeedCluster"
     assert schema.is_input_list is False
     assert schema.inputs[0].io_type == "UC_SEED_CLUSTER"
+    assert schema.inputs[0].display_name == "Cluster"
+    assert [output.display_name for output in schema.outputs] == [f"Seed {index}" for index in range(1, 9)]
     assert len(schema.outputs) == 8
     assert UC_FromSeedCluster.execute([8, 10, 12, 14]).result == (
         8, 10, 12, 14, 14, 14, 14, 14,
