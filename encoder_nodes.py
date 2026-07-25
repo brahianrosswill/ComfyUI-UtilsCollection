@@ -49,10 +49,7 @@ def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         for value in (stage, getattr(stage, "clip_model", None), getattr(stage, "clip", None))
         if value is not None
     ).lower()
-    if "krea2" in stage_names:
-        raise ValueError("Krea2 Core does not consume reference_latents; disable the reference-latent mode.")
-
-    if "parallel" in ref_latent_mode:
+    if "parallel" in ref_latent_mode and "krea2" not in stage_names:
         # Keep semantic conditioning and reference-latent conditioning as separate
         # Comfy conditioning entries. Sequence concatenation is not a parallel stream.
         tokens_neutral = clip.tokenize("")

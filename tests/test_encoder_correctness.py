@@ -93,6 +93,21 @@ def test_vae_reference_image_uses_configurable_dimension_multiple():
         encoder_helpers.prepare_vae_reference_image(samples, None, 3)
 
 
+@pytest.mark.parametrize("mode", ["single", "parallel-single"])
+def test_krea2_reference_latents_are_attached_to_conditioning(mode):
+    krea2_stage = type("Krea2CLIP", (), {})()
+    clip = types.SimpleNamespace(cond_stage_model=krea2_stage)
+    reference = torch.zeros(1, 16, 8, 8)
+    conditioning = [[torch.zeros(1, 2, 4), {}]]
+
+    result = encoder_nodes.apply_parallel_ref_latents(
+        clip, conditioning, [reference], mode
+    )
+
+    assert len(result) == 1
+    assert result[0][1]["reference_latents"] == [reference]
+
+
 def test_reference_latent_encoders_append_configurable_multiple():
     for class_name in VAE_MULTIPLE_ENCODERS:
         schema = getattr(encoder_nodes, class_name).define_schema()
