@@ -14,6 +14,7 @@ class UC_AdjustedResolutionParameters(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="UC_AdjustedResolutionParameters",
+            display_name="Adjusted Resolution",
             category="utils",
             inputs=[
                 io.Int.Input(
@@ -41,11 +42,11 @@ class UC_AdjustedResolutionParameters(io.ComfyNode):
                 ),
             ],
             outputs=[
-                io.Int.Output(display_name="adjusted_width"),
-                io.Int.Output(display_name="adjusted_height"),
-                io.Int.Output(display_name="upscaled_width"),
-                io.Int.Output(display_name="upscaled_height"),
-                io.Int.Output(display_name="batch_size"),
+                io.Int.Output(display_name="Width"),
+                io.Int.Output(display_name="Height"),
+                io.Int.Output(display_name="Upscaled Width"),
+                io.Int.Output(display_name="Upscaled Height"),
+                io.Int.Output(display_name="Batch"),
             ],
         )
 
@@ -142,6 +143,7 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="UC_ImageScaleAndResolutionPicker",
+            display_name="Image Scale & Resolution",
             category="utils",
             inputs=[
                 io.Image.Input("image", optional=True),
@@ -181,11 +183,11 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
             ],
             outputs=[
                 io.Image.Output("image", tooltip="The adjusted/cropped base image"),
-                io.Image.Output("upscaled_image", tooltip="The image after applying the upscale_by factor"),
-                io.Int.Output(display_name="adjusted_width"),
-                io.Int.Output(display_name="adjusted_height"),
-                io.Int.Output(display_name="upscaled_width"),
-                io.Int.Output(display_name="upscaled_height"),
+                io.Image.Output("upscaled_image", display_name="Image", tooltip="The image after applying the upscale_by factor"),
+                io.Int.Output(display_name="Width"),
+                io.Int.Output(display_name="Height"),
+                io.Int.Output(display_name="Upscaled Width"),
+                io.Int.Output(display_name="Upscaled Height"),
             ],
         )
 

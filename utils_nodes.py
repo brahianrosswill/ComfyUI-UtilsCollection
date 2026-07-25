@@ -40,7 +40,7 @@ class UC_SeedCluster(io.ComfyNode):
                 io.Int.Output("seed", display_name="seed"),
                 SeedClusterType.Output(
                     "seed_cluster",
-                    display_name="seed_cluster",
+                    display_name="Cluster",
                 ),
             ],
         )
@@ -65,11 +65,12 @@ class UC_FromSeedCluster(io.ComfyNode):
             inputs=[
                 SeedClusterType.Input(
                     "seed_cluster",
+                    display_name="Cluster",
                     tooltip="Seed list produced by SeedCluster.",
                 ),
             ],
             outputs=[
-                io.Int.Output(f"seed_{index}", display_name=f"seed_{index}")
+                io.Int.Output(f"seed_{index}", display_name=f"Seed {index}")
                 for index in range(1, 9)
             ],
         )
@@ -458,7 +459,7 @@ class UC_ColorConvertNode(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="UC_ColorConvertNode",
-            display_name="Color Convert (Bottom of node is color selector)",
+            display_name="Color Convert",
             category="advanced/color",
             inputs=[
                 io.Combo.Input("from_mode", options=["auto", "Manual Hex #FFFFFF", "Int 0-16777215", "Comma separated 255,255,255"], default="auto", tooltip="Select how to interpret the color input. 'Auto' will use the color picker input unless one of the other fields is filled in, in which case it will use the filled-in field based on the other options. The other modes will take precedence over the color picker input when their respective fields are filled in."),
@@ -468,9 +469,9 @@ class UC_ColorConvertNode(io.ComfyNode):
                 io.String.Input("comma_separated", multiline=False, optional=True, display_name="Comma Separated Input", tooltip="Enter a color as comma-separated RGB values (0-255), e.g. 255,0,255. Takes precedence over the color picker input if 'from_mode' is set to 'Comma separated 255,255,255'."),
             ],
             outputs=[
-                io.String.Output(display_name="color_hex_output"),
-                io.Int.Output(display_name="color_int_output"),
-                io.String.Output(display_name="color_string_output"),
+                io.String.Output(display_name="Hex"),
+                io.Int.Output(display_name="Int"),
+                io.String.Output(display_name="RGB"),
             ]
         )
 
@@ -710,8 +711,8 @@ class UC_Ideogram4BoundingBoxCrop(io.ComfyNode):
             ],
             outputs=[
                 io.Image.Output("image"),
-                io.String.Output("ig4_bbox"),
-                io.BoundingBox.Output("bounding_box"),
+                io.String.Output("ig4_bbox", display_name="IG4 Box"),
+                io.BoundingBox.Output("bounding_box", display_name="Box"),
             ],
         )
 

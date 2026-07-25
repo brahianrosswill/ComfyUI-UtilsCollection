@@ -23,6 +23,7 @@ class UC_Image_Color_Noise(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="UC_Image_Color_Noise",
+            display_name="Image Color Noise",
             category="utils",
             inputs=[
                 io.Int.Input("width", default=512, max=4096, min=64, step=1),
@@ -38,7 +39,7 @@ class UC_Image_Color_Noise(io.ComfyNode):
                 io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF),
             ],
             outputs=[
-                io.Image.Output(display_name="noise_image"),
+                io.Image.Output(display_name="Image"),
             ],
         )
 
@@ -941,7 +942,7 @@ class UC_ModifyMask(io.ComfyNode):
         return io.Schema(
             node_id="UC_ModifyMask",
             category="utils/mask",
-            display_name="Modify Mask (Expand/Contract with options)",
+            display_name="Modify Mask",
             inputs=[
                 io.Mask.Input("mask"),
                 io.Int.Input(
@@ -964,8 +965,8 @@ class UC_ModifyMask(io.ComfyNode):
                 io.Float.Input("upper_clamp", default=100.0, max=100.0, min=0.0, step=0.1),
             ],
             outputs=[
-                io.Mask.Output(display_name="mask"),
-                io.Mask.Output(display_name="mask_inverted"),
+                io.Mask.Output(display_name="Mask"),
+                io.Mask.Output(display_name="Inverted Mask"),
             ],
         )
 

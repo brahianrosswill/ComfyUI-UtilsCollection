@@ -87,7 +87,7 @@ class UC_AttentionBiasTextEncode(io.ComfyNode):
         return io.Schema(
             node_id="UC_AttentionBiasTextEncode",
             category="advanced/conditioning",
-            display_name="CLIP Text Encode with Attention Bias (Experimental)",
+            display_name="Attention Bias Encode",
             inputs=[
                 io.Clip.Input("clip"),
                 io.String.Input("text", multiline=True, dynamic_prompts=True),
@@ -227,7 +227,7 @@ class UC_TextConsensusBlendConfig(io.ComfyNode):
                 io.Boolean.Input("preserve_common_prefix", default=False, tooltip="Keep the longest numerically identical conditioning prefix exactly from the first input."),
             ],
             outputs=[
-                TextBlendConfig.Output("text_blend_config")
+                TextBlendConfig.Output("text_blend_config", display_name="Blend Config")
             ],
             is_experimental=True,
         )
@@ -304,7 +304,7 @@ class UC_VisualFusionConfig(io.ComfyNode):
                 io.Float.Input("spatial_perturbation", default=0.0, min=0.0, max=1.0, step=0.01, tooltip="Seeded spatial variation for hard fusion methods. Exchanges cells between sources without changing any source's token count; higher values may reduce spatial coherence."),
             ],
             outputs=[
-                VisualFusionConfig.Output("visual_fusion_config")
+                VisualFusionConfig.Output("visual_fusion_config", display_name="Fusion Config")
             ]
         )
 
@@ -345,10 +345,10 @@ class UC_ConditioningConsensusBlend(io.ComfyNode):
         )
         return io.Schema(
             node_id="UC_ConditioningConsensusBlend",
-            display_name="Conditioning Consensus Blender (Post-Encoder)",
+            display_name="Conditioning Consensus",
             category="advanced/conditioning",
             inputs=[
-                TextBlendConfig.Input("text_blend_config", optional=True, tooltip="Optional configuration from UC_TextConsensusBlendConfig. Defaults to baseline CWB if disconnected."),
+                TextBlendConfig.Input("text_blend_config", display_name="Blend Config", optional=True, tooltip="Optional configuration from UC_TextConsensusBlendConfig. Defaults to baseline CWB if disconnected."),
                 io.Autogrow.Input("conditioning_inputs", template=autogrow_template),
             ],
             outputs=[
@@ -1767,6 +1767,7 @@ class UC_TextEncodeSystemPrompt(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="UC_TextEncodeSystemPrompt",
+            display_name="System Prompt Encode",
             category="advanced/conditioning",
             inputs=[
                 io.Clip.Input("clip"),
@@ -1870,7 +1871,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 ),
 
                 # --- Modular Configurations ---
-                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
+                VisualFusionConfig.Input("visual_fusion_config", display_name="Fusion Config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
 
                 # --- Fallback Controls ---
                 io.String.Input(
@@ -2160,7 +2161,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 ),
 
                 # --- Modular Configurations ---
-                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
+                VisualFusionConfig.Input("visual_fusion_config", display_name="Fusion Config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
 
                 # --- Fallback Controls ---
                 io.String.Input(
@@ -2365,8 +2366,8 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
                 ),
             ],
             outputs=[
-                io.AnyType.Output("state_dict", tooltip="Dictionary structure: {'qwen3vl_4b': tensor_2d} of shape [num_tokens, 2560]"),
-                io.AnyType.Output("tensor_2d", tooltip="Raw PyTorch 2D tensor of shape [num_tokens, 2560]"),
+                io.AnyType.Output("state_dict", display_name="State Dict", tooltip="Dictionary structure: {'qwen3vl_4b': tensor_2d} of shape [num_tokens, 2560]"),
+                io.AnyType.Output("tensor_2d", display_name="Embeddings", tooltip="Raw PyTorch 2D tensor of shape [num_tokens, 2560]"),
             ]
         )
 
@@ -2552,8 +2553,8 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
                 ),
             ],
             outputs=[
-                io.AnyType.Output("state_dict", tooltip="Dictionary structure: {key_name: tensor_2d} of shape [num_tokens, hidden_size]"),
-                io.AnyType.Output("tensor_2d", tooltip="Raw PyTorch 2D tensor of shape [num_tokens, hidden_size]"),
+                io.AnyType.Output("state_dict", display_name="State Dict", tooltip="Dictionary structure: {key_name: tensor_2d} of shape [num_tokens, hidden_size]"),
+                io.AnyType.Output("tensor_2d", display_name="Embeddings", tooltip="Raw PyTorch 2D tensor of shape [num_tokens, hidden_size]"),
             ]
         )
 
@@ -2763,7 +2764,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 io.Float.Input("strength", default=1.0, min=0.0, max=4.0, step=0.05, tooltip="Global multiplier on the weighting effect. Effect compounds over all blocks."),
 
                 # --- Modular Configurations ---
-                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
+                VisualFusionConfig.Input("visual_fusion_config", display_name="Fusion Config", optional=True, tooltip="Optional spatial visual fusion configuration from UC_VisualFusionConfig. Blends isolated visual blocks without coordinate blur."),
 
                 # --- Fallback Controls ---
                 io.String.Input(

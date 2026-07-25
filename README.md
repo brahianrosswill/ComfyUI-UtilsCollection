@@ -43,10 +43,14 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_ImagePad`
 - `UC_CropByMask`
 - `UC_ImageCropMerge`
+- `UC_ExtractMask`
 - `UC_ImageAndMaskResize`
 - `UC_ResizeMask`
 - `UC_UnifiedBackgroundReplace`
 - `UC_StagedLayeredBackgroundComposite`
+- `UC_StagedLayeredBackgroundCompositeOptions`
+- `UC_StagedMediaPipeFaceBackgroundComposite`
+- `UC_StagedMediaPipeFaceOptions`
 - `UC_LayeredBackgroundComposite`
 - `UC_MediaPipeFaceCompositeOptions`
 - `UC_MediaPipeFaceComposite`
@@ -57,9 +61,15 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_ImageIterativeStretchFill`
 - `UC_TextOverlayNode`
 
-`UC_LayeredBackgroundComposite` builds one scene from a single background and ordered foreground sockets. In LiteGraph, queue it once to obtain exact background-removed cutouts, arrange each foreground with its own box and numeric placement controls, then queue again to render the final back-to-front composite. Each foreground socket accepts one image; `foreground_0` is the backmost layer.
+`UC_StagedLayeredBackgroundComposite` builds a scene from a background and ordered foreground sockets. Use `run_staging` to retain cutouts and populate the placement editor. Use `run_staged` to composite retained cutouts without loading models or evaluating foreground branches. Use `full_run` to restage and composite in one queue. `foreground_0` is the backmost layer. Retained cutouts are held in server memory and must be recreated after restarting ComfyUI.
 
-The experimental staged compositor combines removal, staging, placement, and final composition in one node. Leave `use_staged` disabled and queue once to retain transparent cutouts and populate the LiteGraph editor; this staging pass forwards the untouched background and an empty mask. Then enable `use_staged`, arrange the objects, and queue to composite and forward the final image without evaluating the removal model or foreground branches. Disable `use_staged` and queue to refresh from current foreground inputs. Retained cutouts live in server memory and must be recreated after restarting ComfyUI.
+`UC_StagedMediaPipeFaceBackgroundComposite` detects faces in each foreground and adds them as independently placeable layers. The background and face options nodes contain removal, extraction, feathering, and blend settings. Both staged compositor nodes output the image, combined mask, layer masks, and bounding boxes in back-to-front order.
+
+### Staged compositor example
+
+[Workflow JSON](workflows/CompositorExampleWorkflow.json) | [Workflow overview](workflows/CompositorExampleWorkflow.jpg) | [Source assets](workflow_assets/)
+
+<img src="workflows/CompositorExampleWorkflow.jpg" alt="Staged MediaPipe face background compositor workflow" width="1200">
 
 ### Resolution and workflow parameters
 
@@ -74,8 +84,11 @@ The experimental staged compositor combines removal, staging, placement, and fin
 - `UC_StaticFloat`
 - `UC_RandIntRange`
 - `UC_ColorConvertNode`
+- `UC_SeedCluster`
+- `UC_FromSeedCluster`
 - `UC_ExtractBoundingBox`
 - `UC_AdjustBoundingBox`
+- `UC_Ideogram4BoundingBoxCrop`
 
 ### Prompt presets
 

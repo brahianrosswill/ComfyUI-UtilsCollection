@@ -496,10 +496,10 @@ class UC_CropByMask(io.ComfyNode):
             outputs=[
                 io.Image.Output("image"),
                 io.Mask.Output("mask"),
-                io.Int.Output("crop_x"),
-                io.Int.Output("crop_y"),
-                io.Int.Output("crop_width"),
-                io.Int.Output("crop_height"),
+                io.Int.Output("crop_x", display_name="X"),
+                io.Int.Output("crop_y", display_name="Y"),
+                io.Int.Output("crop_width", display_name="Width"),
+                io.Int.Output("crop_height", display_name="Height"),
             ],
         )
 
@@ -1347,7 +1347,7 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="UC_StagedLayeredBackgroundCompositeOptions",
-            display_name="Staged Layered Background Composite Options",
+            display_name="Staged Composite Options",
             category="utils/image",
             inputs=[
                 io.Float.Input("mask_threshold", default=0.5, min=0, max=1, step=0.01),
@@ -1365,7 +1365,7 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
                     ),
                 ),
             ],
-            outputs=[StagedBackgroundOptionsType.Output()],
+            outputs=[StagedBackgroundOptionsType.Output(display_name="Background Options")],
         )
 
     @classmethod
@@ -1401,7 +1401,7 @@ class UC_StagedMediaPipeFaceOptions(io.ComfyNode):
                     ),
                 ),
             ],
-            outputs=[StagedFaceOptionsType.Output()],
+            outputs=[StagedFaceOptionsType.Output(display_name="Face Options")],
         )
 
     @classmethod
@@ -1421,12 +1421,12 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
         )
         return io.Schema(
             node_id="UC_StagedMediaPipeFaceBackgroundComposite",
-            display_name="Staged MediaPipe Face Background Composite",
+            display_name="Face Background Composite",
             category="utils/image",
             inputs=[
                 io.Image.Input("background"),
-                StagedBackgroundOptionsType.Input("background_options", optional=True),
-                StagedFaceOptionsType.Input("face_options", optional=True),
+                StagedBackgroundOptionsType.Input("background_options", display_name="Background Options", optional=True),
+                StagedFaceOptionsType.Input("face_options", display_name="Face Options", optional=True),
                 io.Combo.Input("execution_mode", options=["run_staging", "run_staged", "full_run"], default="full_run"),
                 io.String.Input("placement_data", default='{"version":3,"workspace_padding":0.5,"layers":{}}', advanced=True),
                 io.Combo.Input("background_removal_model_name", options=["birefnet", "lucida"], default="birefnet"),
@@ -1435,8 +1435,8 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
             outputs=[
                 io.Image.Output("image"),
                 io.Mask.Output("mask"),
-                io.BoundingBox.Output("bounding_boxes"),
-                io.Mask.Output("layer_masks"),
+                io.BoundingBox.Output("bounding_boxes", display_name="Boxes"),
+                io.Mask.Output("layer_masks", display_name="Layer Masks"),
             ],
             hidden=[io.Hidden.unique_id],
             is_output_node=True,
@@ -1510,7 +1510,7 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
         )
         return io.Schema(
             node_id="UC_StagedLayeredBackgroundComposite",
-            display_name="Staged Layered Background Composite (Read tooltip)",
+            display_name="Staged Background Composite",
             description=(
                 "Run only this node with execution_mode set to run_staging to stage foreground objects for placement. "
                 "After arranging them, use run_staged to composite the retained cutouts, or full_run to restage changed "
@@ -1570,8 +1570,8 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             outputs=[
                 io.Image.Output("image"),
                 io.Mask.Output("mask"),
-                io.BoundingBox.Output("bounding_boxes"),
-                io.Mask.Output("layer_masks"),
+                io.BoundingBox.Output("bounding_boxes", display_name="Boxes"),
+                io.Mask.Output("layer_masks", display_name="Layer Masks"),
             ],
             hidden=[io.Hidden.unique_id],
             is_output_node=True,
@@ -1910,7 +1910,7 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
                 io.Image.Input("target"),
                 FaceCompositeOptionsType.Input("options", optional=True),
             ],
-            outputs=[io.Image.Output("image"), io.Image.Output("face_crop")],
+            outputs=[io.Image.Output("image"), io.Image.Output("face_crop", display_name="Face Crop")],
         )
 
     @classmethod

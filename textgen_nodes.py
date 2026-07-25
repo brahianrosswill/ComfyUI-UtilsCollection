@@ -341,7 +341,7 @@ class UC_TextGenerate(io.ComfyNode):
 
         return io.Schema(
             node_id="UC_TextGenerate",
-            display_name="Advanced Text Generate (VLM & Multi-Image)",
+            display_name="Text Generate",
             category="advanced/textgen",
             search_aliases=["LLM", "VLM", "textgen", "generate", "chat", "qwen", "gemma", "llama"],
             inputs=[
@@ -374,7 +374,7 @@ class UC_TextGenerate(io.ComfyNode):
                     default=False,
                     tooltip="Backslash-escape generated parentheses as the final step, preserving them as literal text for downstream contextual-weight parsing.",
                 ),
-                VisualFusionConfig.Input("visual_fusion_config", optional=True, tooltip="Optional pre-generation Qwen3-VL visual and DeepStack fusion configuration."),
+                VisualFusionConfig.Input("visual_fusion_config", display_name="Fusion Config", optional=True, tooltip="Optional pre-generation Qwen3-VL visual and DeepStack fusion configuration."),
                 io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode"),
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
