@@ -605,6 +605,7 @@ class UC_ExtractBoundingBox(io.ComfyNode):
                 io.Int.Output(display_name="y"),
                 io.Int.Output(display_name="width"),
                 io.Int.Output(display_name="height"),
+                io.BoundingBox.Output("bounding_box"),
             ],
         )
 
@@ -651,7 +652,110 @@ class UC_ExtractBoundingBox(io.ComfyNode):
 
     @classmethod
     def execute(cls, input_data: any, index: int) -> io.NodeOutput:
-        return io.NodeOutput(*cls.select_box(input_data, index))
+        x, y, width, height = cls.select_box(input_data, index)
+        return io.NodeOutput(
+            x,
+            y,
+            width,
+            height,
+            {"x": x, "y": y, "width": width, "height": height},
+        )
+
+
+class UC_ExtractMask(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_ExtractMask",
+            display_name="Extract Mask",
+            category="utils/primitive",
+            inputs=[
+                io.Mask.Input(
+                    "masks",
+                    tooltip="Mask batch ordered by the producing node, such as compositor layer order.",
+                ),
+                io.Int.Input(
+                    "index",
+                    default=0,
+                    min=0,
+                    max=sys.maxsize,
+                    tooltip="Index of the mask to extract.",
+                ),
+            ],
+            outputs=[io.Mask.Output("mask")],
+        )
+
+    @classmethod
+    def execute(cls, masks, index):
+        if not torch.is_tensor(masks) or masks.ndim != 3:
+            raise ValueError("Extract Mask requires a [count, height, width] mask batch.")
+        if index < 0 or index >= masks.shape[0]:
+            raise ValueError(
+                f"Index {index} is out of range. Found {masks.shape[0]} mask(s)."
+            )
+        return io.NodeOutput(masks[index:index + 1])
+
+
+class UC_Ideogram4BoundingBoxCrop(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_Ideogram4BoundingBoxCrop",
+            display_name="Ideogram 4 Bounding Box Crop",
+            category="utils/image",
+            inputs=[
+                io.Image.Input("image"),
+                io.BoundingBox.Input("bboxes", force_input=True),
+                io.Int.Input("index", default=0, min=0, max=sys.maxsize),
+            ],
+            outputs=[
+                io.Image.Output("image"),
+                io.String.Output("ig4_bbox"),
+                io.BoundingBox.Output("bounding_box"),
+            ],
+        )
+
+    @staticmethod
+    def _ideogram_bbox(box, width, height):
+        left = min(max(int(box["x"]), 0), width)
+        top = min(max(int(box["y"]), 0), height)
+        right = min(max(int(box["x"] + box["width"]), 0), width)
+        bottom = min(max(int(box["y"] + box["height"]), 0), height)
+        if right <= left or bottom <= top:
+            raise ValueError("The selected bounding box has no area inside the image.")
+        normalized = (
+            round(top / height * 1000),
+            round(left / width * 1000),
+            round(bottom / height * 1000),
+            round(right / width * 1000),
+        )
+        return (
+            {"x": left, "y": top, "width": right - left, "height": bottom - top},
+            f"[{','.join(str(value) for value in normalized)}]",
+        )
+
+    @classmethod
+    def execute(cls, image, bboxes, index):
+        if not torch.is_tensor(image) or image.ndim != 4 or image.shape[0] != 1:
+            raise ValueError("Ideogram 4 Bounding Box Crop requires exactly one image.")
+        x, y, width, height = UC_ExtractBoundingBox.select_box(bboxes, index)
+        if width <= 0 or height <= 0:
+            raise ValueError(
+                f"Bounding box at index {index} must have positive width and height."
+            )
+        box, ig4_bbox = cls._ideogram_bbox(
+            {"x": x, "y": y, "width": width, "height": height},
+            image.shape[2],
+            image.shape[1],
+        )
+
+        cropped = image[
+            :,
+            box["y"]:box["y"] + box["height"],
+            box["x"]:box["x"] + box["width"],
+            :,
+        ]
+        return io.NodeOutput(cropped, ig4_bbox, box)
 
 
 class UC_AdjustBoundingBox(io.ComfyNode):

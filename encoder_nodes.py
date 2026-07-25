@@ -36,6 +36,7 @@ from .encoder_helpers import(
     resolve_embedding_output_path,
     visual_fusion_grid,
     prepare_vae_reference_image,
+    qwen3vl_visual_encoder_path,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -1995,8 +1996,11 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     "AdvancedVisualConditioning: custom contextual vector scaling is disabled for native multi-image inline encoding."
                 )
             try:
-                inline_tokens = clip.tokenize(inline_prompt, images=inline_images, skip_template=True)
-                inline_cond = clip.encode_from_tokens_scheduled(inline_tokens)
+                with qwen3vl_visual_encoder_path(clip, visual_encoder_path):
+                    inline_tokens = clip.tokenize(
+                        inline_prompt, images=inline_images, skip_template=True,
+                    )
+                    inline_cond = clip.encode_from_tokens_scheduled(inline_tokens)
                 if len(inline_cond) != 1:
                     raise ValueError("Inline image encoding requires a single conditioning schedule entry.")
             except (TypeError, ValueError) as exc:

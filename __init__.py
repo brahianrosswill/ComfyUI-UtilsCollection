@@ -100,6 +100,8 @@ class SamplingUtils(ComfyExtension):
             UC_TextGenerateQwen35SystemPrompt,
             UC_ColorConvertNode,
             UC_ExtractBoundingBox,
+            UC_ExtractMask,
+            UC_Ideogram4BoundingBoxCrop,
             UC_AdjustBoundingBox,
             UC_Krea2LayerProbe,
             UC_Krea2LayerAblator,

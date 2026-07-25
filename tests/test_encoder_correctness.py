@@ -148,6 +148,44 @@ def test_legacy_flat_temporarily_disables_grid_and_deepstack_inputs():
     assert transformer.build_image_inputs(None, None) == ("grid", "mask", "deepstack")
 
 
+def test_inline_image_placeholders_honor_legacy_flat_encoder_path():
+    class Transformer:
+        @staticmethod
+        def build_image_inputs(embeds, embeds_info):
+            return "grid", "mask", "deepstack"
+
+    transformer = Transformer()
+
+    class Clip:
+        cond_stage_model = types.SimpleNamespace(
+            clip_model=types.SimpleNamespace(transformer=transformer),
+        )
+
+        @staticmethod
+        def tokenize(*_args, **_kwargs):
+            assert transformer.build_image_inputs(None, None) == (None, None, None)
+            return {"fake": [[(1, 1.0)]]}
+
+        @staticmethod
+        def encode_from_tokens_scheduled(_tokens):
+            assert transformer.build_image_inputs(None, None) == (None, None, None)
+            return [[torch.ones(1, 1, 1), {}]]
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        Clip(),
+        prompt="image_input_1",
+        system_prompt="",
+        vlm_resolution="Original",
+        image_inputs={"image_1": torch.ones(1, 2, 2, 3)},
+        visual_fusion_config={
+            "visual_fusion_method": "off",
+            "visual_encoder_path": "legacy-flat",
+        },
+    )
+
+    assert transformer.build_image_inputs(None, None) == ("grid", "mask", "deepstack")
+
+
 def test_embedding_output_cannot_escape_root(tmp_path):
     nested = encoder_helpers.resolve_embedding_output_path(str(tmp_path), "nested/item.safetensors")
     assert pathlib.Path(nested).is_relative_to(tmp_path)

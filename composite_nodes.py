@@ -1143,6 +1143,8 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
     return io.NodeOutput(
         passthrough,
         empty_mask,
+        [],
+        passthrough.new_zeros((0, background_height, background_width)),
         ui={"uc_layered_scene_editor": [editor_metadata]},
     )
 
@@ -1175,6 +1177,8 @@ def _composite_staged_foregrounds(
     scene = background[..., :3].clone()
     background_height, background_width = scene.shape[1:3]
     combined_mask = scene.new_zeros((1, background_height, background_width))
+    layer_masks = []
+    layer_boxes = []
     editor_layers = []
 
     for layer in layers:
@@ -1233,12 +1237,24 @@ def _composite_staged_foregrounds(
         slices = None if excluded else _visible_placement_slices(
             background_width, background_height, placed_width, placed_height, offset_x, offset_y
         )
+        layer_mask = scene.new_zeros((background_height, background_width))
+        layer_box = {"x": 0, "y": 0, "width": 0, "height": 0}
         if slices is not None:
             (
                 destination_top, destination_bottom, destination_left, destination_right,
                 source_top, source_bottom, source_left, source_right,
             ) = slices
             base_alpha = alpha[source_top:source_bottom, source_left:source_right]
+            layer_mask[
+                destination_top:destination_bottom,
+                destination_left:destination_right,
+            ] = base_alpha
+            layer_box = {
+                "x": destination_left,
+                "y": destination_top,
+                "width": destination_right - destination_left,
+                "height": destination_bottom - destination_top,
+            }
             mask_region = combined_mask[0, destination_top:destination_bottom, destination_left:destination_right]
             blend_factor = float(layer.get("blend_factor", 1.0))
             placed_alpha = base_alpha * (1.0 - mask_region * (1.0 - blend_factor))
@@ -1250,6 +1266,8 @@ def _composite_staged_foregrounds(
             combined_mask[0, destination_top:destination_bottom, destination_left:destination_right] = (
                 mask_region + base_alpha * (1.0 - mask_region)
             )
+        layer_boxes.append(layer_box)
+        layer_masks.append(layer_mask)
         editor_layers.append({
             "socket": key,
             "crop_width": crop_width,
@@ -1305,7 +1323,16 @@ def _composite_staged_foregrounds(
         except Exception:
             logging.warning("Unable to create staged editor cutout preview for %s.", layer["socket"], exc_info=True)
         editor_metadata["layers"].append(entry)
-    return io.NodeOutput(scene, combined_mask, ui={"uc_layered_scene_editor": [editor_metadata]})
+    ordered_masks = torch.stack(layer_masks) if layer_masks else scene.new_zeros(
+        (0, background_height, background_width)
+    )
+    return io.NodeOutput(
+        scene,
+        combined_mask,
+        [layer_boxes] if layer_boxes else [],
+        ordered_masks,
+        ui={"uc_layered_scene_editor": [editor_metadata]},
+    )
 
 
 class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
@@ -1405,7 +1432,12 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
                 io.Combo.Input("background_removal_model_name", options=["birefnet", "lucida"], default="birefnet"),
                 io.Autogrow.Input("foreground_images", template=foreground_template),
             ],
-            outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
+            outputs=[
+                io.Image.Output("image"),
+                io.Mask.Output("mask"),
+                io.BoundingBox.Output("bounding_boxes"),
+                io.Mask.Output("layer_masks"),
+            ],
             hidden=[io.Hidden.unique_id],
             is_output_node=True,
         )
@@ -1535,7 +1567,12 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                     tooltip="Foregrounds staged and composited from foreground_0 at the back to the highest socket at the front.",
                 ),
             ],
-            outputs=[io.Image.Output("image"), io.Mask.Output("mask")],
+            outputs=[
+                io.Image.Output("image"),
+                io.Mask.Output("mask"),
+                io.BoundingBox.Output("bounding_boxes"),
+                io.Mask.Output("layer_masks"),
+            ],
             hidden=[io.Hidden.unique_id],
             is_output_node=True,
         )

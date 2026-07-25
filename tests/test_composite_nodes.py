@@ -396,6 +396,10 @@ def test_background_compositor_schemas_place_variable_foregrounds_after_static_c
     ]
     for schema in schemas:
         assert all(value.tooltip for value in schema.inputs)
+    for schema in schemas[2:]:
+        assert [value.id for value in schema.outputs] == [
+            "image", "mask", "bounding_boxes", "layer_masks",
+        ]
 
 
 def test_composite_smooth_mask_resize_preserves_subpixel_coverage():
@@ -608,7 +612,7 @@ def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
         '{"version":1,"layers":{"foreground_0":{"scale":0.5}}}',
         0,
     )
-    image, placed_mask = output.result
+    image, placed_mask = output.result[:2]
 
     assert len(model.masks) == 0
     assert staged["layers"][0]["image"].shape[1:3] == (4, 4)
@@ -917,7 +921,7 @@ def test_staged_compositor_preserves_exact_size_non_overlapping_foregrounds(monk
 
     image, _ = composite_nodes._composite_staged_foregrounds(
         torch.zeros(1, 16, 32, 3), staged, placement, 0
-    ).result
+    ).result[:2]
 
     assert torch.equal(image[:, 4:12, 0:8], first)
     assert torch.equal(image[:, 4:12, 24:32], second)
@@ -1162,15 +1166,60 @@ def test_staged_rotation_uses_expanded_bounds_and_preserves_center():
         },
     })
 
-    _, mask = composite_nodes._composite_staged_foregrounds(
+    output = composite_nodes._composite_staged_foregrounds(
         torch.zeros(1, 20, 20, 3), staged, placement, 0,
-    ).result
+    )
+    _, mask, bounding_boxes, layer_masks = output.result
     points = torch.nonzero(mask[0] > 0.99)
 
     assert points[:, 0].min() == 6
     assert points[:, 0].max() == 12
     assert points[:, 1].min() == 8
     assert points[:, 1].max() == 10
+    assert bounding_boxes == [[{"x": 8, "y": 6, "width": 3, "height": 7}]]
+    assert torch.allclose(layer_masks, mask)
+
+
+def test_staged_layer_geometry_outputs_follow_back_to_front_order():
+    staged = {
+        "version": 1,
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.ones(1, 2, 2, 3),
+                "mask": torch.ones(1, 2, 2),
+                "uses_embedded_alpha": True,
+            },
+            {
+                "socket": "foreground_1",
+                "image": torch.ones(1, 2, 2, 3),
+                "mask": torch.ones(1, 2, 2),
+                "uses_embedded_alpha": True,
+            },
+        ],
+    }
+    placement = json.dumps({
+        "version": 3,
+        "workspace_padding": 0,
+        "layer_order": ["foreground_1", "foreground_0"],
+        "layers": {
+            "foreground_0": {"scale": 0.2, "center_x": 0.2, "center_y": 0.5},
+            "foreground_1": {"scale": 0.2, "center_x": 0.8, "center_y": 0.5},
+        },
+    })
+
+    output = composite_nodes._composite_staged_foregrounds(
+        torch.zeros(1, 10, 20, 3), staged, placement, 0,
+    )
+    _, _, bounding_boxes, layer_masks = output.result
+
+    assert bounding_boxes == [[
+        {"x": 15, "y": 4, "width": 2, "height": 2},
+        {"x": 3, "y": 4, "width": 2, "height": 2},
+    ]]
+    assert layer_masks.shape == (2, 10, 20)
+    assert layer_masks[0, 4:6, 15:17].all()
+    assert layer_masks[1, 4:6, 3:5].all()
 
 
 def test_version_three_warp_applies_to_ordinary_foreground():
@@ -1198,7 +1247,7 @@ def test_version_three_warp_applies_to_ordinary_foreground():
     })
     image, mask = composite_nodes._composite_staged_foregrounds(
         torch.zeros(1, 10, 10, 3), staged, placement, 0,
-    ).result
+    ).result[:2]
     assert torch.allclose(image[..., 0], mask, atol=1e-6)
     assert mask.sum() < 25
 
@@ -1219,7 +1268,7 @@ def test_staged_soft_blend_does_not_blend_with_background():
         staged,
         '{"version":3,"workspace_padding":0,"layers":{"foreground_0":{"scale":0.5}}}',
         0,
-    ).result
+    ).result[:2]
     assert torch.allclose(image[..., 0], mask)
     assert mask.max() == 1
 
@@ -1249,7 +1298,7 @@ def test_staged_soft_blend_maps_zero_to_half_over_underlying_foreground():
     )
     image, mask = composite_nodes._composite_staged_foregrounds(
         torch.zeros(1, 10, 10, 3), staged, placement, 0,
-    ).result
+    ).result[:2]
     assert image.max().item() == pytest.approx(0.6)
     assert mask.max() == 1
 
@@ -1287,7 +1336,7 @@ def test_staged_soft_blend_uses_accumulated_coverage_past_excluded_layer():
     )
     image, mask = composite_nodes._composite_staged_foregrounds(
         torch.zeros(1, 10, 10, 3), staged, placement, 0,
-    ).result
+    ).result[:2]
     assert image.max().item() == pytest.approx(0.6)
     assert mask.max() == 1
 
@@ -1325,7 +1374,7 @@ def test_version_three_exclusion_applies_to_ordinary_foreground():
     })
     image, mask = composite_nodes._composite_staged_foregrounds(
         torch.zeros(1, 10, 10, 3), staged, placement, 0,
-    ).result
+    ).result[:2]
     assert torch.count_nonzero(image) == 0
     assert torch.count_nonzero(mask) == 0
 
@@ -1347,7 +1396,7 @@ def test_face_feather_is_applied_to_final_composite_alpha():
         staged,
         '{"version":3,"workspace_padding":0,"layers":{"foreground_0_face_0":{"scale":0.5}}}',
         0,
-    ).result
+    ).result[:2]
     support = mask[0, 5:14, 5:14]
     assert support[4, 4] > support[0, 4]
     assert torch.allclose(image[..., 0], mask)
