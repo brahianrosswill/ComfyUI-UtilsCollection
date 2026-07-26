@@ -1,11 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
+  DEFAULT_FACE_CORNERS,
   DEFAULT_PLACEMENT,
   DEFAULT_WORKSPACE_PADDING,
   deformQuadCentroidLocked,
   dragQuadCorner,
   drawRect,
+  frontmostLayerAtPoint,
   layerKeyCompare,
   moveRect,
   normalizePlacement,
@@ -17,6 +19,10 @@ import {
   serializePlacementData,
   stepPlacementValue,
 } from "./placement_geometry.js";
+import {
+  buildLayerContextActions,
+  LayerContextMenu,
+} from "./layer_context_menu.js";
 import { buildStagingPrompt } from "./staged_queue.js";
 import {
   backgroundModelAppearance,
@@ -106,6 +112,7 @@ class LayeredPlacementEditor {
     this.layerOutside = document.createElement("canvas");
     this.layerScratch = document.createElement("canvas");
     this.layerCoverage = document.createElement("canvas");
+    this.contextMenu = new LayerContextMenu();
     this.disposed = false;
     this.createDom();
     this.installWidget();
@@ -284,6 +291,7 @@ class LayeredPlacementEditor {
     this.canvas.addEventListener("pointermove", (event) => this.pointerMove(event));
     this.canvas.addEventListener("pointerup", (event) => this.pointerEnd(event, false));
     this.canvas.addEventListener("pointercancel", (event) => this.pointerEnd(event, true));
+    this.canvas.addEventListener("contextmenu", (event) => this.openLayerContextMenu(event));
     this.canvas.addEventListener("keydown", (event) => this.keyDown(event));
     this.canvas.addEventListener("keyup", () => this.finishKeyTransaction());
     this.canvas.addEventListener("blur", () => this.finishKeyTransaction());
@@ -532,18 +540,11 @@ class LayeredPlacementEditor {
         event.stopImmediatePropagation(); this.stepLayerRotation(key, 1);
       }, true);
       numericInputs.rotation = rotation.input;
-      const warp = this.createLayerAction("Warp", "Toggle four-corner warp editing", () => {
-        const enabling = this.warpLayer !== key;
-        if (enabling && this.data.version !== 3) {
-          this.updateLayerTransform(key, {
-            rotation: 0,
-            corners: [[-1, -1], [1, -1], [1, 1], [-1, 1]],
-          });
-        }
-        this.warpLayer = enabling ? key : null;
-        this.layerListSignature = null;
-        this.syncLayerList(this.connectedLayers());
-      });
+      const warp = this.createLayerAction(
+        "Warp",
+        "Toggle four-corner warp editing",
+        () => this.toggleWarp(key),
+      );
       const include = this.createLayerAction("Incl", "Include or exclude this layer", () => this.toggleLayerIncluded(key));
       controls.append(rotation.root, warp, include);
       this.rowControls.set(key, { inputs: numericInputs, flip, flipVertical, reset, include, warp, row });
@@ -1142,16 +1143,61 @@ class LayeredPlacementEditor {
     return points;
   }
 
-  faceQuadPoints(key, dimensions) {
+  layerQuadPoints(key, dimensions) {
     const rect = this.toCanvasRect(this.rectFor(key, dimensions));
     const placement = this.layerPlacement(key);
+    const corners = Array.isArray(placement.corners)
+      ? placement.corners
+      : DEFAULT_FACE_CORNERS;
     const angle = Number(placement.rotation || 0) * Math.PI / 180;
     const cosine = Math.cos(angle), sine = Math.sin(angle);
     const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
-    return placement.corners.map(([nx, ny]) => {
+    return corners.map(([nx, ny]) => {
       const x = nx * rect.width / 2, y = ny * rect.height / 2;
       return { x: cx + x * cosine - y * sine, y: cy + x * sine + y * cosine };
     });
+  }
+
+  faceQuadPoints(key, dimensions) {
+    return this.layerQuadPoints(key, dimensions);
+  }
+
+  layerAtCanvasPoint(canvasPoint, dimensions) {
+    return frontmostLayerAtPoint(
+      this.connectedLayers(),
+      canvasPoint,
+      (key) => this.layerQuadPoints(key, dimensions),
+      (key) => this.layerPlacement(key).included !== false,
+    );
+  }
+
+  openLayerContextMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    this.contextMenu.close();
+    const dimensions = this.dimensions();
+    if (!this.view || !dimensions) return;
+    const key = this.layerAtCanvasPoint(this.canvasPoint(event), dimensions);
+    if (!key) return;
+    this.selectLayer(key);
+    const layers = this.connectedLayers();
+    const index = layers.indexOf(key);
+    const actions = buildLayerContextActions({
+      index,
+      count: layers.length,
+      placement: this.layerPlacement(key),
+      warpActive: this.warpLayer === key,
+      moveBack: () => this.moveLayerBy(key, -1),
+      moveForward: () => this.moveLayerBy(key, 1),
+      sendToBack: () => this.moveLayerToEdge(key, false),
+      bringToFront: () => this.moveLayerToEdge(key, true),
+      flipHorizontal: () => this.toggleHorizontalFlip(key),
+      flipVertical: () => this.toggleVerticalFlip(key),
+      toggleWarp: () => this.toggleWarp(key),
+      exclude: () => this.toggleLayerIncluded(key),
+      reset: () => this.resetLayer(key),
+    });
+    this.contextMenu.open(event.clientX, event.clientY, actions);
   }
 
   drawHandles(context, key, dimensions) {
@@ -1439,6 +1485,23 @@ class LayeredPlacementEditor {
     this.requestDraw();
   }
 
+  moveLayerBy(key, delta) {
+    const layers = this.connectedLayers();
+    const index = layers.indexOf(key);
+    const targetIndex = index + delta;
+    if (index < 0 || targetIndex < 0 || targetIndex >= layers.length) return;
+    this.dropLayer(key, layers[targetIndex], delta > 0);
+  }
+
+  moveLayerToEdge(key, front) {
+    const layers = this.connectedLayers();
+    const index = layers.indexOf(key);
+    if (index < 0) return;
+    const targetIndex = front ? layers.length - 1 : 0;
+    if (index === targetIndex) return;
+    this.dropLayer(key, layers[targetIndex], front);
+  }
+
   beginPaddingEdit() {
     if (this.paddingEditActive) return;
     this.paddingEditActive = true;
@@ -1589,6 +1652,20 @@ class LayeredPlacementEditor {
     this.updateLayerTransform(key, { rotation: ((rotation + delta + 180) % 360 + 360) % 360 - 180 });
   }
 
+  toggleWarp(key) {
+    const enabling = this.warpLayer !== key;
+    if (enabling && this.data.version !== 3) {
+      this.updateLayerTransform(key, {
+        rotation: 0,
+        corners: DEFAULT_FACE_CORNERS.map((corner) => [...corner]),
+      });
+    }
+    this.warpLayer = enabling ? key : null;
+    this.layerListSignature = null;
+    this.syncLayerList(this.connectedLayers());
+    this.requestDraw();
+  }
+
   toggleLayerIncluded(key) {
     this.updateLayerTransform(key, { included: this.layerPlacement(key).included === false });
   }
@@ -1665,6 +1742,7 @@ class LayeredPlacementEditor {
     this.endPaddingEdit();
     clearInterval(this.pollTimer);
     this.resizeObserver?.disconnect();
+    this.contextMenu.dispose();
     if (this.drawFrame) cancelAnimationFrame(this.drawFrame);
     if (this.commitFrame) cancelAnimationFrame(this.commitFrame);
     editors.delete(this);

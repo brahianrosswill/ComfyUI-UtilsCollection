@@ -68,6 +68,27 @@ export function isValidQuad(points) {
   return quadArea(points) >= 1e-4 && (cross.every((v) => v > 1e-6) || cross.every((v) => v < -1e-6));
 }
 
+export function pointInConvexQuad(point, corners, epsilon = 1e-6) {
+  if (!point || !Array.isArray(corners) || corners.length !== 4) return false;
+  const cross = corners.map((corner, index) => {
+    const next = corners[(index + 1) % corners.length];
+    return (
+      (next.x - corner.x) * (point.y - corner.y)
+      - (next.y - corner.y) * (point.x - corner.x)
+    );
+  });
+  return cross.every((value) => value >= -epsilon)
+    || cross.every((value) => value <= epsilon);
+}
+
+export function frontmostLayerAtPoint(layers, point, quadFor, includedFor) {
+  for (const key of [...layers].reverse()) {
+    if (includedFor && !includedFor(key)) continue;
+    if (pointInConvexQuad(point, quadFor(key))) return key;
+  }
+  return null;
+}
+
 export function normalizeQuad(value) {
   const points = Array.isArray(value) ? value.map((point) => [
     clamp(finite(point?.[0], 0), -1, 1), clamp(finite(point?.[1], 0), -1, 1),
@@ -170,7 +191,12 @@ export function parsePlacementData(value) {
     const layer_order = Array.isArray(data.layer_order)
       ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
       : [];
-    return { version, workspace_padding: normalizeWorkspacePadding(data.workspace_padding), layer_order, layers };
+    return {
+      version,
+      workspace_padding: normalizeWorkspacePadding(data.workspace_padding),
+      layer_order,
+      layers,
+    };
   } catch {
     return { version: 2, workspace_padding: DEFAULT_WORKSPACE_PADDING, layer_order: [], layers: {} };
   }
