@@ -655,7 +655,7 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
 
 class UC_StagedMediaPipeFaceOptions(io.ComfyNode):
     DEFAULTS = {
-        "detection_threshold": 0.25,
+        "detection_threshold": 0.55,
         "maximum_faces": 16,
         "bbox_expansion": 64,
         "mask_expansion": 0,
@@ -672,7 +672,7 @@ class UC_StagedMediaPipeFaceOptions(io.ComfyNode):
             category="utils/image",
             inputs=[
                 io.Float.Input(
-                    "detection_threshold", default=0.25, min=0, max=1, step=0.01
+                    "detection_threshold", default=0.55, min=0, max=1, step=0.01
                 ),
                 io.Int.Input("maximum_faces", default=16, min=1, max=16),
                 io.Int.Input("bbox_expansion", default=64, min=0, max=MAX_RESOLUTION),

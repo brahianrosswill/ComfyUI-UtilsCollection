@@ -1398,7 +1398,7 @@ def test_staged_face_layers_are_stable_ordered_and_intersect_alpha():
     ]
     assert all(layer["mask"].sum() > 0 for layer in staged["layers"][1:])
     assert staged["layers"][1]["mask"][0, 0, 0] == 0
-    assert [call[2] for call in model.calls] == [0.25]
+    assert [call[2] for call in model.calls] == [0.55]
 
 
 def test_staged_face_detection_failure_is_nonfatal():
@@ -1914,7 +1914,7 @@ def test_staged_face_detection_retries_only_batch_misses():
         composite_nodes.UC_StagedMediaPipeFaceOptions.DEFAULTS | {"bbox_expansion": 0},
     )
 
-    assert model.calls == [(2, 0.25), (1, 0.175)]
+    assert model.calls == [(2, 0.55), (1, 0.385)]
 
 
 def test_staged_face_rasterizes_crop_local_masks(monkeypatch):
