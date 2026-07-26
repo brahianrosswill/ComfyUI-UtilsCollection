@@ -125,3 +125,61 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 ### Scheduler presets
 
 - `Ideogram4SchedulerPreset`
+- `UC_SigmaRescale`
+- `UC_DiscardPenultimateSigma`
+- `UC_SigmoidOffsetScheduler`
+- `UC_PowerShiftScheduler`
+- `UC_RadianceShiftScheduler`
+- `UC_SigmaCurveFromPointsScheduler`
+- `UC_SigmaCurvePchipScheduler`
+
+The migrated schedulers also register `sigmoid_offset`, `power_shift`,
+`radiance_shift`, `sigma_curve_from_points`, and `sigma_curve_pchip` for Core
+scheduler selectors. The Power Shift scheduler was inspired by
+[InverserSquaredScheduler](https://github.com/Clybius/ComfyUI-ClybsChromaNodes/blob/main/clyb_Schedulers.py).
+
+`UC_SigmaRescale` maps an existing schedule to exact start and end sigma
+values without changing its shape or number of steps.
+
+The dedicated scheduler nodes do not include Core-style denoise controls or
+optional penultimate-sigma controls. Connect `UC_SigmaRescale` after a
+scheduler when setting image-to-image noise levels. Connect
+`UC_DiscardPenultimateSigma` when the selected sampler requires penultimate
+sigma removal. Radiance Shift performs its required compensated removal
+internally. Sigmoid Offset retains its model-specific `start_sigma`
+adjustment.
+
+### Logic and math
+
+- `UC_LogicIF`
+- `UC_LogicAND`
+- `UC_LogicOR`
+- `UC_LogicNOT`
+- `UC_LogicXOR`
+- `UC_MathAdd`
+- `UC_MathSubtract`
+- `UC_MathMultiply`
+- `UC_MathDivide`
+- `UC_MathPower`
+- `UC_MathFloor`
+- `UC_MathCeil`
+- `UC_MathRound`
+- `UC_MathModulo`
+- `UC_MathAbs`
+- `UC_MathSqrt`
+- `UC_MathSin`
+- `UC_MathCos`
+- `UC_MathTan`
+- `UC_MathMin`
+- `UC_MathMax`
+- `UC_MathClamp`
+- `UC_MathNumberConvert`
+- `UC_StringToNumber`
+- `UC_NumberToString`
+- `UC_MathCompare`
+- `UC_MathOperation`
+- `UC_MathAspectRatio`
+
+These nodes replace the equivalent nodes from ComfyUI-LogicMath,
+ComfyUI_SigmoidOffsetScheduler, and ComfyUI_PowerShiftScheduler. Remove the
+standalone pack before accepting ComfyUI's workflow replacement prompt.
