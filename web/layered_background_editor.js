@@ -16,6 +16,7 @@ import {
   placementToRect,
   rectToPlacement,
   resizeRectFromDelta,
+  rotationFromPointer,
   serializePlacementData,
   stepPlacementValue,
 } from "./placement_geometry.js";
@@ -93,6 +94,7 @@ class LayeredPlacementEditor {
     }
     this.data = parsePlacementData(this.placementWidget.value);
     this.selected = null;
+    this.rotateLayer = null;
     this.backgroundImage = null;
     this.backgroundSource = null;
     this.metadata = null;
@@ -973,15 +975,24 @@ class LayeredPlacementEditor {
       this.status.hidden = false;
       return;
     }
-    this.view = this.gesture?.view || this.viewFor(width, height, dimensions, layers);
+    const visibleLayers = layers.filter(
+      (key) => this.layerPlacement(key).included !== false,
+    );
+    this.view = this.gesture?.view
+      || this.viewFor(width, height, dimensions, visibleLayers);
     context.globalAlpha = 0.72;
     context.drawImage(this.backgroundImage, this.view.x, this.view.y, this.view.width, this.view.height);
     context.globalAlpha = 1;
-    this.drawLayers(context, layers, dimensions, width, height, dpr);
+    this.drawLayers(context, visibleLayers, dimensions, width, height, dpr);
     context.lineWidth = 2;
     context.strokeStyle = "rgba(255,255,255,.65)";
     context.strokeRect(this.view.x, this.view.y, this.view.width, this.view.height);
-    if (this.selected) this.drawHandles(context, this.selected, dimensions);
+    if (
+      this.selected
+      && this.layerPlacement(this.selected).included !== false
+    ) {
+      this.drawHandles(context, this.selected, dimensions);
+    }
     const pending = layers.filter((key) => !this.layerMetadata(key)).length;
     if (this.isStagedComposite() && this.modelSelectionStale) {
       this.status.textContent = "Removal model changed • use Run Staging to refresh previews";
@@ -1187,6 +1198,7 @@ class LayeredPlacementEditor {
       count: layers.length,
       placement: this.layerPlacement(key),
       warpActive: this.warpLayer === key,
+      rotateActive: this.rotateLayer === key,
       moveBack: () => this.moveLayerBy(key, -1),
       moveForward: () => this.moveLayerBy(key, 1),
       sendToBack: () => this.moveLayerToEdge(key, false),
@@ -1194,6 +1206,7 @@ class LayeredPlacementEditor {
       flipHorizontal: () => this.toggleHorizontalFlip(key),
       flipVertical: () => this.toggleVerticalFlip(key),
       toggleWarp: () => this.toggleWarp(key),
+      toggleRotate: () => this.toggleRotate(key),
       exclude: () => this.toggleLayerIncluded(key),
       reset: () => this.resetLayer(key),
     });
@@ -1235,7 +1248,9 @@ class LayeredPlacementEditor {
 
   pointerDown(event) {
     const dimensions = this.dimensions();
-    const layers = this.connectedLayers();
+    const layers = this.connectedLayers().filter(
+      (key) => this.layerPlacement(key).included !== false,
+    );
     if (!this.view || !dimensions || !layers.length || event.button !== 0) return;
     event.preventDefault();
     this.canvas.focus();
@@ -1255,7 +1270,7 @@ class LayeredPlacementEditor {
     if (this.selected && this.warpLayer !== this.selected) {
       for (const [name, point] of Object.entries(this.handlePoints(this.selected, dimensions))) {
         if (Math.hypot(canvasPoint.x - point.x, canvasPoint.y - point.y) <= 12) {
-          action = "resize";
+          action = this.rotateLayer === this.selected ? "rotate" : "resize";
           handle = name;
           break;
         }
@@ -1303,7 +1318,23 @@ class LayeredPlacementEditor {
     const deltaX = point.x - this.gesture.startPoint.x;
     const deltaY = point.y - this.gesture.startPoint.y;
     let rect;
-    if (this.gesture.action === "warp_corner" || this.gesture.action === "warp_deform") {
+    if (this.gesture.action === "rotate") {
+      const start = this.gesture.startPlacement;
+      const canvasRect = this.toCanvasRect(this.gesture.startRect);
+      const center = {
+        x: canvasRect.x + canvasRect.width / 2,
+        y: canvasRect.y + canvasRect.height / 2,
+      };
+      const rotation = rotationFromPointer(
+        Number(start.rotation || 0),
+        center,
+        this.gesture.startCanvas,
+        canvasPoint,
+      );
+      this.gesture.changed = true;
+      this.queuePlacement(this.gesture.key, { ...start, rotation });
+      return;
+    } else if (this.gesture.action === "warp_corner" || this.gesture.action === "warp_deform") {
       const start = this.gesture.startPlacement;
       const canvasRect = this.toCanvasRect(this.gesture.startRect);
       const cx = canvasRect.x + canvasRect.width / 2;
@@ -1654,6 +1685,7 @@ class LayeredPlacementEditor {
 
   toggleWarp(key) {
     const enabling = this.warpLayer !== key;
+    if (enabling && this.layerPlacement(key).included === false) return;
     if (enabling && this.data.version !== 3) {
       this.updateLayerTransform(key, {
         rotation: 0,
@@ -1661,13 +1693,30 @@ class LayeredPlacementEditor {
       });
     }
     this.warpLayer = enabling ? key : null;
+    if (enabling) this.rotateLayer = null;
+    this.layerListSignature = null;
+    this.syncLayerList(this.connectedLayers());
+    this.requestDraw();
+  }
+
+  toggleRotate(key) {
+    const enabling = this.rotateLayer !== key;
+    if (enabling && this.layerPlacement(key).included === false) return;
+    this.rotateLayer = enabling ? key : null;
+    if (enabling) this.warpLayer = null;
     this.layerListSignature = null;
     this.syncLayerList(this.connectedLayers());
     this.requestDraw();
   }
 
   toggleLayerIncluded(key) {
-    this.updateLayerTransform(key, { included: this.layerPlacement(key).included === false });
+    const excluding = this.layerPlacement(key).included !== false;
+    if (excluding) {
+      if (this.selected === key) this.selected = null;
+      if (this.warpLayer === key) this.warpLayer = null;
+      if (this.rotateLayer === key) this.rotateLayer = null;
+    }
+    this.updateLayerTransform(key, { included: !excluding });
   }
 
   async runStaging() {

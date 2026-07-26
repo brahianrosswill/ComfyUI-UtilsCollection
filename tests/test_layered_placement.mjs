@@ -10,6 +10,7 @@ import {
   projectQuadPoint,
   rectToPlacement,
   resizeRectFromDelta,
+  rotationFromPointer,
   serializePlacementData,
   stepPlacementValue,
   deformQuadCentroidLocked,
@@ -17,6 +18,25 @@ import {
   isValidQuad,
   normalizeRotation,
 } from "../web/placement_geometry.js";
+
+test("corner rotation follows pointer angle without snapping", () => {
+  const rotation = rotationFromPointer(
+    12.5,
+    { x: 100, y: 100 },
+    { x: 140, y: 100 },
+    { x: 100, y: 140 },
+  );
+  close(rotation, 102.5);
+  close(
+    rotationFromPointer(
+      170,
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: -1, y: -0.01 },
+    ),
+    -9.427061302316474,
+  );
+});
 
 const close = (actual, expected, tolerance = 1e-9) => assert.ok(
   Math.abs(actual - expected) <= tolerance,

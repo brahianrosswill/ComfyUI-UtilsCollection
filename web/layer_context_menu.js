@@ -7,6 +7,7 @@ export function buildLayerContextActions({
   count,
   placement,
   warpActive,
+  rotateActive,
   moveBack,
   moveForward,
   sendToBack,
@@ -14,6 +15,7 @@ export function buildLayerContextActions({
   flipHorizontal,
   flipVertical,
   toggleWarp,
+  toggleRotate,
   exclude,
   reset,
 }) {
@@ -26,6 +28,7 @@ export function buildLayerContextActions({
     action("Flip H", flipHorizontal, { checked: placement.flip_horizontal === true }),
     action("Flip V", flipVertical, { checked: placement.flip_vertical === true }),
     action("Warp", toggleWarp, { checked: warpActive }),
+    action("Rotate", toggleRotate, { checked: rotateActive }),
     action("Exclude", exclude),
     { separator: true },
     action("Reset", reset),

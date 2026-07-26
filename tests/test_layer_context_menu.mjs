@@ -55,6 +55,7 @@ test("context actions expose state and boundary availability", () => {
     count: 3,
     placement: { flip_horizontal: true, flip_vertical: false },
     warpActive: true,
+    rotateActive: false,
     moveBack: callback("moveBack"),
     moveForward: callback("moveForward"),
     sendToBack: callback("sendToBack"),
@@ -62,6 +63,7 @@ test("context actions expose state and boundary availability", () => {
     flipHorizontal: callback("flipHorizontal"),
     flipVertical: callback("flipVertical"),
     toggleWarp: callback("toggleWarp"),
+    toggleRotate: callback("toggleRotate"),
     exclude: callback("exclude"),
     reset: callback("reset"),
   }).filter((item) => !item.separator);
@@ -71,6 +73,7 @@ test("context actions expose state and boundary availability", () => {
   assert.equal(actions.find((item) => item.label === "Flip H").checked, true);
   assert.equal(actions.find((item) => item.label === "Flip V").checked, false);
   assert.equal(actions.find((item) => item.label === "Warp").checked, true);
+  assert.equal(actions.find((item) => item.label === "Rotate").checked, false);
   actions.find((item) => item.label === "Move Forward").callback();
   actions.find((item) => item.label === "Bring to Front").callback();
   actions.find((item) => item.label === "Exclude").callback();

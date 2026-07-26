@@ -50,6 +50,15 @@ export function normalizePlacement(value = {}, version = 2, face = false) {
 
 export const normalizeRotation = (value) => ((finite(value, 0) + 180) % 360 + 360) % 360 - 180;
 
+export function rotationFromPointer(startRotation, center, startPointer, pointer) {
+  const startAngle = Math.atan2(
+    startPointer.y - center.y,
+    startPointer.x - center.x,
+  );
+  const angle = Math.atan2(pointer.y - center.y, pointer.x - center.x);
+  return normalizeRotation(startRotation + (angle - startAngle) * 180 / Math.PI);
+}
+
 export function quadArea(points) {
   return Math.abs(points.reduce((sum, point, index) => {
     const next = points[(index + 1) % 4];
