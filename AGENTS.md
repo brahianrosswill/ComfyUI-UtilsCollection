@@ -16,4 +16,19 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
 
 ## Repository-Specific Instructions
 
-No additional repository-specific instructions.
+### Python module structure
+
+- Keep `*_nodes.py` modules limited to node classes, schemas, registration
+  collections, constants, and thin execution orchestration.
+- Do not add module-level helper functions to `*_nodes.py`. Put algorithms,
+  tensor operations, parsing, geometry, model handling, and reusable execution
+  logic in a focused domain `*_helpers.py` module.
+- Extend an existing helper module when its domain matches. Do not create
+  catch-all helper modules or move unrelated domains into an existing helper.
+- Do not extract trivial forwarding or single-expression functions unless they
+  are reused or required by an external interface.
+- Treat the allowlist in `tests/test_node_module_structure.py` as frozen legacy
+  debt. Do not expand it. Move relevant logic out of a node module instead.
+- Before adding behavior to a node module that already contains standalone
+  helpers, refactor the affected helper logic into the appropriate helper
+  module rather than increasing the node module's standalone-function count.
