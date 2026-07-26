@@ -5,6 +5,9 @@ import numpy as np
 import torch
 
 from .model_assets import require_huggingface_model
+from .background_replace_helpers import _expanded_box, _ordered_ring, _polygon_mask
+from .composite_helpers import _expand_mask, _ordered_single_foregrounds
+from .staged_compositor_helpers import _stage_layered_foregrounds
 
 
 _FACE_MODEL_CACHE = {"path": None, "model": None}
@@ -153,3 +156,83 @@ def detect_or_warn(model, image_uint8, maximum_faces, threshold, socket):
         model, [(socket, image_uint8)], maximum_faces, threshold
     )
     return results[socket], socket in failed
+
+
+def _stage_face_foregrounds(
+    background_removal_model,
+    face_detection_model,
+    foreground_images,
+    background_options,
+    face_options,
+    placement_data=None,
+):
+    staged, full_alpha_by_socket = _stage_layered_foregrounds(
+        background_removal_model,
+        foreground_images,
+        background_options["mask_threshold"],
+        background_options["border_cleanup_width"],
+        background_options["artifact_cleanup_radius"],
+        background_options["gap_fill_radius"],
+        background_options["mask_resize_method"],
+        placement_data,
+        retain_full_alpha=True,
+    )
+    ordinary = {layer["socket"]: layer for layer in staged["layers"]}
+    result, warning_count = [], 0
+    ring = _ordered_ring(face_detection_model.connection_sets["face_oval"])
+    foregrounds = _ordered_single_foregrounds(foreground_images)
+    detection_inputs = []
+    for key, original in foregrounds:
+        rgb = original[..., :3]
+        detection_inputs.append(
+            (
+                key,
+                rgb.mul(255).add(0.5).clamp(0, 255).to(torch.uint8).cpu().numpy()[0],
+            )
+        )
+    detected_by_socket, failed_sockets = detect_many_or_warn(
+        face_detection_model,
+        detection_inputs,
+        face_options["maximum_faces"],
+        face_options["detection_threshold"],
+    )
+    warning_count = len(failed_sockets)
+
+    for key, original in foregrounds:
+        result.append(ordinary[key])
+        rgb = original[..., :3]
+        if key in failed_sockets:
+            continue
+        full_alpha = full_alpha_by_socket[key]
+        faces = detected_by_socket[key]
+        for face_index, face in enumerate(faces):
+            x1, y1, x2, y2 = _expanded_box(
+                face["bbox_xyxy"],
+                face_options["bbox_expansion"],
+                rgb.shape[2],
+                rgb.shape[1],
+            )
+            points = face["landmarks_xy"][ring] - np.asarray([x1, y1], dtype=np.float32)
+            crop_mask = _polygon_mask(y2 - y1, x2 - x1, points, rgb.device, rgb.dtype)
+            crop_mask = crop_mask * full_alpha[y1:y2, x1:x2].to(crop_mask)
+            crop_mask = _expand_mask(crop_mask, face_options["mask_expansion"]).clamp(
+                0, 1
+            )[None]
+            if not torch.any(crop_mask > 0):
+                continue
+            socket = f"{key}_face_{face_index}"
+            result.append(
+                {
+                    "socket": socket,
+                    "image": rgb[:, y1:y2, x1:x2],
+                    "mask": crop_mask,
+                    "is_face": True,
+                    "parent_socket": key,
+                    "uses_embedded_alpha": True,
+                    "default_scale": face_options["initial_face_scale"],
+                    "feather_radius": face_options["face_feather_radius"],
+                }
+            )
+    staged["layers"] = result
+    staged["face_warning_count"] = warning_count
+    return staged

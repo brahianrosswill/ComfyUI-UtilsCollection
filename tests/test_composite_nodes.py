@@ -20,10 +20,13 @@ prior_cpu = cli_args.cpu
 cli_args.cpu = True
 try:
     from utils_collection_composite_test import (
+        background_replace_helpers,
+        composite_helpers,
         composite_nodes,
         image_nodes,
         model_assets,
         staged_compositor_helpers,
+        staged_face_helpers,
     )
     from utils_collection_composite_test.helper_functions import resize_nchw
 finally:
@@ -34,7 +37,9 @@ def test_resize_mask_preserves_asymmetric_orientation():
     mask = torch.zeros(1, 2, 3)
     mask[0, 0, 0] = 1.0
 
-    output = composite_nodes.UC_ResizeMask.execute(mask, 6, 4, False, "nearest-exact", "disabled")
+    output = composite_nodes.UC_ResizeMask.execute(
+        mask, 6, 4, False, "nearest-exact", "disabled"
+    )
     resized, width, height = output.result
 
     assert (width, height) == (6, 4)
@@ -49,8 +54,12 @@ def test_image_and_mask_resize_uses_target_and_optional_overrides():
     mask = image[..., 0]
     target = torch.zeros(1, 8, 10, 3)
 
-    target_sized = composite_nodes.UC_ImageAndMaskResize.execute(image, mask, target, "nearest-exact", "disabled", 0)
-    width_overridden = composite_nodes.UC_ImageAndMaskResize.execute(image, mask, target, "nearest-exact", "disabled", 0, width=6)
+    target_sized = composite_nodes.UC_ImageAndMaskResize.execute(
+        image, mask, target, "nearest-exact", "disabled", 0
+    )
+    width_overridden = composite_nodes.UC_ImageAndMaskResize.execute(
+        image, mask, target, "nearest-exact", "disabled", 0, width=6
+    )
 
     assert target_sized.result[0].shape == (1, 8, 10, 3)
     assert target_sized.result[1].shape == (1, 8, 10)
@@ -61,7 +70,9 @@ def test_image_and_mask_resize_uses_target_and_optional_overrides():
 
 
 def test_fp32_resize_bypasses_equal_dimensions_and_lanczos_does_not_quantize():
-    image = torch.linspace(0.0003, 0.9991, 8 * 10 * 3, dtype=torch.float32).reshape(1, 3, 8, 10)
+    image = torch.linspace(0.0003, 0.9991, 8 * 10 * 3, dtype=torch.float32).reshape(
+        1, 3, 8, 10
+    )
 
     unchanged = resize_nchw(image, 10, 8, "lanczos")
     reduced = resize_nchw(image, 5, 4, "lanczos")
@@ -91,8 +102,16 @@ def test_image_pad_equal_target_preserves_fp32_pixels():
     image = torch.rand(1, 9, 11, 3)
 
     padded, _ = image_nodes.UC_ImagePad.execute(
-        image, 0, 0, 0, 0, 0, "0, 0, 0", "color",
-        target_width=11, target_height=9,
+        image,
+        0,
+        0,
+        0,
+        0,
+        0,
+        "0, 0, 0",
+        "color",
+        target_width=11,
+        target_height=9,
     ).result
 
     assert torch.equal(padded, image)
@@ -108,8 +127,10 @@ def test_crop_by_mask_uses_batch_union_and_rejects_empty_masks():
 
     assert output.result[0].shape[0] == 2
     cropped_mask, crop_x, crop_y = output.result[1:4]
-    assert cropped_mask[0, 4 - crop_y:6 - crop_y, 4 - crop_x:6 - crop_x].sum() == 4
-    assert cropped_mask[1, 24 - crop_y:26 - crop_y, 24 - crop_x:26 - crop_x].sum() == 4
+    assert cropped_mask[0, 4 - crop_y : 6 - crop_y, 4 - crop_x : 6 - crop_x].sum() == 4
+    assert (
+        cropped_mask[1, 24 - crop_y : 26 - crop_y, 24 - crop_x : 26 - crop_x].sum() == 4
+    )
     with pytest.raises(ValueError, match="Mask is empty"):
         composite_nodes.UC_CropByMask.execute(image[:1], torch.zeros(1, 32, 32), 0)
 
@@ -125,7 +146,9 @@ def test_crop_by_mask_exposes_dimension_multiple_without_resizing():
     assert (width, height) == (16, 16)
     assert cropped_image.shape == (1, 16, 16, 3)
     assert cropped_mask.shape == (1, 16, 16)
-    assert torch.equal(cropped_image, image[:, crop_y:crop_y + height, crop_x:crop_x + width])
+    assert torch.equal(
+        cropped_image, image[:, crop_y : crop_y + height, crop_x : crop_x + width]
+    )
     assert cropped_mask.sum() == 81
 
 
@@ -149,7 +172,9 @@ def test_crop_merge_supports_mask_and_singleton_broadcast():
     mask = torch.zeros(1, 4, 4)
     mask[:, :, :2] = 1.0
 
-    output = composite_nodes.UC_ImageCropMerge.execute(crop, original, 2, 2, 4, 4, "nearest-exact", mask).result[0]
+    output = composite_nodes.UC_ImageCropMerge.execute(
+        crop, original, 2, 2, 4, 4, "nearest-exact", mask
+    ).result[0]
 
     assert torch.equal(output[:, 2:6, 2:4], torch.ones(2, 4, 2, 3))
     assert output[:, 2:6, 4:6].sum() == 0
@@ -159,10 +184,10 @@ def test_mask_expansion_and_feather_support_contraction():
     mask = torch.zeros(9, 9)
     mask[2:7, 2:7] = 1.0
 
-    expanded = composite_nodes._expand_mask(mask, 1)
-    contracted = composite_nodes._expand_mask(mask, -1)
-    outward = composite_nodes._feather_mask(mask, 2)
-    inward = composite_nodes._feather_mask(mask, -2)
+    expanded = composite_helpers._expand_mask(mask, 1)
+    contracted = composite_helpers._expand_mask(mask, -1)
+    outward = composite_helpers._feather_mask(mask, 2)
+    inward = composite_helpers._feather_mask(mask, -2)
 
     assert expanded.sum() > mask.sum()
     assert contracted.sum() < mask.sum()
@@ -247,7 +272,7 @@ def test_unified_background_refines_weak_edges_gaps_and_artifacts():
     raw[0, 0:3] = 0.6
     raw[1, 11] = 0.9
 
-    refined = composite_nodes._refine_foreground_mask(raw, 0.5, 2, 1, 1)
+    refined = composite_helpers._refine_foreground_mask(raw, 0.5, 2, 1, 1)
 
     assert refined[0, 0:3].sum() == 0
     assert refined[1, 11] == 0
@@ -285,7 +310,9 @@ def test_unified_background_keeps_strong_edge_subject_and_feathers_only_boundary
         ((100, 60), 1.0, (46, 100, 3, 57)),
     ],
 )
-def test_unified_background_shifts_along_background_long_axis(background_shape, shift, expected_bounds):
+def test_unified_background_shifts_along_background_long_axis(
+    background_shape, shift, expected_bounds
+):
     height, width = background_shape
     background = torch.zeros(1, height, width, 3)
     foreground = torch.ones(1, 8, 8, 3)
@@ -330,7 +357,9 @@ def test_unified_background_overscale_crops_to_canvas_perimeter():
         ((100, 60), 1.0, (23, 77, 6, 60)),
     ],
 )
-def test_unified_background_shifts_along_background_short_axis(background_shape, shift, expected_bounds):
+def test_unified_background_shifts_along_background_short_axis(
+    background_shape, shift, expected_bounds
+):
     height, width = background_shape
     background = torch.zeros(1, height, width, 3)
     foreground = torch.ones(1, 8, 8, 3)
@@ -366,13 +395,29 @@ def test_unified_background_square_canvas_uses_both_axis_shifts():
 
 
 def test_composite_auto_resize_selects_direction_appropriate_methods():
-    assert composite_nodes._composite_resize_method("auto", 100, 80, 50, 40) == "area"
-    assert composite_nodes._composite_resize_method("auto", 50, 40, 100, 80) == "bicubic"
-    assert composite_nodes._composite_resize_method("auto", 100, 40, 50, 80) == "bicubic"
-    assert composite_nodes._composite_resize_method("auto", 100, 80, 50, 40, mask=True) == "area"
-    assert composite_nodes._composite_resize_method("auto", 50, 40, 100, 80, mask=True) == "bilinear"
-    assert composite_nodes._composite_resize_method("auto", 100, 40, 50, 80, mask=True) == "bilinear"
-    assert composite_nodes._composite_resize_method("nearest-exact", 100, 80, 50, 40) == "nearest-exact"
+    assert composite_helpers._composite_resize_method("auto", 100, 80, 50, 40) == "area"
+    assert (
+        composite_helpers._composite_resize_method("auto", 50, 40, 100, 80) == "bicubic"
+    )
+    assert (
+        composite_helpers._composite_resize_method("auto", 100, 40, 50, 80) == "bicubic"
+    )
+    assert (
+        composite_helpers._composite_resize_method("auto", 100, 80, 50, 40, mask=True)
+        == "area"
+    )
+    assert (
+        composite_helpers._composite_resize_method("auto", 50, 40, 100, 80, mask=True)
+        == "bilinear"
+    )
+    assert (
+        composite_helpers._composite_resize_method("auto", 100, 40, 50, 80, mask=True)
+        == "bilinear"
+    )
+    assert (
+        composite_helpers._composite_resize_method("nearest-exact", 100, 80, 50, 40)
+        == "nearest-exact"
+    )
 
 
 def test_background_compositor_schemas_place_variable_foregrounds_after_static_controls():
@@ -381,32 +426,49 @@ def test_background_compositor_schemas_place_variable_foregrounds_after_static_c
         composite_nodes.UC_LayeredBackgroundComposite.define_schema(),
         composite_nodes.UC_StagedLayeredBackgroundComposite.define_schema(),
     ]
-    unified, layered, staged = ([value.id for value in schema.inputs] for schema in schemas)
+    unified, layered, staged = (
+        [value.id for value in schema.inputs] for schema in schemas
+    )
 
     assert unified[-1] == "foreground_images"
-    assert unified[-4:-1] == ["image_resize_method", "mask_resize_method", "workspace_padding"]
+    assert unified[-4:-1] == [
+        "image_resize_method",
+        "mask_resize_method",
+        "workspace_padding",
+    ]
     assert layered[-1] == "foreground_images"
-    assert layered[-4:-1] == ["image_resize_method", "mask_resize_method", "placement_data"]
-    assert staged[-1] == "foreground_images"
-    assert staged[-5:-1] == [
+    assert layered[-4:-1] == [
         "image_resize_method",
         "mask_resize_method",
         "placement_data",
-        "background_removal_model_name",
     ]
+    assert staged[-1] == "foreground_images"
+    assert staged[-3:-1] == ["placement_data", "background_removal_model_name"]
+    assert not {
+        "mask_threshold",
+        "border_cleanup_width",
+        "artifact_cleanup_radius",
+        "gap_fill_radius",
+        "feather_radius",
+        "image_resize_method",
+        "mask_resize_method",
+    } & set(staged)
     for schema in schemas:
         assert all(value.tooltip for value in schema.inputs)
     for schema in schemas[2:]:
         assert [value.id for value in schema.outputs] == [
-            "image", "mask", "bounding_boxes", "layer_masks",
+            "image",
+            "mask",
+            "bounding_boxes",
+            "layer_masks",
         ]
 
 
 def test_composite_smooth_mask_resize_preserves_subpixel_coverage():
     mask = torch.tensor([[[0.0, 1.0], [0.0, 1.0]]])
 
-    smooth = composite_nodes._resize_composite_mask(mask, 4, 4, "auto")
-    hard = composite_nodes._resize_composite_mask(mask, 4, 4, "nearest-exact")
+    smooth = composite_helpers._resize_composite_mask(mask, 4, 4, "auto")
+    hard = composite_helpers._resize_composite_mask(mask, 4, 4, "nearest-exact")
 
     assert ((smooth > 0) & (smooth < 1)).any()
     assert set(hard.unique().tolist()) == {0.0, 1.0}
@@ -442,12 +504,18 @@ def test_unified_background_validates_background_and_empty_masks():
     foreground = torch.ones(1, 8, 8, 3)
     model = _QueuedBackgroundModel([torch.zeros(1, 4, 4)])
     with pytest.raises(ValueError, match="exactly one background"):
-        _replace_background(model, torch.zeros(2, 16, 16, 3), {"foreground_0": foreground})
+        _replace_background(
+            model, torch.zeros(2, 16, 16, 3), {"foreground_0": foreground}
+        )
     with pytest.raises(ValueError, match="empty foreground mask for image 1"):
-        _replace_background(model, torch.zeros(1, 16, 16, 3), {"foreground_0": foreground})
+        _replace_background(
+            model, torch.zeros(1, 16, 16, 3), {"foreground_0": foreground}
+        )
 
 
-def _layered_composite(model, background, foregrounds, placement_data=None, **overrides):
+def _layered_composite(
+    model, background, foregrounds, placement_data=None, **overrides
+):
     options = {
         "placement_data": placement_data or '{"version":1,"layers":{}}',
         "mask_threshold": 0.5,
@@ -463,7 +531,11 @@ def _layered_composite(model, background, foregrounds, placement_data=None, **ov
 
 
 def test_layered_background_composites_in_socket_order(monkeypatch):
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix: {"filename": prefix})
+    monkeypatch.setattr(
+        composite_nodes,
+        "_save_editor_preview",
+        lambda image, prefix: {"filename": prefix},
+    )
     background = torch.zeros(1, 20, 20, 3)
     red = torch.zeros(1, 4, 4, 3)
     red[..., 0] = 1
@@ -485,7 +557,10 @@ def test_layered_background_composites_in_socket_order(monkeypatch):
     assert image[0, 5:15, 5:15, 0].sum().item() == pytest.approx(75)
     assert mask.sum() == 100
     metadata = output.ui["uc_layered_scene_editor"][0]
-    assert [(layer["socket"], layer["crop_width"], layer["crop_height"]) for layer in metadata["layers"]] == [
+    assert [
+        (layer["socket"], layer["crop_width"], layer["crop_height"])
+        for layer in metadata["layers"]
+    ] == [
         ("foreground_0", 4, 4),
         ("foreground_1", 4, 4),
     ]
@@ -591,14 +666,18 @@ def test_layered_background_preview_failure_does_not_change_result(monkeypatch):
 
 
 def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda image, prefix: {"filename": prefix})
+    monkeypatch.setattr(
+        staged_compositor_helpers,
+        "_save_editor_preview",
+        lambda image, prefix: {"filename": prefix},
+    )
     foreground = torch.zeros(1, 6, 8, 3)
     foreground[..., 0] = 1
     mask = torch.zeros(1, 6, 8)
     mask[:, 1:5, 2:6] = 1
     model = _QueuedBackgroundModel([mask])
 
-    staged = composite_nodes._stage_layered_foregrounds(
+    staged = staged_compositor_helpers._stage_layered_foregrounds(
         model,
         {"foreground_0": foreground},
         0.5,
@@ -606,7 +685,7 @@ def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
         0,
         0,
     )
-    output = composite_nodes._composite_staged_foregrounds(
+    output = staged_compositor_helpers._composite_staged_foregrounds(
         torch.zeros(1, 20, 20, 3),
         staged,
         '{"version":1,"layers":{"foreground_0":{"scale":0.5}}}',
@@ -622,14 +701,21 @@ def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
 
 
 def test_staged_compositor_uses_embedded_alpha_without_background_removal(monkeypatch):
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
     foreground = torch.zeros(1, 4, 5, 4)
     foreground[..., 0] = 0.75
     foreground[:, 1:3, 2:4, 3] = 0.5
     model = _QueuedBackgroundModel([])
 
-    staged = composite_nodes._stage_layered_foregrounds(
-        model, {"foreground_0": foreground}, 0.5, 2, 1, 1,
+    staged = staged_compositor_helpers._stage_layered_foregrounds(
+        model,
+        {"foreground_0": foreground},
+        0.5,
+        2,
+        1,
+        1,
     )
 
     layer = staged["layers"][0]
@@ -640,50 +726,72 @@ def test_staged_compositor_uses_embedded_alpha_without_background_removal(monkey
 
 
 def test_staged_layered_composite_tracks_and_applies_horizontal_flip(monkeypatch):
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
     foreground = torch.zeros(1, 2, 3, 3)
     foreground[:, :, 0, 0] = 1.0
     model = _QueuedBackgroundModel([torch.ones(1, 2, 3)])
-    flipped_placement = '{"version":2,"layers":{"foreground_0":{"flip_horizontal":true}}}'
+    flipped_placement = (
+        '{"version":2,"layers":{"foreground_0":{"flip_horizontal":true}}}'
+    )
 
-    staged = composite_nodes._stage_layered_foregrounds(
-        model, {"foreground_0": foreground}, 0.5, 0, 0, 0,
+    staged = staged_compositor_helpers._stage_layered_foregrounds(
+        model,
+        {"foreground_0": foreground},
+        0.5,
+        0,
+        0,
+        0,
         placement_data=flipped_placement,
     )
 
     assert staged["layers"][0]["flip_horizontal"] is True
     assert staged["layers"][0]["image"][0, 0, 2, 0] == 1.0
-    output = composite_nodes._composite_staged_foregrounds(
-        torch.zeros(1, 10, 10, 3), staged,
-        '{"version":2,"layers":{"foreground_0":{"flip_horizontal":false}}}', 0,
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3),
+        staged,
+        '{"version":2,"layers":{"foreground_0":{"flip_horizontal":false}}}',
+        0,
     )
-    assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["flip_horizontal"] is True
+    assert (
+        output.ui["uc_layered_scene_editor"][0]["layers"][0]["flip_horizontal"] is True
+    )
 
 
 def test_staged_layered_composite_tracks_and_applies_vertical_flip(monkeypatch):
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
     foreground = torch.zeros(1, 3, 2, 3)
     foreground[:, 0, :, 0] = 1.0
     model = _QueuedBackgroundModel([torch.ones(1, 3, 2)])
     flipped_placement = '{"version":2,"layers":{"foreground_0":{"flip_vertical":true}}}'
 
-    staged = composite_nodes._stage_layered_foregrounds(
-        model, {"foreground_0": foreground}, 0.5, 0, 0, 0,
+    staged = staged_compositor_helpers._stage_layered_foregrounds(
+        model,
+        {"foreground_0": foreground},
+        0.5,
+        0,
+        0,
+        0,
         placement_data=flipped_placement,
     )
 
     assert staged["layers"][0]["flip_vertical"] is True
     assert staged["layers"][0]["image"][0, 2, 0, 0] == 1.0
-    output = composite_nodes._composite_staged_foregrounds(
-        torch.zeros(1, 10, 10, 3), staged,
-        '{"version":2,"layers":{"foreground_0":{"flip_vertical":false}}}', 0,
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3),
+        staged,
+        '{"version":2,"layers":{"foreground_0":{"flip_vertical":false}}}',
+        0,
     )
     assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["flip_vertical"] is True
 
 
 def test_staged_layered_composite_rejects_missing_stage():
     with pytest.raises(ValueError, match="missing or incompatible"):
-        composite_nodes._composite_staged_foregrounds(
+        staged_compositor_helpers._composite_staged_foregrounds(
             torch.zeros(1, 20, 20, 3), None, '{"version":1,"layers":{}}', 0
         )
 
@@ -695,10 +803,14 @@ def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
         saved.append(image.clone())
         return {"filename": f"{prefix}.png"}
 
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", capture_preview)
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", capture_preview
+    )
     node = composite_nodes.UC_StagedLayeredBackgroundComposite
     node._staged_by_node.clear()
-    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="preview-compositor"))
+    monkeypatch.setattr(
+        node, "hidden", types.SimpleNamespace(unique_id="preview-compositor")
+    )
     foreground = torch.ones(1, 6, 8, 3)
     mask = torch.zeros(1, 6, 8)
     mask[:, 1:5, 3] = 1
@@ -708,13 +820,15 @@ def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
         background=background,
         foreground_images={"foreground_0": foreground},
         execution_mode="run_staging",
-        mask_threshold=0.5,
-        border_cleanup_width=0,
-        artifact_cleanup_radius=0,
-        gap_fill_radius=0,
         placement_data='{"version":1,"layers":{}}',
-        feather_radius=0,
         background_removal_model=_QueuedBackgroundModel([mask]),
+        background_options={
+            "mask_threshold": 0.5,
+            "border_cleanup_width": 0,
+            "artifact_cleanup_radius": 0,
+            "gap_fill_radius": 0,
+            "feather_radius": 0,
+        },
     )
 
     assert torch.equal(output.result[0], background)
@@ -726,16 +840,18 @@ def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
     assert saved[0][..., 3].max().item() == 1
 
 
-def test_staged_compositor_background_options_override_legacy_widgets(monkeypatch):
+def test_staged_compositor_uses_connected_background_options(monkeypatch):
     captured = {}
     staged = {
         "version": 1,
-        "layers": [{
-            "socket": "foreground_0",
-            "image": torch.ones(1, 2, 2, 3),
-            "mask": torch.ones(1, 2, 2),
-            "uses_embedded_alpha": False,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.ones(1, 2, 2, 3),
+                "mask": torch.ones(1, 2, 2),
+                "uses_embedded_alpha": False,
+            }
+        ],
     }
 
     def capture_stage(
@@ -795,13 +911,7 @@ def test_staged_compositor_background_options_override_legacy_widgets(monkeypatc
         background=torch.zeros(1, 4, 4, 3),
         foreground_images={"foreground_0": torch.ones(1, 2, 2, 3)},
         execution_mode="run_staging",
-        mask_threshold=0.1,
-        border_cleanup_width=0,
-        artifact_cleanup_radius=0,
-        gap_fill_radius=0,
         placement_data='{"version":2,"layers":{}}',
-        feather_radius=0,
-        mask_resize_method="nearest-exact",
         background_removal_model=object(),
         background_options=options,
     )
@@ -816,11 +926,21 @@ def test_staged_compositor_background_options_override_legacy_widgets(monkeypatc
 def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     node = composite_nodes.UC_StagedLayeredBackgroundComposite
     schema = node.define_schema()
-    model_input = next(value for value in schema.inputs if value.id == "background_removal_model")
-    options_input = next(value for value in schema.inputs if value.id == "background_options")
-    foreground_input = next(value for value in schema.inputs if value.id == "foreground_images")
-    execution_input = next(value for value in schema.inputs if value.id == "execution_mode")
-    selector_input = next(value for value in schema.inputs if value.id == "background_removal_model_name")
+    model_input = next(
+        value for value in schema.inputs if value.id == "background_removal_model"
+    )
+    options_input = next(
+        value for value in schema.inputs if value.id == "background_options"
+    )
+    foreground_input = next(
+        value for value in schema.inputs if value.id == "foreground_images"
+    )
+    execution_input = next(
+        value for value in schema.inputs if value.id == "execution_mode"
+    )
+    selector_input = next(
+        value for value in schema.inputs if value.id == "background_removal_model_name"
+    )
     assert schema.is_output_node is True
     assert schema.display_name == "Staged Background Composite"
     assert "Run only this node" in schema.description
@@ -836,28 +956,52 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     assert foreground_input.template.input.lazy is True
     node._staged_by_node.clear()
     monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-a"))
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
     background = torch.zeros(1, 20, 20, 3)
 
     model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
     foregrounds = {"foreground_0": torch.ones(1, 4, 4, 3)}
+    staging_options = {
+        "border_cleanup_width": 0,
+        "artifact_cleanup_radius": 0,
+        "gap_fill_radius": 0,
+        "feather_radius": 0,
+    }
     assert node.check_lazy_status(
         "run_staging", foreground_images={"foreground_0": (None, "foreground_0")}
     ) == ["foreground_0"]
     assert node.check_lazy_status(
         "run_staging", None, {"foreground_0": (None, "foreground_0")}
     ) == ["background_removal_model", "foreground_0"]
-    assert node.check_lazy_status(
-        "full_run", model, {"foreground_0": (foregrounds["foreground_0"], "foreground_0")}
-    ) == []
-    assert node.check_lazy_status("run_staged", None, {"foreground_0": (None, "foreground_0")}) == []
+    assert (
+        node.check_lazy_status(
+            "full_run",
+            model,
+            {"foreground_0": (foregrounds["foreground_0"], "foreground_0")},
+        )
+        == []
+    )
+    assert (
+        node.check_lazy_status(
+            "run_staged", None, {"foreground_0": (None, "foreground_0")}
+        )
+        == []
+    )
     fresh = node.execute(
-        background, foregrounds, "run_staging", 0.5, 0, 0, 0,
-        '{"version":1,"layers":{}}', 0, background_removal_model=model,
+        background,
+        foregrounds,
+        "run_staging",
+        '{"version":1,"layers":{}}',
+        background_removal_model=model,
+        background_options=staging_options,
     )
     retained = node.execute(
-        background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
-        '{"version":1,"layers":{}}', 0,
+        background,
+        {"foreground_0": None},
+        "run_staged",
+        '{"version":1,"layers":{}}',
     )
 
     assert fresh.ui["uc_layered_scene_editor"][0]["stage_mode"] == "fresh"
@@ -867,9 +1011,12 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
 
     updated_model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
     full = node.execute(
-        background, {"foreground_0": foregrounds["foreground_0"] * 0.5},
-        "full_run", 0.5, 0, 0, 0, '{"version":1,"layers":{}}', 0,
+        background,
+        {"foreground_0": foregrounds["foreground_0"] * 0.5},
+        "full_run",
+        '{"version":1,"layers":{}}',
         background_removal_model=updated_model,
+        background_options=staging_options,
     )
     assert full.ui["uc_layered_scene_editor"][0]["stage_mode"] == "full_run"
     assert full.result[0].sum().item() > 0
@@ -878,12 +1025,16 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-b"))
     with pytest.raises(ValueError, match="No retained foreground stage"):
         node.execute(
-            background, {"foreground_0": None}, "run_staged", 0.5, 0, 0, 0,
-            '{"version":1,"layers":{}}', 0,
+            background,
+            {"foreground_0": None},
+            "run_staged",
+            '{"version":1,"layers":{}}',
         )
 
 
-def test_internal_background_removal_loader_selects_exact_files_and_caches(monkeypatch, tmp_path):
+def test_internal_background_removal_loader_selects_exact_files_and_caches(
+    monkeypatch, tmp_path
+):
     import folder_paths
     from comfy import bg_removal_model
 
@@ -904,16 +1055,19 @@ def test_internal_background_removal_loader_selects_exact_files_and_caches(monke
         return DummyModel()
 
     monkeypatch.setattr(
-        composite_nodes,
+        composite_helpers,
         "require_huggingface_model",
         lambda category, filename, repo_id, repo_path: str(tmp_path / filename),
     )
     monkeypatch.setattr(bg_removal_model, "load", load)
-    composite_nodes._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
+    composite_helpers._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
 
-    birefnet = composite_nodes._load_internal_background_removal_model("birefnet")
-    assert composite_nodes._load_internal_background_removal_model("birefnet") is birefnet
-    lucida = composite_nodes._load_internal_background_removal_model("lucida")
+    birefnet = composite_helpers._load_internal_background_removal_model("birefnet")
+    assert (
+        composite_helpers._load_internal_background_removal_model("birefnet")
+        is birefnet
+    )
+    lucida = composite_helpers._load_internal_background_removal_model("lucida")
 
     assert [pathlib.Path(path).name for path in loaded] == [
         "birefnet.safetensors",
@@ -927,9 +1081,9 @@ def test_internal_background_removal_loader_selects_exact_files_and_caches(monke
 
 
 def test_internal_background_removal_loader_reports_missing_model(monkeypatch):
-    composite_nodes._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
+    composite_helpers._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
     monkeypatch.setattr(
-        composite_nodes,
+        composite_helpers,
         "require_huggingface_model",
         lambda *_args: (_ for _ in ()).throw(
             ValueError(
@@ -944,27 +1098,34 @@ def test_internal_background_removal_loader_reports_missing_model(monkeypatch):
         ValueError,
         match=r"Comfy-Org/BiRefNet/blob/main/background_removal/lucida\.safetensors",
     ):
-        composite_nodes._load_internal_background_removal_model("lucida")
+        composite_helpers._load_internal_background_removal_model("lucida")
 
 
-def test_required_huggingface_model_reports_url_and_registered_locations(monkeypatch, tmp_path):
+def test_required_huggingface_model_reports_url_and_registered_locations(
+    monkeypatch, tmp_path
+):
     import folder_paths
 
     first = tmp_path / "custom-removal-location"
     second = tmp_path / "other-removal-location"
 
     monkeypatch.setattr(
-        folder_paths, "get_full_path_or_raise",
+        folder_paths,
+        "get_full_path_or_raise",
         lambda *_args: (_ for _ in ()).throw(FileNotFoundError()),
     )
     monkeypatch.setattr(
-        folder_paths, "get_folder_paths", lambda category: [str(first), str(second)],
+        folder_paths,
+        "get_folder_paths",
+        lambda category: [str(first), str(second)],
     )
 
     with pytest.raises(ValueError) as raised:
         model_assets.require_huggingface_model(
-            "background_removal", "birefnet.safetensors",
-            "Comfy-Org/BiRefNet", "background_removal/birefnet.safetensors",
+            "background_removal",
+            "birefnet.safetensors",
+            "Comfy-Org/BiRefNet",
+            "background_removal/birefnet.safetensors",
         )
 
     message = str(raised.value)
@@ -982,18 +1143,26 @@ def test_required_huggingface_model_returns_registered_file(monkeypatch, tmp_pat
     existing = tmp_path / "detection" / "mediapipe_face_fp32.safetensors"
     existing.parent.mkdir()
     existing.write_bytes(b"present")
-    monkeypatch.setattr(folder_paths, "get_full_path_or_raise", lambda *_args: str(existing))
+    monkeypatch.setattr(
+        folder_paths, "get_full_path_or_raise", lambda *_args: str(existing)
+    )
 
     result = model_assets.require_huggingface_model(
-        "detection", existing.name,
-        "Comfy-Org/mediapipe", f"detection/{existing.name}",
+        "detection",
+        existing.name,
+        "Comfy-Org/mediapipe",
+        f"detection/{existing.name}",
     )
 
     assert result == str(existing)
 
 
-def test_staged_compositor_preserves_exact_size_non_overlapping_foregrounds(monkeypatch):
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+def test_staged_compositor_preserves_exact_size_non_overlapping_foregrounds(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
     first = torch.rand(1, 8, 8, 3)
     second = torch.rand(1, 8, 8, 3)
     staged = {
@@ -1009,7 +1178,7 @@ def test_staged_compositor_preserves_exact_size_non_overlapping_foregrounds(monk
         '"foreground_1":{"scale":0.5,"center_x":0.875,"center_y":0.5}}}'
     )
 
-    image, _ = composite_nodes._composite_staged_foregrounds(
+    image, _ = staged_compositor_helpers._composite_staged_foregrounds(
         torch.zeros(1, 16, 32, 3), staged, placement, 0
     ).result[:2]
 
@@ -1064,8 +1233,19 @@ def test_text_overlay_preserves_pixels_outside_overlay():
     image = torch.rand(1, 64, 96, 3)
 
     result = image_nodes.UC_TextOverlayNode.execute(
-        image, "X", 12, "FFFFFF", "000000", True, 2, 0.5,
-        False, 0, -1, 0, -1,
+        image,
+        "X",
+        12,
+        "FFFFFF",
+        "000000",
+        True,
+        2,
+        0.5,
+        False,
+        0,
+        -1,
+        0,
+        -1,
     ).result[0]
 
     assert torch.equal(result[:, 48:, 48:], image[:, 48:, 48:])
@@ -1085,14 +1265,18 @@ def test_target_warp_keeps_crop_border_fixed():
     source_points = np.array([[5, 5], [11, 5], [11, 11], [5, 11]], dtype=np.float32)
     target_points = source_points + np.array([2, 0], dtype=np.float32)
 
-    warped = composite_nodes._warp_target(target, source_points, target_points, 1.0, 4)
+    warped = background_replace_helpers._warp_target(
+        target, source_points, target_points, 1.0, 4
+    )
 
     assert torch.allclose(warped[0], target[0], atol=1e-4)
     assert torch.allclose(warped[-1], target[-1], atol=1e-4)
     assert torch.allclose(warped[:, 0], target[:, 0], atol=1e-4)
     assert torch.allclose(warped[:, -1], target[:, -1], atol=1e-4)
     assert not torch.allclose(warped[5:12, 5:12], target[5:12, 5:12])
-    for source_point, target_point in zip(source_points.astype(int), target_points.astype(int)):
+    for source_point, target_point in zip(
+        source_points.astype(int), target_points.astype(int)
+    ):
         expected = target[target_point[1], target_point[0]]
         actual = warped[source_point[1], source_point[0]]
         assert torch.allclose(actual, expected, atol=2e-3)
@@ -1103,7 +1287,9 @@ def test_similarity_transform_allows_rotation_without_source_warp():
     rotation = np.array([[0, -1], [1, 0]], dtype=np.float32)
     target = 1.5 * (source @ rotation.T) + np.array([20, 5], dtype=np.float32)
 
-    scale, solved_rotation, translation = composite_nodes._similarity_transform(source, target)
+    scale, solved_rotation, translation = (
+        background_replace_helpers._similarity_transform(source, target)
+    )
     transformed = scale * (source @ solved_rotation.T) + translation
 
     assert scale == pytest.approx(1.5)
@@ -1113,7 +1299,9 @@ def test_similarity_transform_allows_rotation_without_source_warp():
 
 class _FaceModel:
     def __init__(self):
-        self.connection_sets = {"face_oval": frozenset({(0, 1), (1, 2), (2, 3), (3, 0)})}
+        self.connection_sets = {
+            "face_oval": frozenset({(0, 1), (1, 2), (2, 3), (3, 0)})
+        }
         self.calls = []
 
     def detect_batch(self, images, num_faces, score_thresh, variant):
@@ -1123,7 +1311,9 @@ class _FaceModel:
             landmarks = np.array([[4, 8], [8, 4], [12, 8], [8, 12]], dtype=np.float32)
             box = np.array([4, 4, 12, 12], dtype=np.float32)
         else:
-            landmarks = np.array([[10, 14], [16, 8], [22, 14], [16, 20]], dtype=np.float32)
+            landmarks = np.array(
+                [[10, 14], [16, 8], [22, 14], [16, 20]], dtype=np.float32
+            )
             box = np.array([10, 8, 22, 20], dtype=np.float32)
         smaller = {"bbox_xyxy": box * 0.5, "landmarks_xy": landmarks * 0.5}
         larger = {"bbox_xyxy": box, "landmarks_xy": landmarks}
@@ -1132,7 +1322,13 @@ class _FaceModel:
 
 class _BackgroundModel:
     def encode_image(self, image):
-        return torch.ones(image.shape[0], image.shape[1], image.shape[2], device=image.device, dtype=image.dtype)
+        return torch.ones(
+            image.shape[0],
+            image.shape[1],
+            image.shape[2],
+            device=image.device,
+            dtype=image.dtype,
+        )
 
 
 def test_face_composite_uses_full_detector_and_target_crop_coordinates():
@@ -1148,7 +1344,9 @@ def test_face_composite_uses_full_detector_and_target_crop_coordinates():
         "warp_decay_radius": 4,
     }
 
-    output = composite_nodes.UC_MediaPipeFaceComposite.execute(face_model, _BackgroundModel(), source, target, options)
+    output = composite_nodes.UC_MediaPipeFaceComposite.execute(
+        face_model, _BackgroundModel(), source, target, options
+    )
     image, crop = output.result
 
     assert [call[3] for call in face_model.calls] == ["full", "full"]
@@ -1162,12 +1360,16 @@ def test_face_composite_rejects_batches_and_missing_faces():
     source = torch.zeros(2, 20, 20, 3)
     target = torch.zeros(1, 30, 30, 3)
     with pytest.raises(ValueError, match="requires one source"):
-        composite_nodes.UC_MediaPipeFaceComposite.execute(_FaceModel(), _BackgroundModel(), source, target)
+        composite_nodes.UC_MediaPipeFaceComposite.execute(
+            _FaceModel(), _BackgroundModel(), source, target
+        )
 
     model = _FaceModel()
     model.detect_batch = lambda *args, **kwargs: [[]]
     with pytest.raises(ValueError, match="No face was detected"):
-        composite_nodes.UC_MediaPipeFaceComposite.execute(model, _BackgroundModel(), source[:1], target)
+        composite_nodes.UC_MediaPipeFaceComposite.execute(
+            model, _BackgroundModel(), source[:1], target
+        )
 
 
 def test_staged_face_layers_are_stable_ordered_and_intersect_alpha():
@@ -1177,15 +1379,22 @@ def test_staged_face_layers_are_stable_ordered_and_intersect_alpha():
     model = _FaceModel()
     options = composite_nodes.UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS
     face_options = composite_nodes.UC_StagedMediaPipeFaceOptions.DEFAULTS | {
-        "bbox_expansion": 0, "maximum_faces": 2,
+        "bbox_expansion": 0,
+        "maximum_faces": 2,
     }
 
-    staged = composite_nodes._stage_face_foregrounds(
-        _BackgroundModel(), model, {"foreground_0": image}, options, face_options,
+    staged = staged_face_helpers._stage_face_foregrounds(
+        _BackgroundModel(),
+        model,
+        {"foreground_0": image},
+        options,
+        face_options,
     )
 
     assert [layer["socket"] for layer in staged["layers"]] == [
-        "foreground_0", "foreground_0_face_0", "foreground_0_face_1",
+        "foreground_0",
+        "foreground_0_face_0",
+        "foreground_0_face_1",
     ]
     assert all(layer["mask"].sum() > 0 for layer in staged["layers"][1:])
     assert staged["layers"][1]["mask"][0, 0, 0] == 0
@@ -1194,9 +1403,13 @@ def test_staged_face_layers_are_stable_ordered_and_intersect_alpha():
 
 def test_staged_face_detection_failure_is_nonfatal():
     model = _FaceModel()
-    model.detect_batch = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("detector"))
-    staged = composite_nodes._stage_face_foregrounds(
-        _BackgroundModel(), model, {"foreground_0": torch.ones(1, 20, 20, 3)},
+    model.detect_batch = lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("detector")
+    )
+    staged = staged_face_helpers._stage_face_foregrounds(
+        _BackgroundModel(),
+        model,
+        {"foreground_0": torch.ones(1, 20, 20, 3)},
         composite_nodes.UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS,
         composite_nodes.UC_StagedMediaPipeFaceOptions.DEFAULTS,
     )
@@ -1207,8 +1420,11 @@ def test_staged_face_detection_failure_is_nonfatal():
 def test_projective_warp_applies_identical_support_to_rgb_and_alpha():
     image = torch.ones(1, 9, 9, 3)
     mask = torch.ones(1, 9, 9)
-    warped_image, warped_mask = composite_nodes.projective_warp(
-        image, mask, [[-0.8, -0.8], [0.8, -1], [0.7, 0.8], [-0.9, 0.7]], 12,
+    warped_image, warped_mask = staged_compositor_helpers.projective_warp(
+        image,
+        mask,
+        [[-0.8, -0.8], [0.8, -1], [0.7, 0.8], [-0.9, 0.7]],
+        12,
     )
     assert torch.allclose(warped_image[..., 0], warped_mask, atol=1e-6)
 
@@ -1219,8 +1435,11 @@ def test_projective_warp_rotates_non_square_layer_without_distortion():
     image[:, 1, :, 0] = 1
     mask[:, 1, :] = 1
 
-    warped_image, warped_mask = composite_nodes.projective_warp(
-        image, mask, [[-1, -1], [1, -1], [1, 1], [-1, 1]], 90,
+    warped_image, warped_mask = staged_compositor_helpers.projective_warp(
+        image,
+        mask,
+        [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+        90,
     )
 
     assert warped_image.shape[1:3] == (7, 3)
@@ -1228,36 +1447,45 @@ def test_projective_warp_rotates_non_square_layer_without_distortion():
     assert torch.allclose(warped_image[..., 0], warped_mask, atol=1e-6)
     assert torch.allclose(warped_mask[:, :, 1], torch.ones(1, 7), atol=1e-5)
     assert torch.allclose(
-        warped_mask[:, :, (0, 2)], torch.zeros(1, 7, 2), atol=1e-6,
+        warped_mask[:, :, (0, 2)],
+        torch.zeros(1, 7, 2),
+        atol=1e-6,
     )
 
 
 def test_staged_rotation_uses_expanded_bounds_and_preserves_center():
     staged = {
         "version": 1,
-        "layers": [{
-            "socket": "foreground_0",
-            "image": torch.ones(1, 3, 7, 3),
-            "mask": torch.ones(1, 3, 7),
-            "uses_embedded_alpha": True,
-            "is_face": False,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.ones(1, 3, 7, 3),
+                "mask": torch.ones(1, 3, 7),
+                "uses_embedded_alpha": True,
+                "is_face": False,
+            }
+        ],
     }
-    placement = json.dumps({
-        "version": 3,
-        "layers": {
-            "foreground_0": {
-                "scale": 0.35,
-                "center_x": 0.5,
-                "center_y": 0.5,
-                "rotation": 90,
-                "corners": [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+    placement = json.dumps(
+        {
+            "version": 3,
+            "layers": {
+                "foreground_0": {
+                    "scale": 0.35,
+                    "center_x": 0.5,
+                    "center_y": 0.5,
+                    "rotation": 90,
+                    "corners": [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+                },
             },
-        },
-    })
+        }
+    )
 
-    output = composite_nodes._composite_staged_foregrounds(
-        torch.zeros(1, 20, 20, 3), staged, placement, 0,
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 20, 20, 3),
+        staged,
+        placement,
+        0,
     )
     _, mask, bounding_boxes, layer_masks = output.result
     points = torch.nonzero(mask[0] > 0.99)
@@ -1288,25 +1516,32 @@ def test_staged_layer_geometry_outputs_follow_back_to_front_order():
             },
         ],
     }
-    placement = json.dumps({
-        "version": 3,
-        "workspace_padding": 0,
-        "layer_order": ["foreground_1", "foreground_0"],
-        "layers": {
-            "foreground_0": {"scale": 0.2, "center_x": 0.2, "center_y": 0.5},
-            "foreground_1": {"scale": 0.2, "center_x": 0.8, "center_y": 0.5},
-        },
-    })
+    placement = json.dumps(
+        {
+            "version": 3,
+            "workspace_padding": 0,
+            "layer_order": ["foreground_1", "foreground_0"],
+            "layers": {
+                "foreground_0": {"scale": 0.2, "center_x": 0.2, "center_y": 0.5},
+                "foreground_1": {"scale": 0.2, "center_x": 0.8, "center_y": 0.5},
+            },
+        }
+    )
 
-    output = composite_nodes._composite_staged_foregrounds(
-        torch.zeros(1, 10, 20, 3), staged, placement, 0,
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 10, 20, 3),
+        staged,
+        placement,
+        0,
     )
     _, _, bounding_boxes, layer_masks = output.result
 
-    assert bounding_boxes == [[
-        {"x": 15, "y": 4, "width": 2, "height": 2},
-        {"x": 3, "y": 4, "width": 2, "height": 2},
-    ]]
+    assert bounding_boxes == [
+        [
+            {"x": 15, "y": 4, "width": 2, "height": 2},
+            {"x": 3, "y": 4, "width": 2, "height": 2},
+        ]
+    ]
     assert layer_masks.shape == (2, 10, 20)
     assert layer_masks[0, 4:6, 15:17].all()
     assert layer_masks[1, 4:6, 3:5].all()
@@ -1315,28 +1550,35 @@ def test_staged_layer_geometry_outputs_follow_back_to_front_order():
 def test_version_three_warp_applies_to_ordinary_foreground():
     staged = {
         "version": 1,
-        "layers": [{
-            "socket": "foreground_0",
-            "image": torch.ones(1, 5, 5, 3),
-            "mask": torch.ones(1, 5, 5),
-            "uses_embedded_alpha": True,
-            "is_face": False,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.ones(1, 5, 5, 3),
+                "mask": torch.ones(1, 5, 5),
+                "uses_embedded_alpha": True,
+                "is_face": False,
+            }
+        ],
     }
-    placement = json.dumps({
-        "version": 3,
-        "layers": {
-            "foreground_0": {
-                "scale": 0.5,
-                "center_x": 0.5,
-                "center_y": 0.5,
-                "rotation": 0,
-                "corners": [[-0.6, -0.6], [0.6, -0.6], [0.6, 0.6], [-0.6, 0.6]],
+    placement = json.dumps(
+        {
+            "version": 3,
+            "layers": {
+                "foreground_0": {
+                    "scale": 0.5,
+                    "center_x": 0.5,
+                    "center_y": 0.5,
+                    "rotation": 0,
+                    "corners": [[-0.6, -0.6], [0.6, -0.6], [0.6, 0.6], [-0.6, 0.6]],
+                },
             },
-        },
-    })
-    image, mask = composite_nodes._composite_staged_foregrounds(
-        torch.zeros(1, 10, 10, 3), staged, placement, 0,
+        }
+    )
+    image, mask = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3),
+        staged,
+        placement,
+        0,
     ).result[:2]
     assert torch.allclose(image[..., 0], mask, atol=1e-6)
     assert mask.sum() < 25
@@ -1345,15 +1587,17 @@ def test_version_three_warp_applies_to_ordinary_foreground():
 def test_staged_soft_blend_does_not_blend_with_background():
     staged = {
         "version": 1,
-        "layers": [{
-            "socket": "foreground_0",
-            "image": torch.ones(1, 5, 5, 3),
-            "mask": torch.ones(1, 5, 5),
-            "uses_embedded_alpha": True,
-            "blend_factor": 0.5,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.ones(1, 5, 5, 3),
+                "mask": torch.ones(1, 5, 5),
+                "uses_embedded_alpha": True,
+                "blend_factor": 0.5,
+            }
+        ],
     }
-    image, mask = composite_nodes._composite_staged_foregrounds(
+    image, mask = staged_compositor_helpers._composite_staged_foregrounds(
         torch.zeros(1, 10, 10, 3),
         staged,
         '{"version":3,"workspace_padding":0,"layers":{"foreground_0":{"scale":0.5}}}',
@@ -1386,8 +1630,11 @@ def test_staged_soft_blend_maps_zero_to_half_over_underlying_foreground():
         '{"version":3,"workspace_padding":0,"layers":{'
         '"foreground_0":{"scale":0.5},"foreground_1":{"scale":0.5}}}'
     )
-    image, mask = composite_nodes._composite_staged_foregrounds(
-        torch.zeros(1, 10, 10, 3), staged, placement, 0,
+    image, mask = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3),
+        staged,
+        placement,
+        0,
     ).result[:2]
     assert image.max().item() == pytest.approx(0.6)
     assert mask.max() == 1
@@ -1424,8 +1671,11 @@ def test_staged_soft_blend_uses_accumulated_coverage_past_excluded_layer():
         '"foreground_1":{"scale":0.5,"included":false},'
         '"foreground_2":{"scale":0.5}}}'
     )
-    image, mask = composite_nodes._composite_staged_foregrounds(
-        torch.zeros(1, 10, 10, 3), staged, placement, 0,
+    image, mask = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3),
+        staged,
+        placement,
+        0,
     ).result[:2]
     assert image.max().item() == pytest.approx(0.6)
     assert mask.max() == 1
@@ -1439,31 +1689,44 @@ def test_staged_blend_options_apply_separate_ordinary_and_face_factors():
             {"socket": "foreground_0_face_0", "is_face": True},
         ],
     }
-    blended = composite_nodes._apply_staged_layer_options(staged, 0.2, 0.8, 12)
-    assert [layer["blend_factor"] for layer in blended["layers"]] == pytest.approx([0.6, 0.9])
+    blended = staged_compositor_helpers._apply_staged_layer_options(
+        staged, 0.2, 0.8, 12
+    )
+    assert [layer["blend_factor"] for layer in blended["layers"]] == pytest.approx(
+        [0.6, 0.9]
+    )
     assert blended["layers"][1]["feather_radius"] == 12
     assert "blend_factor" not in staged["layers"][0]
-    diagnostic = composite_nodes._apply_staged_layer_options(staged, 1.0, -1.0, 4)
+    diagnostic = staged_compositor_helpers._apply_staged_layer_options(
+        staged, 1.0, -1.0, 4
+    )
     assert diagnostic["layers"][1]["blend_factor"] == 0
 
 
 def test_version_three_exclusion_applies_to_ordinary_foreground():
     staged = {
         "version": 1,
-        "layers": [{
-            "socket": "foreground_0",
-            "image": torch.ones(1, 5, 5, 3),
-            "mask": torch.ones(1, 5, 5),
-            "uses_embedded_alpha": True,
-            "is_face": False,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.ones(1, 5, 5, 3),
+                "mask": torch.ones(1, 5, 5),
+                "uses_embedded_alpha": True,
+                "is_face": False,
+            }
+        ],
     }
-    placement = json.dumps({
-        "version": 3,
-        "layers": {"foreground_0": {"included": False}},
-    })
-    image, mask = composite_nodes._composite_staged_foregrounds(
-        torch.zeros(1, 10, 10, 3), staged, placement, 0,
+    placement = json.dumps(
+        {
+            "version": 3,
+            "layers": {"foreground_0": {"included": False}},
+        }
+    )
+    image, mask = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 10, 10, 3),
+        staged,
+        placement,
+        0,
     ).result[:2]
     assert torch.count_nonzero(image) == 0
     assert torch.count_nonzero(mask) == 0
@@ -1472,16 +1735,18 @@ def test_version_three_exclusion_applies_to_ordinary_foreground():
 def test_face_feather_is_applied_to_final_composite_alpha():
     staged = {
         "version": 1,
-        "layers": [{
-            "socket": "foreground_0_face_0",
-            "image": torch.ones(1, 9, 9, 3),
-            "mask": torch.ones(1, 9, 9),
-            "uses_embedded_alpha": True,
-            "is_face": True,
-            "feather_radius": 4,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0_face_0",
+                "image": torch.ones(1, 9, 9, 3),
+                "mask": torch.ones(1, 9, 9),
+                "uses_embedded_alpha": True,
+                "is_face": True,
+                "feather_radius": 4,
+            }
+        ],
     }
-    image, mask = composite_nodes._composite_staged_foregrounds(
+    image, mask = staged_compositor_helpers._composite_staged_foregrounds(
         torch.zeros(1, 18, 18, 3),
         staged,
         '{"version":3,"workspace_padding":0,"layers":{"foreground_0_face_0":{"scale":0.5}}}',
@@ -1494,25 +1759,27 @@ def test_face_feather_is_applied_to_final_composite_alpha():
 
 def test_final_face_feather_scales_with_placed_face(monkeypatch):
     radii = []
-    original = composite_nodes._feather_mask
+    original = composite_helpers._feather_mask
 
     def capture(mask, radius):
         radii.append(radius)
         return original(mask, radius)
 
-    monkeypatch.setattr(composite_nodes, "_feather_mask", capture)
+    monkeypatch.setattr(staged_compositor_helpers, "_feather_mask", capture)
     staged = {
         "version": 1,
-        "layers": [{
-            "socket": "foreground_0_face_0",
-            "image": torch.ones(1, 9, 9, 3),
-            "mask": torch.ones(1, 9, 9),
-            "uses_embedded_alpha": True,
-            "is_face": True,
-            "feather_radius": 4,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0_face_0",
+                "image": torch.ones(1, 9, 9, 3),
+                "mask": torch.ones(1, 9, 9),
+                "uses_embedded_alpha": True,
+                "is_face": True,
+                "feather_radius": 4,
+            }
+        ],
     }
-    composite_nodes._composite_staged_foregrounds(
+    staged_compositor_helpers._composite_staged_foregrounds(
         torch.zeros(1, 36, 36, 3),
         staged,
         '{"version":3,"workspace_padding":0,"layers":{"foreground_0_face_0":{"scale":0.5}}}',
@@ -1528,10 +1795,12 @@ def test_staged_face_reuses_first_raw_background_alpha():
 
         def encode_image(self, image):
             self.calls += 1
-            return torch.full(image.shape[:3], 0.75, device=image.device, dtype=image.dtype)
+            return torch.full(
+                image.shape[:3], 0.75, device=image.device, dtype=image.dtype
+            )
 
     background_model = CountingBackground()
-    staged = composite_nodes._stage_face_foregrounds(
+    staged = staged_face_helpers._stage_face_foregrounds(
         background_model,
         _FaceModel(),
         {"foreground_0": torch.ones(1, 20, 20, 3)},
@@ -1551,21 +1820,33 @@ def test_staged_face_detection_batches_foregrounds():
             results = []
             for image in images:
                 height, width = image.shape[:2]
-                landmarks = np.array([
-                    [width * 0.25, height * 0.5],
-                    [width * 0.5, height * 0.25],
-                    [width * 0.75, height * 0.5],
-                    [width * 0.5, height * 0.75],
-                ], dtype=np.float32)
-                results.append([{
-                    "bbox_xyxy": np.array(
-                        [width * 0.25, height * 0.25, width * 0.75, height * 0.75],
-                        dtype=np.float32,
-                    ),
-                    "landmarks_xy": landmarks,
-                    "score": 0.9,
-                    "presence": 1.0,
-                }])
+                landmarks = np.array(
+                    [
+                        [width * 0.25, height * 0.5],
+                        [width * 0.5, height * 0.25],
+                        [width * 0.75, height * 0.5],
+                        [width * 0.5, height * 0.75],
+                    ],
+                    dtype=np.float32,
+                )
+                results.append(
+                    [
+                        {
+                            "bbox_xyxy": np.array(
+                                [
+                                    width * 0.25,
+                                    height * 0.25,
+                                    width * 0.75,
+                                    height * 0.75,
+                                ],
+                                dtype=np.float32,
+                            ),
+                            "landmarks_xy": landmarks,
+                            "score": 0.9,
+                            "presence": 1.0,
+                        }
+                    ]
+                )
             return results
 
     model = BatchedFaceModel()
@@ -1573,7 +1854,7 @@ def test_staged_face_detection_batches_foregrounds():
         "foreground_0": torch.ones(1, 20, 20, 4),
         "foreground_1": torch.ones(1, 24, 16, 4),
     }
-    staged = composite_nodes._stage_face_foregrounds(
+    staged = staged_face_helpers._stage_face_foregrounds(
         _BackgroundModel(),
         model,
         foregrounds,
@@ -1583,8 +1864,10 @@ def test_staged_face_detection_batches_foregrounds():
 
     assert [call[0] for call in model.calls] == [2]
     assert [layer["socket"] for layer in staged["layers"]] == [
-        "foreground_0", "foreground_0_face_0",
-        "foreground_1", "foreground_1_face_0",
+        "foreground_0",
+        "foreground_0_face_0",
+        "foreground_1",
+        "foreground_1_face_0",
     ]
 
 
@@ -1593,21 +1876,34 @@ def test_staged_face_detection_retries_only_batch_misses():
         def detect_batch(self, images, num_faces, score_thresh, variant):
             self.calls.append((len(images), score_thresh))
             if len(self.calls) == 1:
-                return [[{
-                    "bbox_xyxy": np.array([4, 4, 12, 12], dtype=np.float32),
-                    "landmarks_xy": np.array([[4, 8], [8, 4], [12, 8], [8, 12]], dtype=np.float32),
-                    "score": 0.9,
-                    "presence": 1.0,
-                }], []]
-            return [[{
-                "bbox_xyxy": np.array([4, 4, 12, 12], dtype=np.float32),
-                "landmarks_xy": np.array([[4, 8], [8, 4], [12, 8], [8, 12]], dtype=np.float32),
-                "score": 0.6,
-                "presence": 1.0,
-            }]]
+                return [
+                    [
+                        {
+                            "bbox_xyxy": np.array([4, 4, 12, 12], dtype=np.float32),
+                            "landmarks_xy": np.array(
+                                [[4, 8], [8, 4], [12, 8], [8, 12]], dtype=np.float32
+                            ),
+                            "score": 0.9,
+                            "presence": 1.0,
+                        }
+                    ],
+                    [],
+                ]
+            return [
+                [
+                    {
+                        "bbox_xyxy": np.array([4, 4, 12, 12], dtype=np.float32),
+                        "landmarks_xy": np.array(
+                            [[4, 8], [8, 4], [12, 8], [8, 12]], dtype=np.float32
+                        ),
+                        "score": 0.6,
+                        "presence": 1.0,
+                    }
+                ]
+            ]
 
     model = RetryFaceModel()
-    composite_nodes._stage_face_foregrounds(
+    staged_face_helpers._stage_face_foregrounds(
         _BackgroundModel(),
         model,
         {
@@ -1623,14 +1919,14 @@ def test_staged_face_detection_retries_only_batch_misses():
 
 def test_staged_face_rasterizes_crop_local_masks(monkeypatch):
     sizes = []
-    original = composite_nodes._polygon_mask
+    original = background_replace_helpers._polygon_mask
 
     def capture(height, width, points, device, dtype):
         sizes.append((height, width))
         return original(height, width, points, device, dtype)
 
-    monkeypatch.setattr(composite_nodes, "_polygon_mask", capture)
-    composite_nodes._stage_face_foregrounds(
+    monkeypatch.setattr(staged_face_helpers, "_polygon_mask", capture)
+    staged_face_helpers._stage_face_foregrounds(
         _BackgroundModel(),
         _FaceModel(),
         {"foreground_0": torch.ones(1, 20, 20, 4)},
@@ -1649,8 +1945,11 @@ def test_identity_projective_transform_skips_grid_sample(monkeypatch):
     monkeypatch.setattr(staged_compositor_helpers.F, "grid_sample", fail)
     image = torch.rand(1, 7, 9, 3)
     mask = torch.rand(1, 7, 9)
-    warped_image, warped_mask = composite_nodes.projective_warp(
-        image, mask, [[-1, -1], [1, -1], [1, 1], [-1, 1]], 0,
+    warped_image, warped_mask = staged_compositor_helpers.projective_warp(
+        image,
+        mask,
+        [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+        0,
     )
 
     assert warped_image is image
@@ -1666,7 +1965,7 @@ def test_projective_transform_samples_rgb_and_alpha_once(monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(staged_compositor_helpers.F, "grid_sample", capture)
-    composite_nodes.projective_warp(
+    staged_compositor_helpers.projective_warp(
         torch.ones(1, 9, 9, 3),
         torch.ones(1, 9, 9),
         [[-0.8, -0.8], [0.8, -1], [0.7, 0.8], [-0.9, 0.7]],
@@ -1684,11 +1983,13 @@ def test_retained_stage_cache_copies_crops_and_evicts_lru():
     def stage(index):
         return {
             "version": 1,
-            "layers": [{
-                "socket": f"foreground_{index}",
-                "image": source[:, 2:8, 3:9],
-                "mask": source_mask[:, 2:8, 3:9],
-            }],
+            "layers": [
+                {
+                    "socket": f"foreground_{index}",
+                    "image": source[:, 2:8, 3:9],
+                    "mask": source_mask[:, 2:8, 3:9],
+                }
+            ],
         }
 
     cache["stage-0"] = stage(0)
@@ -1696,9 +1997,18 @@ def test_retained_stage_cache_copies_crops_and_evicts_lru():
     stored = cache["stage-0"]["layers"][0]
     assert stored["image"].is_contiguous()
     assert stored["mask"].is_contiguous()
-    assert stored["image"].untyped_storage().data_ptr() != source.untyped_storage().data_ptr()
-    assert stored["mask"].untyped_storage().data_ptr() != source_mask.untyped_storage().data_ptr()
-    assert stored["image"].untyped_storage().nbytes() == stored["image"].numel() * stored["image"].element_size()
+    assert (
+        stored["image"].untyped_storage().data_ptr()
+        != source.untyped_storage().data_ptr()
+    )
+    assert (
+        stored["mask"].untyped_storage().data_ptr()
+        != source_mask.untyped_storage().data_ptr()
+    )
+    assert (
+        stored["image"].untyped_storage().nbytes()
+        == stored["image"].numel() * stored["image"].element_size()
+    )
 
     for index in range(2, 9):
         cache[f"stage-{index}"] = stage(index)
@@ -1713,49 +2023,55 @@ def test_staged_preview_reuses_files_until_feather_changes(monkeypatch):
         saved.append((image.clone(), prefix))
         return {"filename": f"{prefix}-{len(saved)}.png"}
 
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", save)
+    monkeypatch.setattr(staged_compositor_helpers, "_save_editor_preview", save)
     staged = {
         "version": 1,
         "_preview_cache": {},
-        "layers": [{
-            "socket": "foreground_0_face_0",
-            "image": torch.ones(1, 9, 9, 3),
-            "mask": torch.ones(1, 9, 9),
-            "is_face": True,
-            "uses_embedded_alpha": True,
-            "feather_radius": 2,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0_face_0",
+                "image": torch.ones(1, 9, 9, 3),
+                "mask": torch.ones(1, 9, 9),
+                "is_face": True,
+                "uses_embedded_alpha": True,
+                "feather_radius": 2,
+            }
+        ],
     }
     background = torch.zeros(1, 16, 16, 3)
 
-    first = composite_nodes._preview_staged_foregrounds(background, staged, 0)
-    second = composite_nodes._preview_staged_foregrounds(background, staged, 0)
-    changed = composite_nodes._preview_staged_foregrounds(
+    first = staged_compositor_helpers._preview_staged_foregrounds(background, staged, 0)
+    second = staged_compositor_helpers._preview_staged_foregrounds(
+        background, staged, 0
+    )
+    changed = staged_compositor_helpers._preview_staged_foregrounds(
         background,
         {**staged, "layers": [{**staged["layers"][0], "feather_radius": 3}]},
         0,
     )
 
     assert len(saved) == 2
-    assert first.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"] == (
-        second.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"]
-    )
-    assert changed.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"] != (
+    assert (
         first.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"]
+        == (second.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"])
+    )
+    assert (
+        changed.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"]
+        != (first.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"])
     )
 
 
 def test_staged_face_compositor_display_name_includes_staged():
-    schema = (
-        composite_nodes.UC_StagedMediaPipeFaceBackgroundComposite.define_schema()
-    )
+    schema = composite_nodes.UC_StagedMediaPipeFaceBackgroundComposite.define_schema()
     assert schema.display_name == "Staged Face Background Composite"
 
 
 def test_face_run_staged_loads_no_models(monkeypatch):
     node = composite_nodes.UC_StagedMediaPipeFaceBackgroundComposite
     node._staged_by_node.clear()
-    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="retained-face"))
+    monkeypatch.setattr(
+        node, "hidden", types.SimpleNamespace(unique_id="retained-face")
+    )
     monkeypatch.setattr(
         composite_nodes,
         "_load_internal_background_removal_model",
@@ -1766,15 +2082,19 @@ def test_face_run_staged_loads_no_models(monkeypatch):
         "load_face_model",
         lambda *args: (_ for _ in ()).throw(AssertionError("loaded face model")),
     )
-    monkeypatch.setattr(composite_nodes, "_save_editor_preview", lambda *args: None)
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
     node._staged_by_node["retained-face"] = {
         "version": 1,
-        "layers": [{
-            "socket": "foreground_0",
-            "image": torch.ones(1, 4, 4, 3),
-            "mask": torch.ones(1, 4, 4),
-            "uses_embedded_alpha": True,
-        }],
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.ones(1, 4, 4, 3),
+                "mask": torch.ones(1, 4, 4),
+                "uses_embedded_alpha": True,
+            }
+        ],
     }
 
     output = node.execute(
