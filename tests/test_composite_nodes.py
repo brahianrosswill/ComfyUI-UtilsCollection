@@ -726,10 +726,98 @@ def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
     assert saved[0][..., 3].max().item() == 1
 
 
+def test_staged_compositor_background_options_override_legacy_widgets(monkeypatch):
+    captured = {}
+    staged = {
+        "version": 1,
+        "layers": [{
+            "socket": "foreground_0",
+            "image": torch.ones(1, 2, 2, 3),
+            "mask": torch.ones(1, 2, 2),
+            "uses_embedded_alpha": False,
+        }],
+    }
+
+    def capture_stage(
+        model,
+        foregrounds,
+        threshold,
+        border,
+        artifact,
+        gap,
+        mask_resize,
+        placement,
+    ):
+        captured["stage"] = (
+            threshold,
+            border,
+            artifact,
+            gap,
+            mask_resize,
+            placement,
+        )
+        return staged
+
+    sentinel = object()
+
+    def capture_preview(background, preview_stage, feather):
+        captured["preview"] = (preview_stage, feather)
+        return sentinel
+
+    monkeypatch.setattr(
+        composite_nodes,
+        "_stage_layered_foregrounds",
+        capture_stage,
+    )
+    monkeypatch.setattr(
+        composite_nodes,
+        "_preview_staged_foregrounds",
+        capture_preview,
+    )
+    node = composite_nodes.UC_StagedLayeredBackgroundComposite
+    node._staged_by_node.clear()
+    monkeypatch.setattr(
+        node,
+        "hidden",
+        types.SimpleNamespace(unique_id="options-compositor"),
+    )
+    options = {
+        "mask_threshold": 0.75,
+        "border_cleanup_width": 3,
+        "artifact_cleanup_radius": 4,
+        "gap_fill_radius": 5,
+        "feather_radius": 6,
+        "mask_resize_method": "bilinear",
+        "foreground_blend": 0.0,
+    }
+
+    result = node.execute(
+        background=torch.zeros(1, 4, 4, 3),
+        foreground_images={"foreground_0": torch.ones(1, 2, 2, 3)},
+        execution_mode="run_staging",
+        mask_threshold=0.1,
+        border_cleanup_width=0,
+        artifact_cleanup_radius=0,
+        gap_fill_radius=0,
+        placement_data='{"version":2,"layers":{}}',
+        feather_radius=0,
+        mask_resize_method="nearest-exact",
+        background_removal_model=object(),
+        background_options=options,
+    )
+
+    assert result is sentinel
+    assert captured["stage"][:5] == (0.75, 3, 4, 5, "bilinear")
+    preview_stage, feather = captured["preview"]
+    assert feather == 6
+    assert preview_stage["layers"][0]["blend_factor"] == 0.5
+
+
 def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     node = composite_nodes.UC_StagedLayeredBackgroundComposite
     schema = node.define_schema()
     model_input = next(value for value in schema.inputs if value.id == "background_removal_model")
+    options_input = next(value for value in schema.inputs if value.id == "background_options")
     foreground_input = next(value for value in schema.inputs if value.id == "foreground_images")
     execution_input = next(value for value in schema.inputs if value.id == "execution_mode")
     selector_input = next(value for value in schema.inputs if value.id == "background_removal_model_name")
@@ -741,6 +829,8 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     assert model_input.lazy is True
     assert model_input.optional is True
     assert model_input.display_name == "background_removal_model_opt"
+    assert options_input.optional is True
+    assert options_input.display_name == "Background Options"
     assert selector_input.options == ["birefnet", "lucida"]
     assert selector_input.default == "birefnet"
     assert foreground_input.template.input.lazy is True
@@ -1653,6 +1743,13 @@ def test_staged_preview_reuses_files_until_feather_changes(monkeypatch):
     assert changed.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"] != (
         first.ui["uc_layered_scene_editor"][0]["layers"][0]["preview"]
     )
+
+
+def test_staged_face_compositor_display_name_includes_staged():
+    schema = (
+        composite_nodes.UC_StagedMediaPipeFaceBackgroundComposite.define_schema()
+    )
+    assert schema.display_name == "Staged Face Background Composite"
 
 
 def test_face_run_staged_loads_no_models(monkeypatch):

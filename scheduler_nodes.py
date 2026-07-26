@@ -3,6 +3,26 @@ from enum import Enum
 from comfy_api.latest import io
 from comfy_extras.nodes_ideogram4 import Ideogram4Scheduler
 
+from .scheduler_helpers import (
+    BASE_SIGMA_POINTS,
+    discard_penultimate_sigma,
+    parse_float_list,
+    power_shift_scheduler,
+    radiance_shift_scheduler,
+    rescale_sigmas,
+    sigma_curve_pchip_scheduler,
+    sigma_curve_scheduler,
+    sigmoid_offset_scheduler,
+)
+
+SIGMA_RESCALE_I2I_RECOMMENDATION = (
+    "For I2I, connect Sigma Rescale."
+)
+SIGMA_DISCARD_RECOMMENDATION = (
+    "If required, connect Discard Penultimate Sigma."
+)
+DEFAULT_SIGMA_POINTS_TEXT = ", ".join(str(value) for value in BASE_SIGMA_POINTS)
+
 class Ideogram4Enum(Enum):
     QUALITY = "Quality"
     HIGH = "High"
@@ -72,5 +92,370 @@ class Ideogram4SchedulerPreset(Ideogram4Scheduler):
             mu=config["mu"],
             std=config["std"]
         )
+
+
+class UC_SigmaRescale(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_SigmaRescale",
+            display_name="Sigma Rescale",
+            category="sampling/custom_sampling/schedulers",
+            description=(
+                "Rescales a sigma schedule to exact start and end noise levels "
+                "without changing its shape or step count."
+            ),
+            inputs=[
+                io.Sigmas.Input("sigmas"),
+                io.Float.Input(
+                    "start_sigma",
+                    default=1.0,
+                    min=0.0,
+                    max=5000.0,
+                    step=0.01,
+                    round=False,
+                ),
+                io.Float.Input(
+                    "end_sigma",
+                    default=0.0,
+                    min=0.0,
+                    max=5000.0,
+                    step=0.01,
+                    round=False,
+                ),
+            ],
+            outputs=[
+                io.Sigmas.Output("sigmas", display_name="Sigmas"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, sigmas, start_sigma, end_sigma):
+        return io.NodeOutput(
+            rescale_sigmas(sigmas, start=start_sigma, end=end_sigma)
+        )
+
+
+class UC_DiscardPenultimateSigma(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_DiscardPenultimateSigma",
+            display_name="Discard Penultimate Sigma",
+            category="sampling/custom_sampling/schedulers",
+            description=(
+                "Removes the second-to-last sigma while preserving the terminal "
+                "sigma."
+            ),
+            inputs=[io.Sigmas.Input("sigmas")],
+            outputs=[
+                io.Sigmas.Output("sigmas", display_name="Sigmas"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, sigmas):
+        return io.NodeOutput(discard_penultimate_sigma(sigmas))
+
+
+class UC_SigmoidOffsetScheduler(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_SigmoidOffsetScheduler",
+            display_name="Sigmoid Offset Scheduler",
+            category="sampling/custom_sampling/schedulers",
+            inputs=[
+                io.Model.Input("model"),
+                io.Int.Input("steps", default=30, min=1, max=10000),
+                io.Float.Input(
+                    "square_k",
+                    default=1.0,
+                    min=0.0,
+                    max=10.0,
+                    step=0.01,
+                    tooltip="Sigmoid steepness. Higher values produce a steeper transition.",
+                ),
+                io.Float.Input(
+                    "base_c",
+                    default=0.5,
+                    min=-5.0,
+                    max=5.0,
+                    step=0.01,
+                    tooltip="Shifts the curve between early and late denoising.",
+                ),
+                io.Float.Input(
+                    "start_sigma",
+                    default=1.0,
+                    min=0.0,
+                    max=1.0,
+                    step=0.001,
+                    tooltip="Rescales the sigma schedule. 1.0 disables rescaling.",
+                ),
+            ],
+            outputs=[io.Sigmas.Output()],
+        )
+
+    @classmethod
+    def execute(cls, model, steps, square_k, base_c, start_sigma):
+        sigmas = sigmoid_offset_scheduler(
+            model.get_model_object("model_sampling"),
+            steps,
+            square_k=square_k,
+            base_c=base_c,
+        )
+        if start_sigma != 1.0:
+            sigma_min = sigmas.min()
+            sigma_max = sigmas.max()
+            sigmas = (
+                (sigmas - sigma_min) * start_sigma / (sigma_max - sigma_min)
+            )
+        return io.NodeOutput(sigmas)
+
+    get_sigmas = execute
+
+
+class UC_PowerShiftScheduler(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_PowerShiftScheduler",
+            display_name="Power Shift Scheduler",
+            category="sampling/custom_sampling/schedulers",
+            description=(
+                "Builds a power-shaped sigma schedule. "
+                f"{SIGMA_RESCALE_I2I_RECOMMENDATION} "
+                f"{SIGMA_DISCARD_RECOMMENDATION}"
+            ),
+            inputs=[
+                io.Model.Input("model"),
+                io.Int.Input("steps", default=20, min=3, max=1000),
+                io.Float.Input(
+                    "power",
+                    default=2.0,
+                    min=0.0,
+                    max=5.0,
+                    step=0.001,
+                ),
+                io.Float.Input(
+                    "midpoint_shift",
+                    default=1.0,
+                    min=0.0,
+                    max=5.0,
+                    step=0.001,
+                ),
+            ],
+            outputs=[
+                io.Sigmas.Output(
+                    tooltip=(
+                        f"{SIGMA_RESCALE_I2I_RECOMMENDATION} "
+                        f"{SIGMA_DISCARD_RECOMMENDATION}"
+                    ),
+                )
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model,
+        steps,
+        power,
+        midpoint_shift,
+    ):
+        sigmas = power_shift_scheduler(
+            model.get_model_object("model_sampling"),
+            steps,
+            power,
+            midpoint_shift,
+            discard_penultimate=False,
+        ).cpu()
+        return io.NodeOutput(sigmas)
+
+    get_sigmas = execute
+
+
+class UC_RadianceShiftScheduler(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_RadianceShiftScheduler",
+            display_name="Radiance Shift Scheduler",
+            category="sampling/custom_sampling/schedulers",
+            description=(
+                "Builds the Radiance power-shift schedule with its compensated "
+                "step count and penultimate sigma removal. "
+                f"{SIGMA_RESCALE_I2I_RECOMMENDATION}"
+            ),
+            inputs=[
+                io.Model.Input("model"),
+                io.Int.Input("steps", default=20, min=3, max=1000),
+                io.Float.Input(
+                    "power",
+                    default=2.4,
+                    min=0.0,
+                    max=5.0,
+                    step=0.001,
+                ),
+                io.Float.Input(
+                    "midpoint_shift",
+                    default=0.98,
+                    min=0.0,
+                    max=5.0,
+                    step=0.001,
+                ),
+            ],
+            outputs=[
+                io.Sigmas.Output(
+                    tooltip=SIGMA_RESCALE_I2I_RECOMMENDATION,
+                )
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model,
+        steps,
+        power,
+        midpoint_shift,
+    ):
+        sigmas = radiance_shift_scheduler(
+            model.get_model_object("model_sampling"),
+            steps,
+            power,
+            midpoint_shift,
+            discard_penultimate=True,
+        ).cpu()
+        return io.NodeOutput(sigmas)
+
+    get_sigmas = execute
+
+
+class UC_SigmaCurveFromPointsScheduler(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_SigmaCurveFromPointsScheduler",
+            display_name="From Points Scheduler",
+            category="sampling/custom_sampling/schedulers",
+            description=(
+                "Interpolates a sigma schedule from configurable points. "
+                f"{SIGMA_RESCALE_I2I_RECOMMENDATION} "
+                f"{SIGMA_DISCARD_RECOMMENDATION}"
+            ),
+            inputs=[
+                io.Int.Input("steps", default=8, min=1, max=1000),
+                io.String.Input(
+                    "custom_points",
+                    default=DEFAULT_SIGMA_POINTS_TEXT,
+                    multiline=False,
+                    optional=True,
+                    tooltip="Comma-separated sigma curve points.",
+                ),
+            ],
+            outputs=[
+                io.Sigmas.Output(
+                    tooltip=(
+                        f"{SIGMA_RESCALE_I2I_RECOMMENDATION} "
+                        f"{SIGMA_DISCARD_RECOMMENDATION}"
+                    ),
+                )
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        steps,
+        custom_points=None,
+    ):
+        sigma_points = (
+            parse_float_list(custom_points)
+            if custom_points is not None
+            else BASE_SIGMA_POINTS
+        )
+        if len(sigma_points) < 2:
+            sigma_points = BASE_SIGMA_POINTS
+        sigmas = sigma_curve_scheduler(
+            steps,
+            discard_penultimate=False,
+            sigma_points=sigma_points,
+        ).cpu()
+        return io.NodeOutput(sigmas[-(steps + 1):])
+
+    get_sigmas = execute
+
+
+class UC_SigmaCurvePchipScheduler(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_SigmaCurvePchipScheduler",
+            display_name="PCHIP Scheduler",
+            category="sampling/custom_sampling/schedulers",
+            description=(
+                "Interpolates a monotonic PCHIP sigma schedule from configurable "
+                "points. "
+                f"{SIGMA_RESCALE_I2I_RECOMMENDATION} "
+                f"{SIGMA_DISCARD_RECOMMENDATION}"
+            ),
+            inputs=[
+                io.Int.Input("steps", default=8, min=1, max=2000),
+                io.String.Input(
+                    "custom_points",
+                    default=DEFAULT_SIGMA_POINTS_TEXT,
+                    multiline=False,
+                    optional=True,
+                    tooltip="Comma-separated sigma curve points.",
+                ),
+            ],
+            outputs=[
+                io.Sigmas.Output(
+                    tooltip=(
+                        f"{SIGMA_RESCALE_I2I_RECOMMENDATION} "
+                        f"{SIGMA_DISCARD_RECOMMENDATION}"
+                    ),
+                )
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        steps,
+        custom_points=None,
+    ):
+        sigma_points = (
+            parse_float_list(custom_points)
+            if custom_points is not None
+            else BASE_SIGMA_POINTS
+        )
+        if len(sigma_points) < 2:
+            sigma_points = BASE_SIGMA_POINTS
+        sigmas = sigma_curve_pchip_scheduler(
+            steps,
+            discard_penultimate=False,
+            sigma_points=sigma_points,
+        ).cpu()
+        return io.NodeOutput(sigmas[-(steps + 1):])
+
+    get_sigmas = execute
+
+
+MIGRATED_SCHEDULER_NODES = [
+    UC_SigmoidOffsetScheduler,
+    UC_PowerShiftScheduler,
+    UC_RadianceShiftScheduler,
+    UC_SigmaCurveFromPointsScheduler,
+    UC_SigmaCurvePchipScheduler,
+]
+
+SCHEDULER_NODES = [
+    Ideogram4SchedulerPreset,
+    UC_SigmaRescale,
+    UC_DiscardPenultimateSigma,
+    *MIGRATED_SCHEDULER_NODES,
+]
 
 

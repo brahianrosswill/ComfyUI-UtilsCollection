@@ -1421,7 +1421,7 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
         )
         return io.Schema(
             node_id="UC_StagedMediaPipeFaceBackgroundComposite",
-            display_name="Face Background Composite",
+            display_name="Staged Face Background Composite",
             category="utils/image",
             inputs=[
                 io.Image.Input("background"),
@@ -1529,6 +1529,15 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                     ),
                 ),
                 io.Image.Input("background", tooltip="Single image used as the scene canvas."),
+                StagedBackgroundOptionsType.Input(
+                    "background_options",
+                    display_name="Background Options",
+                    optional=True,
+                    tooltip=(
+                        "Optional Staged Composite Options. Connected values "
+                        "override the tuning widgets below."
+                    ),
+                ),
                 io.Combo.Input(
                     "execution_mode",
                     options=["run_staging", "run_staged", "full_run"],
@@ -1615,8 +1624,25 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
         mask_resize_method="auto",
         background_removal_model_name="birefnet",
         background_removal_model=None,
+        background_options=None,
     ):
         node_id = str(cls.hidden.unique_id or "")
+        if background_options is None:
+            background_options = {
+                **UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS,
+                "mask_threshold": mask_threshold,
+                "border_cleanup_width": border_cleanup_width,
+                "artifact_cleanup_radius": artifact_cleanup_radius,
+                "gap_fill_radius": gap_fill_radius,
+                "feather_radius": feather_radius,
+                "image_resize_method": image_resize_method,
+                "mask_resize_method": mask_resize_method,
+            }
+        else:
+            background_options = (
+                UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS
+                | background_options
+            )
         if isinstance(execution_mode, bool):
             execution_mode = "run_staged" if execution_mode else "run_staging"
         if execution_mode not in ("run_staging", "run_staged", "full_run"):
@@ -1640,26 +1666,42 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             staged = _stage_layered_foregrounds(
                 background_removal_model,
                 foreground_images,
-                mask_threshold,
-                border_cleanup_width,
-                artifact_cleanup_radius,
-                gap_fill_radius,
-                mask_resize_method,
+                background_options["mask_threshold"],
+                background_options["border_cleanup_width"],
+                background_options["artifact_cleanup_radius"],
+                background_options["gap_fill_radius"],
+                background_options["mask_resize_method"],
                 placement_data,
             )
             staged["background_removal_model_name"] = effective_model_name
             cls._staged_by_node[node_id] = staged
             if execution_mode == "run_staging":
-                return _preview_staged_foregrounds(background, staged, feather_radius)
+                preview_stage = _apply_staged_layer_options(
+                    staged,
+                    background_options["foreground_blend"],
+                    1.0,
+                    0,
+                )
+                return _preview_staged_foregrounds(
+                    background,
+                    preview_stage,
+                    background_options["feather_radius"],
+                )
             stage_mode = "full_run"
+        staged = _apply_staged_layer_options(
+            staged,
+            background_options["foreground_blend"],
+            1.0,
+            0,
+        )
         return _composite_staged_foregrounds(
             background,
             staged,
             placement_data,
-            feather_radius,
+            background_options["feather_radius"],
             stage_mode=stage_mode,
-            image_resize_method=image_resize_method,
-            mask_resize_method=mask_resize_method,
+            image_resize_method=background_options["image_resize_method"],
+            mask_resize_method=background_options["mask_resize_method"],
         )
 
 
