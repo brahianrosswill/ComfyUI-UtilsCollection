@@ -12,10 +12,12 @@ from .loader_nodes import *
 from .text_nodes import *
 from .textgen_nodes import *
 from .composite_nodes import *
+from .logic_math_nodes import *
 
 from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
 from .node_metadata import enrich_node_list
+from .scheduler_helpers import register_scheduler_handlers
 
 class SamplingUtils(ComfyExtension):
     @override
@@ -173,12 +175,14 @@ class SamplingUtils(ComfyExtension):
             TextGenerateQwen35SystemPrompt,
             ColorConvertNode,
             EncoderNodesGuide,
-            Ideogram4SchedulerPreset,
+            *LOGIC_MATH_NODES,
+            *SCHEDULER_NODES,
         ])
 
     @override
     async def on_load(self) -> None:
         """Called by ComfyUI backend on startup to initialize resources and register API extensions."""
+        register_scheduler_handlers()
         await register_replacements()
 
 async def comfy_entrypoint() -> SamplingUtils:
