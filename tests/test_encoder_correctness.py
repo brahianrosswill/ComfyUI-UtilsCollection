@@ -1,3 +1,4 @@
+import inspect
 import pathlib
 import sys
 import types
@@ -112,7 +113,6 @@ def test_reference_latent_encoders_append_configurable_multiple():
     for class_name in VAE_MULTIPLE_ENCODERS:
         schema = getattr(encoder_nodes, class_name).define_schema()
         control = next(value for value in schema.inputs if value.id == "vae_dimension_multiple")
-        assert schema.inputs[-1] is control
         assert control.default == 8
         assert control.min == 4
         assert control.step == 4
@@ -578,3 +578,14 @@ def test_canonical_and_compatibility_schema_flags():
     assert TextEncodeKrea2SysEditScaledAdvAttn.define_schema().is_deprecated
     assert UC_Qwen3VLInputEmbeds.define_schema().is_deprecated
     assert not UC_VLMInputEmbeds.define_schema().is_deprecated
+
+
+def test_visual_fusion_encoder_formula_defaults_are_blank():
+    for node in (
+        encoder_nodes.TextEncodeKrea2SystemEditScaledAdv,
+        encoder_nodes.TextEncodeEditScaledAdv,
+        encoder_nodes.TextEncodeKrea2SysEditScaledAdvAttn,
+    ):
+        inputs = {value.id: value for value in node.define_schema().inputs}
+        assert inputs["formula"].default == ""
+        assert inspect.signature(node.execute).parameters["formula"].default == ""

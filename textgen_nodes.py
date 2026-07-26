@@ -238,7 +238,7 @@ MODEL_TEMPLATES = {
         "user_suffix": "<|im_end|>\n",
         "assistant_prefix": "<|im_start|>assistant\n",
         "visual_token": "<|vision_start|><|image_pad|><|vision_end|>",
-        "suppress_thinking": "<think>\n\n</think>\n\n"
+        "suppress_thinking": None
     },
     "llama3": {
         "system_prefix": "<|start_header_id|>system<|end_header_id|>\n\n",
@@ -323,6 +323,14 @@ class UC_TextGenerate(io.ComfyNode):
                     io.Float.Input("repetition_penalty", default=1.05, min=0.0, max=5.0, step=0.01),
                     io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff),
                     io.Float.Input("presence_penalty", optional=True, default=0.0, min=0.0, max=5.0, step=0.01),
+                    io.Int.Input(
+                        "empty_response_retries",
+                        default=4,
+                        min=0,
+                        max=32,
+                        advanced=True,
+                        tooltip="Retry blank generations with consecutive seeds and return the successful seed.",
+                    ),
                 ]
             ),
             io.DynamicCombo.Option(
@@ -365,7 +373,7 @@ class UC_TextGenerate(io.ComfyNode):
                     "formula",
                     default="",
                     multiline=False,
-                    tooltip="Optional mathematical formula to blend image inputs at pixel-tensor level before encoding. Use variables a, b, c, d... to reference active connected image inputs. If empty, connected images are treated as separate inputs."
+                    tooltip="Optional pixel-tensor formula used only when visual fusion is off. Use a, b, c, d... for active images. Empty keeps images separate."
                 ),
                 io.Boolean.Input("thinking", optional=True, default=False, tooltip="Preserves chain-of-thought blocks if the model supports reasoning."),
                 io.Boolean.Input(
@@ -379,7 +387,8 @@ class UC_TextGenerate(io.ComfyNode):
                 io.Autogrow.Input("image_inputs", template=autogrow_template),
             ],
             outputs=[
-                io.String.Output(display_name="generated_text"),
+                io.String.Output("generated_text", display_name="Generated Text"),
+                io.Int.Output("seed", display_name="Seed"),
             ],
         )
 
@@ -412,7 +421,10 @@ class UC_TextGenerate(io.ComfyNode):
             letter = chr(97 + idx) # 0 -> 'a', 1 -> 'b', 2 -> 'c'...
             processed_images[letter] = scaled_img
 
-        if formula and formula.strip():
+        fusion_method = (visual_fusion_config or {}).get("visual_fusion_method", "off")
+        fusion_active = fusion_method != "off"
+
+        if not fusion_active and formula and formula.strip():
             try:
                 blended_image = evaluate_formula(formula.strip(), _aligned_image_values(processed_images))
                 # Override raw_images and processed_images to contain only this single blended image
@@ -482,8 +494,6 @@ class UC_TextGenerate(io.ComfyNode):
         if images_vl:
             images_vl = [item[i:i + 1] for item in images_vl for i in range(item.shape[0])]
 
-        fusion_method = (visual_fusion_config or {}).get("visual_fusion_method", "off")
-        fusion_active = fusion_method != "off"
         if fusion_active:
             if template_name not in {"qwen3vl", "qwen35"}:
                 raise ValueError(f"Active visual fusion is supported only by Core Qwen3-VL and Qwen3.5, not {template_name}.")
@@ -539,6 +549,7 @@ class UC_TextGenerate(io.ComfyNode):
         seed = sampling_mode.get("seed", None)
         repetition_penalty = sampling_mode.get("repetition_penalty", 1.0)
         presence_penalty = sampling_mode.get("presence_penalty", 0.0)
+        empty_response_retries = sampling_mode.get("empty_response_retries", 0)
 
         # 8. Generation & Decoding
         generation_args = dict(
@@ -552,18 +563,29 @@ class UC_TextGenerate(io.ComfyNode):
             presence_penalty=presence_penalty,
             seed=seed
         )
-        if fusion_active:
-            if template_name == "qwen3vl":
-                generated_ids = generate_fused_qwen3vl(clip, full_prompt, images_vl, visual_fusion_config, generation_args, thinking)
-            else:
-                generated_ids = generate_fused_qwen35(clip, full_prompt, images_vl, visual_fusion_config, generation_args, thinking)
-        else:
-            generated_ids = clip.generate(tokens, **generation_args)
+        attempts = empty_response_retries + 1 if do_sample and seed is not None else 1
+        used_seed = int(seed) if seed is not None else 0
+        generated_text = ""
+        for attempt in range(attempts):
+            if seed is not None:
+                used_seed = (int(seed) + attempt) & 0xffffffffffffffff
+                generation_args["seed"] = used_seed
 
-        generated_text = clip.decode(generated_ids, skip_special_tokens=True)
+            if fusion_active:
+                if template_name == "qwen3vl":
+                    generated_ids = generate_fused_qwen3vl(clip, full_prompt, images_vl, visual_fusion_config, generation_args, thinking)
+                else:
+                    generated_ids = generate_fused_qwen35(clip, full_prompt, images_vl, visual_fusion_config, generation_args, thinking)
+            else:
+                generated_ids = clip.generate(tokens, **generation_args)
+
+            generated_text = clip.decode(generated_ids, skip_special_tokens=True)
+            if generated_text.strip():
+                break
+
         if escape_parentheses:
             generated_text = generated_text.replace("(", r"\(").replace(")", r"\)")
-        return io.NodeOutput(generated_text)
+        return io.NodeOutput(generated_text, used_seed)
 
 
 class UC_TextGenerateQwen35SystemPrompt(io.ComfyNode):

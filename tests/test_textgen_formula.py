@@ -93,8 +93,12 @@ def test_text_generate_schema_has_no_obsolete_blend_config():
 
 def test_text_generate_appends_optional_visual_fusion_config():
     inputs = textgen_nodes.UC_TextGenerate.define_schema().inputs
-    assert inputs[-1].id == "visual_fusion_config"
+    assert "visual_fusion_config" in {value.id for value in inputs}
     assert "visual_fusion_config" in inspect.signature(textgen_nodes.UC_TextGenerate.execute).parameters
+    assert [output.id for output in textgen_nodes.UC_TextGenerate.define_schema().outputs] == [
+        "generated_text",
+        "seed",
+    ]
 
 
 def test_text_generate_parenthesis_escaping_is_optional_and_final():
@@ -102,9 +106,10 @@ def test_text_generate_parenthesis_escaping_is_optional_and_final():
     clip.decode = lambda *args, **kwargs: "plain (Overwatch), (banana)"
     common = (clip, "hello", "", "Original", 12, {"sampling_mode": "off"})
 
-    assert textgen_nodes.UC_TextGenerate.execute(*common).args == ("plain (Overwatch), (banana)",)
+    assert textgen_nodes.UC_TextGenerate.execute(*common).args == ("plain (Overwatch), (banana)", 0)
     assert textgen_nodes.UC_TextGenerate.execute(*common, escape_parentheses=True).args == (
         r"plain \(Overwatch\), \(banana\)",
+        0,
     )
 
 
@@ -133,9 +138,106 @@ def test_text_generate_disconnected_or_off_uses_original_generation_path(config)
         clip, "hello", "", "Original", 12, {"sampling_mode": "off"},
         image_inputs={}, visual_fusion_config=config,
     )
-    assert result.args == ("decoded",)
+    assert result.args == ("decoded", 0)
     assert len(clip.tokenize_calls) == len(clip.generate_calls) == 1
     assert clip.generate_calls[0][1]["max_length"] == 12
+
+
+def test_text_generate_retries_blank_sampled_outputs_and_returns_successful_seed():
+    clip = _GenerateClip()
+    responses = iter(["", " \n", "caption"])
+    clip.decode = lambda *args, **kwargs: next(responses)
+    sampling = {
+        "sampling_mode": "on",
+        "seed": 41,
+        "empty_response_retries": 4,
+    }
+
+    result = textgen_nodes.UC_TextGenerate.execute(
+        clip, "describe", "", "Original", 12, sampling,
+        image_inputs={}, visual_fusion_config=None,
+    )
+
+    assert result.args == ("caption", 43)
+    assert [call[1]["seed"] for call in clip.generate_calls] == [41, 42, 43]
+
+
+def test_text_generate_retry_seed_wraps_at_unsigned_64_bit_limit():
+    clip = _GenerateClip()
+    responses = iter(["", "caption"])
+    clip.decode = lambda *args, **kwargs: next(responses)
+    sampling = {
+        "sampling_mode": "on",
+        "seed": 0xffffffffffffffff,
+        "empty_response_retries": 1,
+    }
+
+    result = textgen_nodes.UC_TextGenerate.execute(
+        clip, "describe", "", "Original", 12, sampling,
+        image_inputs={}, visual_fusion_config=None,
+    )
+
+    assert result.args == ("caption", 0)
+    assert [call[1]["seed"] for call in clip.generate_calls] == [
+        0xffffffffffffffff,
+        0,
+    ]
+
+
+def test_text_generate_does_not_retry_deterministic_blank_output():
+    clip = _GenerateClip()
+    clip.decode = lambda *args, **kwargs: ""
+
+    result = textgen_nodes.UC_TextGenerate.execute(
+        clip, "describe", "", "Original", 12,
+        {"sampling_mode": "off", "empty_response_retries": 4},
+        image_inputs={}, visual_fusion_config=None,
+    )
+
+    assert result.args == ("", 0)
+    assert len(clip.generate_calls) == 1
+
+
+def test_qwen3vl_system_prompt_uses_official_assistant_generation_boundary():
+    clip = _GenerateClip()
+    textgen_nodes.UC_TextGenerate.execute(
+        clip, "describe", "caption rules", "Original", 12, {"sampling_mode": "off"},
+        image_inputs={}, visual_fusion_config=None,
+    )
+
+    prompt = clip.tokenize_calls[0][0]
+    assert prompt == (
+        "<|im_start|>system\ncaption rules<|im_end|>\n"
+        "<|im_start|>user\ndescribe<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    assert "<think>" not in prompt
+
+
+def test_qwen3vl_fused_system_prompt_uses_official_assistant_generation_boundary(monkeypatch):
+    captured = {}
+
+    def generate(clip, full_prompt, images, config, generation_args, thinking=False):
+        captured["prompt"] = full_prompt
+        captured["images"] = images
+        return [7]
+
+    monkeypatch.setattr(textgen_nodes, "generate_fused_qwen3vl", generate)
+    clip = _GenerateClip()
+    image_a = torch.zeros((1, 2, 2, 3))
+    image_b = torch.ones((1, 2, 2, 3))
+    textgen_nodes.UC_TextGenerate.execute(
+        clip, "describe", "caption rules", "Original", 12, {"sampling_mode": "off"},
+        formula="a",
+        image_inputs={"image1": image_a, "image2": image_b},
+        visual_fusion_config={"visual_fusion_method": "linear"},
+    )
+
+    assert captured["prompt"].endswith("<|im_start|>assistant\n")
+    assert "<think>" not in captured["prompt"]
+    assert len(captured["images"]) == 2
+    assert torch.equal(captured["images"][0], image_a)
+    assert torch.equal(captured["images"][1], image_b)
 
 
 def test_active_visual_fusion_rejects_unsupported_model_without_tokenizing():
@@ -236,7 +338,7 @@ def test_textgen_template_detection_rejects_unknown_clip(clip):
 
 def test_qwen_template_families_use_exact_thinking_suppression():
     assert textgen_nodes.MODEL_TEMPLATES["qwen35"]["suppress_thinking"] == "<think>\n</think>\n"
-    assert textgen_nodes.MODEL_TEMPLATES["qwen3vl"]["suppress_thinking"] == "<think>\n\n</think>\n\n"
+    assert textgen_nodes.MODEL_TEMPLATES["qwen3vl"]["suppress_thinking"] is None
     assert textgen_nodes.MODEL_TEMPLATES["qwen35"]["visual_token"] == textgen_nodes.MODEL_TEMPLATES["qwen3vl"]["visual_token"]
 
 

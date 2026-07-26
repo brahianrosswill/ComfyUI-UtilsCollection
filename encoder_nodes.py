@@ -1873,9 +1873,9 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 # --- Fallback Controls ---
                 io.String.Input(
                     "formula",
-                    default="a",
+                    default="",
                     multiline=False,
-                    tooltip="Mathematical formula used with fusion off when no numbered inline placeholders are present. Use a, b, c, d... for active image passes.",
+                    tooltip="Optional formula used only with fusion off when no numbered inline placeholders are present. Empty selects the first image pass.",
                 ),
                 io.Combo.Input(
                     "padding_method",
@@ -1906,7 +1906,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
@@ -2022,7 +2022,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 if pooled_output is not None:
                     pooled_tensors["a"] = pooled_output
                 reference_cond_dict = inline_cond[0][1]
-                if formula.strip() != "a":
+                if formula.strip() not in {"", "a"}:
                     logging.warning(
                         "AdvancedVisualConditioning: numbered inline placeholders encode one native multimodal sequence; formula '%s' was ignored.",
                         formula,
@@ -2087,7 +2087,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
             )
         else:
-            C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
+            C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)
 
         # Build final conditioning dictionary
         final_cond_dict = reference_cond_dict.copy()
@@ -2163,9 +2163,9 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 # --- Fallback Controls ---
                 io.String.Input(
                     "formula",
-                    default="a",
+                    default="",
                     multiline=False,
-                    tooltip="Mathematical formula to blend conditioning outputs. Active ONLY if visual_fusion_config is disconnected or set to 'off'. Use variables a, b, c, d... to reference active connected image inputs.",
+                    tooltip="Optional conditioning formula used only when visual fusion is off. Empty selects the first image pass.",
                 ),
                 io.Combo.Input(
                     "padding_method",
@@ -2196,7 +2196,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
+    def execute(cls, clip, prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
@@ -2297,7 +2297,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
             )
         else:
-            C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
+            C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)
 
         # Build final conditioning dictionary
         final_cond_dict = reference_cond_dict.copy()
@@ -2766,9 +2766,9 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                 # --- Fallback Controls ---
                 io.String.Input(
                     "formula",
-                    default="a",
+                    default="",
                     multiline=False,
-                    tooltip="Mathematical formula to blend conditioning outputs. Active ONLY if visual_fusion_config is disconnected or set to 'off'. Use variables a, b, c, d... to reference active connected image inputs.",
+                    tooltip="Optional conditioning formula used only when visual fusion is off. Empty selects the first image pass.",
                 ),
                 io.Combo.Input(
                     "padding_method",
@@ -2801,7 +2801,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: str, visual_fusion_config: dict = None, formula: str = "a", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
+    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: str, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
@@ -3014,7 +3014,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
                 )
             else:
-                C_blended, P_blended = evaluate_conditioning_formula(formula, sequence_tensors, pooled_tensors, padding_method=padding_method)
+                C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)
 
             # Build final conditioning dictionary
             final_cond_dict = reference_cond_dict.copy()
