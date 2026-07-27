@@ -38,6 +38,8 @@ from .encoder_helpers import(
     encode_vlm_resolution_samples,
     prepare_vae_reference_image,
     qwen3vl_visual_encoder_path,
+    CONSENSUS_BLEND_PRESETS,
+    execute_advanced_visual_consensus,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -177,6 +179,9 @@ class UC_AttentionBiasTextEncode(io.ComfyNode):
 # --- Type Definitions for Modular Configurations ---
 TextBlendConfig = io.Custom("TEXT_BLEND_CONFIG")
 VisualFusionConfig = io.Custom("VISUAL_FUSION_CONFIG")
+AdvancedVisualConfig = io.Custom("ADVANCED_VISUAL_CONFIG")
+AdvancedConsensusConfig = io.Custom("ADVANCED_CONSENSUS_CONFIG")
+VisualConsensusConfig = io.Custom("VISUAL_CONSENSUS_CONFIG")
 
 class UC_TextConsensusBlendConfig(io.ComfyNode):
     @classmethod
@@ -342,6 +347,209 @@ class UC_VisualFusionConfig(io.ComfyNode):
             "save_path": save_path
         }
         return io.NodeOutput(config)
+
+
+class UC_AdvancedVisualConfiguration(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_AdvancedVisualConfiguration",
+            display_name="Advanced Visual Configuration",
+            category="advanced/conditioning",
+            inputs=[
+                io.Int.Input("block_size", default=2, min=1, max=8, step=1, tooltip="Overrides the joint block size for block-interleave."),
+                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Overrides the joint first-source probability for random-dither."),
+                io.Combo.Input("dither_pattern", options=["checkerboard", "block-interleave"], default="checkerboard", tooltip="Overrides the joint pattern used to distribute remaining random-dither sources."),
+                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Overrides the joint spatial seed."),
+                io.Combo.Input("visual_encoder_path", options=["grid-deepstack", "legacy-flat"], default="grid-deepstack", tooltip="Core grid/DeepStack is the current encoder path. Legacy flat is exposed only as an explicit advanced choice."),
+                io.Boolean.Input("dither_mask_cleanup", default=False, tooltip="Apply the existing deterministic one-token island cleanup to hard dither masks."),
+                io.Float.Input("spatial_perturbation", default=0.0, min=0.0, max=1.0, step=0.01, tooltip="Seeded source-cell exchanges for hard spatial methods."),
+                io.Boolean.Input("save_blended_embeds", default=False, tooltip="Export the base-resolution raw spatially fused visual embedding using the same spatial mask as conditioning fusion."),
+                io.String.Input("save_path", default="blended_visual_embeds.safetensors", tooltip="Relative output path under ComfyUI's embeddings directory."),
+            ],
+            outputs=[
+                AdvancedVisualConfig.Output("advanced_visual_config", display_name="Advanced Visual Config"),
+            ],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        block_size,
+        dither_ratio,
+        dither_pattern,
+        seed,
+        visual_encoder_path,
+        dither_mask_cleanup,
+        spatial_perturbation,
+        save_blended_embeds,
+        save_path,
+    ) -> io.NodeOutput:
+        return io.NodeOutput({
+            "visual_block_size": block_size,
+            "dither_ratio": dither_ratio,
+            "dither_secondary_pattern": dither_pattern,
+            "seed": seed,
+            "visual_encoder_path": visual_encoder_path,
+            "dither_mask_cleanup": dither_mask_cleanup,
+            "spatial_perturbation": spatial_perturbation,
+            "save_blended_embeds": save_blended_embeds,
+            "save_path": save_path,
+        })
+
+
+class UC_AdvancedConsensusConfiguration(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_AdvancedConsensusConfiguration",
+            display_name="Advanced Consensus Configuration",
+            category="advanced/conditioning",
+            inputs=[
+                io.Combo.Input(
+                    "consensus_preset",
+                    options=["custom", *CONSENSUS_BLEND_PRESETS],
+                    default="custom",
+                    tooltip="Authoritative advanced selection. Named presets use their stored consensus mathematics while position weight, common-prefix preservation, global scale, and resolution samples remain available here. Custom uses the full manual parameter set below.",
+                ),
+                io.Combo.Input("blend_method", options=["linear", "consensus"], default="consensus"),
+                io.Combo.Input("consensus_type", options=["mean", "median"], default="median"),
+                io.Combo.Input("alignment_method", options=["index", "similarity"], default="similarity", tooltip="Alignment applies to complete conditioning sequences."),
+                io.Float.Input("alignment_threshold", default=0.4, min=0.0, max=1.0, step=0.01),
+                io.Float.Input("similarity_threshold", default=0.0, min=-1.0, max=1.0, step=0.01),
+                io.Float.Input("power_alpha", default=2.0, min=0.0, max=10.0, step=0.1),
+                io.Float.Input("diversity_beta", default=0.0, min=0.0, max=10.0, step=0.1),
+                io.Boolean.Input("rescale_norm", default=True),
+                io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01),
+                io.Boolean.Input("dynamic_similarity_contrast", default=False),
+                io.Boolean.Input("soft_comfort_bandpass", default=False),
+                io.Float.Input("position_weight", default=0.0, min=0.0, max=1.0, step=0.01),
+                io.Boolean.Input("preserve_common_prefix", default=False),
+                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Odd adjacent-resolution sample count used only when consensus is enabled. Fewer than three batch lanes enforce a minimum of three."),
+            ],
+            outputs=[
+                AdvancedConsensusConfig.Output("advanced_consensus_config", display_name="Advanced Consensus Config"),
+            ],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        consensus_preset,
+        blend_method,
+        consensus_type,
+        alignment_method,
+        alignment_threshold,
+        similarity_threshold,
+        power_alpha,
+        diversity_beta,
+        rescale_norm,
+        global_scale,
+        dynamic_similarity_contrast,
+        soft_comfort_bandpass,
+        position_weight,
+        preserve_common_prefix,
+        resolution_samples,
+    ) -> io.NodeOutput:
+        return io.NodeOutput({
+            "blend_preset": consensus_preset,
+            "blend_method": blend_method,
+            "consensus_type": consensus_type,
+            "alignment_method": alignment_method,
+            "alignment_threshold": alignment_threshold,
+            "similarity_threshold": similarity_threshold,
+            "power_alpha": power_alpha,
+            "diversity_beta": diversity_beta,
+            "rescale_norm": rescale_norm,
+            "global_scale": global_scale,
+            "dynamic_similarity_contrast": dynamic_similarity_contrast,
+            "soft_comfort_bandpass": soft_comfort_bandpass,
+            "position_weight": position_weight,
+            "preserve_common_prefix": preserve_common_prefix,
+            "resolution_samples": resolution_samples,
+        })
+
+
+class UC_VisualConsensusConfiguration(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_VisualConsensusConfiguration",
+            display_name="Visual Consensus Configuration",
+            category="advanced/conditioning",
+            inputs=[
+                io.Boolean.Input("enable_spatial_fusion", default=True, tooltip="Authoritative activation switch, including when Advanced Visual Configuration is connected."),
+                io.Combo.Input("visual_fusion_method", options=["linear", "checkerboard", "block-interleave", "random-dither"], default="checkerboard", tooltip="Always controls the spatial method. Advanced Visual Configuration does not replace it."),
+                io.Int.Input("block_size", default=2, min=1, max=8, step=1, tooltip="Used by block-interleave; overridden by Advanced Visual Configuration."),
+                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Used by random-dither; overridden by Advanced Visual Configuration."),
+                io.Combo.Input("dither_pattern", options=["checkerboard", "block-interleave"], default="checkerboard", tooltip="Used by random-dither; overridden by Advanced Visual Configuration."),
+                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Spatial seed; overridden by Advanced Visual Configuration."),
+                io.Boolean.Input("enable_consensus", default=True, tooltip="Authoritative activation switch, including when Advanced Consensus Configuration is connected."),
+                io.Combo.Input("consensus_preset", options=list(CONSENSUS_BLEND_PRESETS), default="baseline", tooltip="Existing named consensus mathematics. Advanced Consensus Configuration replaces this preset and global scale."),
+                io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Basal consensus scale. Advanced Consensus Configuration replaces it."),
+                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Odd adjacent-resolution sample count used when consensus is enabled. Fewer than three batch lanes enforce an effective minimum of three. Advanced Consensus Configuration overrides this value."),
+                AdvancedVisualConfig.Input("advanced_visual_config", display_name="Advanced Visual Configuration", optional=True, tooltip="Overrides duplicated simple visual tuning. The spatial activation and method above remain authoritative."),
+                AdvancedConsensusConfig.Input("advanced_consensus_config", display_name="Advanced Consensus Configuration", optional=True, tooltip="Completely replaces the simple preset, global scale, and resolution sample count. Its own authoritative preset defaults to custom. Consensus activation above remains authoritative."),
+            ],
+            outputs=[
+                VisualConsensusConfig.Output("visual_consensus_config", display_name="Visual Consensus Config"),
+            ],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        enable_spatial_fusion,
+        visual_fusion_method,
+        block_size,
+        dither_ratio,
+        dither_pattern,
+        seed,
+        enable_consensus,
+        consensus_preset,
+        global_scale,
+        resolution_samples,
+        advanced_visual_config=None,
+        advanced_consensus_config=None,
+    ) -> io.NodeOutput:
+        method_names = {
+            "linear": "linear",
+            "checkerboard": "spatial-checkerboard",
+            "block-interleave": "spatial-block-interleave",
+            "random-dither": "spatial-dither-random",
+        }
+        visual = {
+            "visual_fusion_method": method_names[visual_fusion_method],
+            "visual_block_size": block_size,
+            "dither_ratio": dither_ratio,
+            "dither_secondary_pattern": dither_pattern,
+            "seed": seed,
+            "visual_encoder_path": "grid-deepstack",
+            "dither_mask_cleanup": False,
+            "spatial_perturbation": 0.0,
+            "save_blended_embeds": False,
+            "save_path": "blended_visual_embeds.safetensors",
+        }
+        if advanced_visual_config is not None:
+            visual.update(advanced_visual_config)
+        consensus = (
+            dict(advanced_consensus_config)
+            if advanced_consensus_config is not None
+            else {
+                "blend_preset": consensus_preset,
+                "global_scale": global_scale,
+                "resolution_samples": resolution_samples,
+            }
+        )
+        return io.NodeOutput({
+            "enable_spatial_fusion": enable_spatial_fusion,
+            "enable_consensus": enable_consensus,
+            "visual": visual,
+            "consensus": consensus,
+        })
 
 class UC_ConditioningConsensusBlend(io.ComfyNode):
     @classmethod
@@ -3113,6 +3321,91 @@ class UC_AdvancedVisualConditioningEncode(TextEncodeKrea2SystemEditScaledAdv):
         # Model-backed validation is required before this can be stable.
         schema.is_experimental = True
         return schema
+
+
+class UC_AdvancedVisConEncoder(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("image", optional=True),
+            prefix="image",
+            min=1,
+            max=16,
+        )
+        return io.Schema(
+            node_id="UC_AdvancedVisConEncoder",
+            display_name="Advanced Visual Consensus Encoder",
+            category="advanced/conditioning",
+            inputs=[
+                io.Clip.Input("clip", tooltip="CLIP/T5 dual text encoder reference."),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default=""),
+                io.Int.Input(
+                    "vlm_resolution",
+                    default=384,
+                    min=0,
+                    max=4096,
+                    step=32,
+                    tooltip="Equivalent-square VLM target. Values outside 256-3584 preserve Original resolution.",
+                ),
+                VisualConsensusConfig.Input(
+                    "visual_consensus_config",
+                    display_name="Visual Consensus Configuration",
+                    tooltip="Required joint configuration. Spatial fusion completes independently at every resolution before complete-conditioning consensus.",
+                ),
+                io.Combo.Input(
+                    "vae_resolution",
+                    options=["Ultra (512)", "Turbo (768)", "Fast (1024)", "Balanced (1280)", "Detailed (1536)", "Original"],
+                    default="Fast (1024)",
+                ),
+                io.Combo.Input(
+                    "ref_latent_mode",
+                    options=["off", "single", "multi", "parallel-single", "parallel-multi"],
+                    default="off",
+                ),
+                io.Vae.Input("vae", optional=True),
+                io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1),
+                io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True),
+                io.Autogrow.Input(
+                    "image_inputs",
+                    template=autogrow_template,
+                    tooltip="One batched socket equals separate visual sources. Multiple batched sockets form index-aligned lanes; singleton sockets broadcast.",
+                ),
+            ],
+            outputs=[io.Conditioning.Output()],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        clip,
+        prompt,
+        system_prompt,
+        vlm_resolution,
+        visual_consensus_config,
+        image_inputs: io.Autogrow.Type,
+        vae_resolution="Fast (1024)",
+        ref_latent_mode="off",
+        vae=None,
+        multiplier=1.0,
+        vae_dimension_multiple=8,
+    ) -> io.NodeOutput:
+        conditioning = execute_advanced_visual_consensus(
+            clip,
+            prompt,
+            system_prompt,
+            vlm_resolution,
+            image_inputs,
+            visual_consensus_config,
+            vae_resolution,
+            ref_latent_mode,
+            vae,
+            multiplier,
+            vae_dimension_multiple,
+            apply_parallel_ref_latents,
+        )
+        return io.NodeOutput(conditioning)
 
 
 class UC_VLMInputEmbeds(UC_Qwen3VLInputEmbeds):

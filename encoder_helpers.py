@@ -1820,6 +1820,441 @@ def extract_and_flatten_images(image_inputs) -> tuple:
 
     return raw_images, flat_images, is_zero_indexed
 
+
+def build_visual_consensus_batch_lanes(image_inputs):
+    """Keep visual sources and index-aligned execution batches as separate axes."""
+    if not image_inputs:
+        return [], []
+
+    def socket_number(name):
+        digits = re.findall(r"\d+", name)
+        return int(digits[0]) if digits else 0
+
+    sockets = []
+    for name in sorted(image_inputs, key=socket_number):
+        value = image_inputs[name]
+        if value is None:
+            continue
+        values = value if isinstance(value, list) else [value]
+        expanded = []
+        for tensor in values:
+            if not torch.is_tensor(tensor) or tensor.ndim != 4:
+                raise ValueError("Every visual input must be a BHWC IMAGE tensor.")
+            expanded.extend(tensor[index:index + 1] for index in range(tensor.shape[0]))
+        if expanded:
+            sockets.append(expanded)
+
+    if not sockets:
+        return [], []
+
+    # A batch in the only connected socket is explicitly equivalent to the
+    # same images connected as separate visual sources.
+    if len(sockets) == 1:
+        return [sockets[0]], list(sockets[0])
+
+    non_singleton_lengths = {len(socket) for socket in sockets if len(socket) > 1}
+    if len(non_singleton_lengths) > 1:
+        lengths = ", ".join(str(len(socket)) for socket in sockets)
+        raise ValueError(f"Visual input batch lengths must match or be 1 (got {lengths}).")
+
+    lane_count = next(iter(non_singleton_lengths), 1)
+    lanes = [
+        [socket[0] if len(socket) == 1 else socket[lane] for socket in sockets]
+        for lane in range(lane_count)
+    ]
+    reference_images = [image for socket in sockets for image in socket]
+    return lanes, reference_images
+
+
+def blend_complete_conditionings(conditionings, blend_config):
+    """Apply the same complete-conditioning contract as UC_ConditioningConsensusBlend."""
+    if not conditionings:
+        raise ValueError("Consensus requires at least one complete conditioning.")
+    if len(conditionings) == 1:
+        return conditionings[0]
+
+    schedule_lengths = {len(conditioning) for conditioning in conditionings}
+    if len(schedule_lengths) != 1:
+        raise ValueError("All conditioning samples must have the same schedule length.")
+
+    device = comfy.model_management.get_torch_device()
+    compute_dtype = comfy.model_management.intermediate_dtype()
+    blended = []
+    for schedule_index in range(next(iter(schedule_lengths))):
+        entries = [conditioning[schedule_index] for conditioning in conditionings]
+        sequence_tensors = {
+            chr(97 + index): entry[0] for index, entry in enumerate(entries)
+        }
+        pooled_tensors = {
+            chr(97 + index): entry[1].get("pooled_output")
+            for index, entry in enumerate(entries)
+        }
+        tensor, pooled = blend_text_vectors(
+            sequence_tensors,
+            blend_config,
+            pooled_tensors=pooled_tensors,
+            device=device,
+            compute_dtype=compute_dtype,
+        )
+
+        layout_keys = {
+            "attention_mask",
+            "attention_mask_img_shape",
+            "embeds_info",
+            "pooled_output",
+        }
+        metadata_items = [entry[1] for entry in entries]
+        common_keys = set.intersection(
+            *(set(metadata) for metadata in metadata_items)
+        ) - layout_keys
+        metadata = {}
+        for key in common_keys:
+            values = [item[key] for item in metadata_items]
+            first = values[0]
+            if torch.is_tensor(first):
+                if all(
+                    torch.is_tensor(value)
+                    and value.shape == first.shape
+                    and torch.equal(value, first)
+                    for value in values[1:]
+                ):
+                    metadata[key] = first
+            elif all(value is first for value in values[1:]):
+                metadata[key] = first
+            elif isinstance(first, (str, int, float, bool, type(None))) and all(
+                value == first for value in values[1:]
+            ):
+                metadata[key] = first
+        if pooled is not None:
+            metadata["pooled_output"] = pooled
+        blended.append([tensor, metadata])
+    return blended
+
+
+def batch_complete_conditionings(conditionings):
+    """Combine independent execution lanes without treating them as consensus samples."""
+    if not conditionings:
+        raise ValueError("At least one completed conditioning batch lane is required.")
+    if len(conditionings) == 1:
+        return conditionings[0]
+    schedule_lengths = {len(conditioning) for conditioning in conditionings}
+    if len(schedule_lengths) != 1:
+        raise ValueError("All conditioning batch lanes must have the same schedule length.")
+
+    batched = []
+    for schedule_index in range(next(iter(schedule_lengths))):
+        entries = [conditioning[schedule_index] for conditioning in conditionings]
+        tensors = [entry[0] for entry in entries]
+        if any(tensor.shape[1:] != tensors[0].shape[1:] for tensor in tensors[1:]):
+            raise ValueError(
+                "Visual batch lanes produced incompatible conditioning shapes."
+            )
+        metadata_items = [entry[1] for entry in entries]
+        metadata = {}
+        common_keys = set.intersection(*(set(item) for item in metadata_items))
+        for key in common_keys:
+            values = [item[key] for item in metadata_items]
+            first = values[0]
+            if torch.is_tensor(first):
+                if all(
+                    torch.is_tensor(value)
+                    and value.shape[1:] == first.shape[1:]
+                    for value in values[1:]
+                ):
+                    metadata[key] = torch.cat(values, dim=0)
+            elif all(value is first for value in values[1:]):
+                metadata[key] = first
+            elif isinstance(first, (str, int, float, bool, type(None))) and all(
+                value == first for value in values[1:]
+            ):
+                metadata[key] = first
+        batched.append([torch.cat(tensors, dim=0), metadata])
+    return batched
+
+
+def _format_advanced_visual_consensus_prompt(prompt, system_prompt):
+    if system_prompt:
+        return (
+            "<|im_start|>user\n<|im_end|>\n"
+            f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+            f"<|im_start|>user\n{prompt}<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+    return (
+        "<|im_start|>system\nDescribe the image by detailing the color, shape, "
+        "size, texture, quantity, text, spatial relationships of the objects "
+        "and background:<|im_end|>\n"
+        f"<|im_start|>user\n{prompt}<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+
+
+def _encode_visual_consensus_source(
+    clip, source_image, resolution, prompt, visual_encoder_path
+):
+    processed = prepare_vlm_image(source_image, resolution)
+    conditioning = encode_embedding_classical_scaled_bias(
+        clip,
+        prompt,
+        images=[processed],
+        skip_template=True,
+        visual_encoder_path=visual_encoder_path,
+    )
+    if len(conditioning) != 1:
+        raise ValueError("Visual consensus encoding requires one schedule entry.")
+    tensor, metadata = conditioning[0]
+    tokens = clip.tokenize(prompt, images=[processed], skip_template=True)
+    visual_range = find_visual_token_range(
+        tokens,
+        tensor,
+        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+    )
+    return {
+        "conditioning": [[tensor, metadata]],
+        "tensor": tensor,
+        "metadata": metadata,
+        "pooled": metadata.get("pooled_output"),
+        "tokens": tokens,
+        "visual_range": visual_range,
+        "grid": visual_fusion_grid(
+            processed,
+            visual_range[1] - visual_range[0],
+            visual_encoder_path == "legacy-flat",
+        ),
+        "image": processed,
+    }
+
+
+def _spatially_fuse_visual_consensus_sources(
+    branches, visual_config, clip, allow_export
+):
+    keys = [chr(97 + index) for index in range(len(branches))]
+    config = dict(visual_config)
+    config["save_blended_embeds"] = bool(
+        allow_export and config.get("save_blended_embeds", False)
+    )
+    tensor, pooled = evaluate_conditioning_consensus_blend(
+        {key: branch["tensor"] for key, branch in zip(keys, branches)},
+        {
+            key: branch["pooled"]
+            for key, branch in zip(keys, branches)
+            if branch["pooled"] is not None
+        },
+        visual_fusion_config=config,
+        device=comfy.model_management.get_torch_device(),
+        visual_ranges={
+            key: branch["visual_range"] for key, branch in zip(keys, branches)
+        },
+        embedding_key=next(iter(branches[0]["tokens"])),
+        clip=clip,
+        tokens_dict={
+            key: branch["tokens"] for key, branch in zip(keys, branches)
+        },
+        mask_cache={},
+        visual_grids={
+            key: branch["grid"] for key, branch in zip(keys, branches)
+        },
+    )
+    metadata = branches[0]["metadata"].copy()
+    attention_mask = metadata.get("attention_mask")
+    if torch.is_tensor(attention_mask) and attention_mask.shape[-1] != tensor.shape[1]:
+        metadata.pop("attention_mask", None)
+        metadata.pop("attention_mask_img_shape", None)
+    if pooled is not None:
+        metadata["pooled_output"] = pooled
+    return [[tensor, metadata]]
+
+
+def execute_advanced_visual_consensus(
+    clip,
+    prompt,
+    system_prompt,
+    vlm_resolution,
+    image_inputs,
+    joint_config,
+    vae_resolution,
+    ref_latent_mode,
+    vae,
+    multiplier,
+    vae_dimension_multiple,
+    apply_reference_latents,
+):
+    """Run spatial fusion per resolution, then consensus over complete outputs."""
+    if not isinstance(joint_config, dict):
+        raise ValueError("Connect a Visual Consensus Configuration.")
+
+    lanes, reference_images = build_visual_consensus_batch_lanes(image_inputs)
+    if not lanes:
+        clean_prompt, _ = prepare_image_placeholder_prompt(
+            prompt, 0, False, "Advanced Visual Consensus Encoder"
+        )
+        conditioning = encode_embedding_classical_scaled_bias(
+            clip,
+            _format_advanced_visual_consensus_prompt(clean_prompt, system_prompt),
+            skip_template=True,
+        )
+        return _scale_and_attach_visual_consensus_references(
+            clip,
+            conditioning,
+            reference_images,
+            vae_resolution,
+            ref_latent_mode,
+            vae,
+            multiplier,
+            vae_dimension_multiple,
+            apply_reference_latents,
+        )
+
+    spatial_enabled = bool(joint_config.get("enable_spatial_fusion", True))
+    consensus_enabled = bool(joint_config.get("enable_consensus", True))
+    visual_config = dict(joint_config["visual"])
+    consensus_config = dict(joint_config["consensus"])
+    visual_encoder_path = visual_config.get("visual_encoder_path", "grid-deepstack")
+
+    prepared_prompt, _ = prepare_image_placeholder_prompt(
+        prompt,
+        max(len(lane) for lane in lanes),
+        spatial_enabled or consensus_enabled,
+        "Advanced Visual Consensus Encoder",
+    )
+    if not any(
+        marker in prepared_prompt
+        for marker in ("<|image_pad|>", "<|image|>", "<|vision_start|>")
+    ):
+        prepared_prompt = VISION_BLOCK + prepared_prompt
+    full_prompt = _format_advanced_visual_consensus_prompt(
+        prepared_prompt, system_prompt
+    )
+
+    if consensus_enabled:
+        requested_samples = int(consensus_config.get("resolution_samples", 1))
+        if (
+            requested_samples < 1
+            or requested_samples > 15
+            or requested_samples % 2 == 0
+        ):
+            raise ValueError("Resolution samples must be an odd integer from 1 to 15.")
+        effective_samples = (
+            max(3, requested_samples)
+            if len(lanes) < 3
+            else requested_samples
+        )
+    else:
+        effective_samples = 1
+    if (
+        consensus_enabled
+        and len(lanes) < 3
+        and resolve_vlm_resolution(vlm_resolution) is None
+    ):
+        raise ValueError(
+            "Original VLM resolution needs at least three batch lanes for consensus; "
+            "select a numeric VLM resolution or connect three aligned batches."
+        )
+
+    completed_conditionings = []
+    base_conditioning = None
+    export_pending = True
+    for lane in lanes:
+        targets = vlm_resolution_samples(
+            lane[0], vlm_resolution, effective_samples
+        )
+        if len(targets) < effective_samples:
+            raise ValueError(
+                f"Could not construct {effective_samples} distinct adjacent VLM "
+                "resolution samples for this batch lane."
+            )
+        for target in targets:
+            sources = lane if spatial_enabled or consensus_enabled else lane[:1]
+            branches = [
+                _encode_visual_consensus_source(
+                    clip, source, target, full_prompt, visual_encoder_path
+                )
+                for source in sources
+            ]
+            if spatial_enabled:
+                completed = _spatially_fuse_visual_consensus_sources(
+                    branches, visual_config, clip, export_pending
+                )
+                export_pending = False
+                completed_conditionings.append(completed)
+                if base_conditioning is None:
+                    base_conditioning = completed
+            else:
+                source_conditionings = [
+                    branch["conditioning"] for branch in branches
+                ]
+                completed_conditionings.extend(source_conditionings)
+                if base_conditioning is None:
+                    base_conditioning = source_conditionings[0]
+
+    conditioning = (
+        blend_complete_conditionings(completed_conditionings, consensus_config)
+        if consensus_enabled
+        else batch_complete_conditionings(completed_conditionings)
+    )
+    return _scale_and_attach_visual_consensus_references(
+        clip,
+        conditioning,
+        reference_images,
+        vae_resolution,
+        ref_latent_mode,
+        vae,
+        multiplier,
+        vae_dimension_multiple,
+        apply_reference_latents,
+    )
+
+
+def _scale_and_attach_visual_consensus_references(
+    clip,
+    conditioning,
+    reference_images,
+    vae_resolution,
+    ref_latent_mode,
+    vae,
+    multiplier,
+    vae_dimension_multiple,
+    apply_reference_latents,
+):
+    if multiplier != 1.0:
+        conditioning = [
+            [
+                tensor * multiplier,
+                {
+                    **metadata,
+                    **(
+                        {"pooled_output": metadata["pooled_output"] * multiplier}
+                        if metadata.get("pooled_output") is not None
+                        else {}
+                    ),
+                },
+            ]
+            for tensor, metadata in conditioning
+        ]
+
+    ref_latents = []
+    if vae is not None and ref_latent_mode != "off":
+        resolutions = {
+            "Ultra (512)": 512,
+            "Turbo (768)": 768,
+            "Fast (1024)": 1024,
+            "Balanced (1280)": 1280,
+            "Detailed (1536)": 1536,
+        }
+        for image in reference_images:
+            if "single" in ref_latent_mode and ref_latents:
+                break
+            target = (
+                None if vae_resolution == "Original" else resolutions[vae_resolution]
+            )
+            prepared = prepare_vae_reference_image(
+                image.movedim(-1, 1), target, vae_dimension_multiple
+            )
+            ref_latents.append(vae.encode(prepared.movedim(1, -1)[..., :3]))
+    return apply_reference_latents(
+        clip, conditioning, ref_latents, ref_latent_mode
+    )
+
 def krea2_token_ids(clip, text):
     tok = clip.tokenize(text)
     key = next(iter(tok))

@@ -25,6 +25,10 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_TextEncodeSystemEditAdvanced`
 - `UC_TextEncodeGemmaSystemEditAdvanced`
 - `UC_AdvancedVisualConditioningEncode`
+- `UC_AdvancedVisConEncoder`
+- `UC_VisualConsensusConfiguration`
+- `UC_AdvancedVisualConfiguration`
+- `UC_AdvancedConsensusConfiguration`
 - `UC_Krea2TokenAttentionWeight`
 - `UC_AttentionBiasTextEncode`
 - `UC_TextConsensusBlendConfig`
@@ -34,6 +38,38 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_Krea2LayerProbe`
 - `UC_Krea2LayerAblator`
 - `UC_EncoderNodesGuide`
+
+#### Advanced visual consensus
+
+`UC_AdvancedVisConEncoder` runs two sequential stages: it first constructs a
+complete spatially fused conditioning independently at every selected VLM
+resolution, then passes those complete conditionings through the same consensus
+mathematics as `UC_ConditioningConsensusBlend`. Spatial fusion and consensus
+are not alternatives and are never crossfaded.
+
+Use `UC_VisualConsensusConfiguration` for the required joint configuration.
+Its two activation Booleans remain authoritative. The visual method is always
+selected there. A connected `UC_AdvancedVisualConfiguration` overrides the
+duplicated block, dither, seed, encoder-path, cleanup, perturbation, and raw
+export values. A connected `UC_AdvancedConsensusConfiguration` replaces the
+named consensus preset and basal global scale with the complete custom
+consensus configuration. Its authoritative preset selector defaults to
+`custom`; named selections reuse their stored mathematics while advanced
+position weighting, common-prefix preservation, global scale, and resolution
+sampling remain available.
+
+`block_size` is specific to block-interleave. `dither_ratio` and
+`dither_pattern` are specific to random-dither. The simple joint node exposes
+`resolution_samples` as a consensus control; Advanced Consensus Configuration
+overrides it when connected. With fewer than three batch lanes, active
+consensus raises its effective value to at least three. Original VLM resolution
+therefore needs three batch lanes when consensus is active.
+
+A batch in the only connected image socket behaves like its images were
+connected as separate visual sources. With multiple connected batched sockets,
+equal indices form independent lanes, singleton sockets broadcast, and all
+other batch lengths must match. Raw visual export uses the same spatial mask as
+the base-resolution conditioning fusion.
 
 ### Image, mask, and compositing
 
