@@ -75,6 +75,7 @@ DESCRIPTIONS = {
     "UC_Krea2LayerProbe": "Measures and optionally saves Krea2 conditioning-layer activation statistics.",
     "UC_Krea2LayerAblator": "Removes selected refusal-direction components from Krea2 conditioning layers.",
     "UC_EncoderNodesGuide": "Returns documentation for the node pack's advanced encoder workflows.",
+    "UC_CompositeNodesGuide": "Returns documentation for background replacement, staged compositing, and MediaPipe face workflows.",
     "UC_LoraLoaderCLIPOnly": "Loads a LoRA into the text encoder without modifying the diffusion model.",
     "UC_BoldFrakturTextStyle": "Converts supported text characters to bold Fraktur Unicode styling.",
     "UC_UnBoldFrakturTextStyle": "Converts bold Fraktur Unicode characters back to plain text.",
