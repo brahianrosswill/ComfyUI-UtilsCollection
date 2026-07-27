@@ -18,7 +18,12 @@ prior_cpu = cli_args.cpu
 cli_args.cpu = True
 try:
     from utils_collection_test import encoder_helpers
-    from utils_collection_test.encoder_nodes import UC_VisualFusionConfig
+    from utils_collection_test.encoder_nodes import (
+        TextEncodeEditScaledAdv,
+        UC_AdvancedVisualConditioningEncode,
+        UC_Krea2TokenAttentionWeight,
+        UC_VisualFusionConfig,
+    )
 finally:
     cli_args.cpu = prior_cpu
 
@@ -97,7 +102,12 @@ def test_deepstack_reuses_main_spatial_mask():
 
 
 def test_saved_raw_embedding_uses_active_conditioning_mask(monkeypatch):
-    config = {**_config(seed=31), "save_blended_embeds": True}
+    config = {
+        **_config(seed=31),
+        "save_blended_embeds": True,
+        "text_blend_config": _consensus_config(),
+        "fusion_strength": 0.5,
+    }
     cache = {}
     sequence_tensors = {
         "a": torch.zeros(1, 6, 1),
@@ -148,7 +158,11 @@ def test_config_seed_and_legacy_call_compatibility():
     legacy = UC_VisualFusionConfig.execute("spatial-dither-random", 2, 0.5, False, "legacy.safetensors").args[0]
     seeded = UC_VisualFusionConfig.execute("spatial-dither-random", 2, 0.5, seed=123).args[0]
 
-    assert [value.id for value in schema_inputs][-3:] == ["dither_secondary_pattern", "dither_mask_cleanup", "spatial_perturbation"]
+    assert [value.id for value in schema_inputs][-3:] == [
+        "text_blend_config",
+        "fusion_strength",
+        "resolution_samples",
+    ]
     assert inputs["seed"].control_after_generate is True
     assert "index-consensus" not in inputs["visual_fusion_method"].options
     assert "similarity-consensus" not in inputs["visual_fusion_method"].options
@@ -156,6 +170,205 @@ def test_config_seed_and_legacy_call_compatibility():
     assert legacy["save_path"] == "legacy.safetensors"
     assert seeded["seed"] == 123
     assert legacy["spatial_perturbation"] == 0.0
+    assert legacy["text_blend_config"] is None
+    assert legacy["fusion_strength"] == 0.5
+    assert legacy["resolution_samples"] == 1
+    assert inputs["resolution_samples"].step == 2
+
+
+def test_visual_fusion_consumers_use_aligned_integer_resolution():
+    for node in (
+        UC_AdvancedVisualConditioningEncode,
+        TextEncodeEditScaledAdv,
+        UC_Krea2TokenAttentionWeight,
+    ):
+        resolution = {
+            value.id: value for value in node.define_schema().inputs
+        }["vlm_resolution"]
+        assert resolution.io_type == "INT"
+        assert resolution.default == 384
+        assert resolution.min == 0
+        assert resolution.max == 4096
+        assert resolution.step == 32
+
+
+def test_vlm_resolution_boundaries_and_original_sentinels():
+    assert encoder_helpers.resolve_vlm_resolution(256) == 256
+    assert 256 * 256 == 65_536
+    assert encoder_helpers.resolve_vlm_resolution(3584) == 3584
+    assert encoder_helpers.resolve_vlm_resolution(255) is None
+    assert encoder_helpers.resolve_vlm_resolution(3585) is None
+    assert encoder_helpers.resolve_vlm_resolution(0) is None
+
+
+def test_vlm_target_is_aspect_preserving_and_grid_aligned():
+    height, width = encoder_helpers.vlm_target_dimensions(600, 1200, 384)
+    assert height % 32 == width % 32 == 0
+    assert width / height == pytest.approx(2.0, rel=0.1)
+    resized = encoder_helpers.prepare_vlm_image(torch.zeros(1, 600, 1200, 3), 384)
+    assert resized.shape[1:3] == (height, width)
+
+
+def test_resolution_samples_alternate_and_raise_low_base():
+    image = torch.zeros(1, 512, 512, 3)
+    assert encoder_helpers.vlm_resolution_samples(image, 384, 5) == [
+        384,
+        352,
+        416,
+        320,
+        448,
+    ]
+    assert encoder_helpers.vlm_resolution_samples(image, 256, 5) == [
+        320,
+        288,
+        352,
+        256,
+        384,
+    ]
+    assert encoder_helpers.vlm_resolution_samples(image, 0, 15) == [None]
+    assert len(encoder_helpers.vlm_resolution_samples(image, 512, 15)) == 15
+    with pytest.raises(ValueError, match="odd integer"):
+        encoder_helpers.vlm_resolution_samples(image, 512, 4)
+
+
+def _consensus_config(preset="baseline"):
+    return {
+        "blend_preset": preset,
+        "blend_method": "consensus",
+        "consensus_type": "mean",
+        "similarity_threshold": 0.0,
+        "power_alpha": 2.0,
+        "diversity_beta": 0.0,
+        "rescale_norm": False,
+        "global_scale": 1.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["linear", "spatial-checkerboard", "spatial-block-interleave", "spatial-dither-random"],
+)
+def test_consensus_softens_all_visual_fusion_methods(method):
+    sources = [
+        torch.tensor([[1.0, 0.0]]).repeat(4, 1),
+        torch.tensor([[0.8, 0.2]]).repeat(4, 1),
+    ]
+    baseline_config = _config(method=method, seed=4)
+    baseline = encoder_helpers.fuse_visual_token_sources(
+        sources, baseline_config, "cpu", source_grids=[(2, 2)] * 2
+    )
+    strength_one = encoder_helpers.fuse_visual_token_sources(
+        sources,
+        {
+            **baseline_config,
+            "text_blend_config": _consensus_config(),
+            "fusion_strength": 1.0,
+        },
+        "cpu",
+        source_grids=[(2, 2)] * 2,
+    )
+    consensus, weights = encoder_helpers.fuse_visual_token_sources(
+        sources,
+        {
+            **baseline_config,
+            "text_blend_config": _consensus_config(),
+            "fusion_strength": 0.0,
+        },
+        "cpu",
+        source_grids=[(2, 2)] * 2,
+        return_weights=True,
+    )
+    assert torch.equal(strength_one, baseline)
+    assert torch.allclose(weights.sum(dim=1), torch.ones(4))
+    assert torch.isfinite(consensus).all()
+
+
+def test_off_consensus_preserves_exact_spatial_result():
+    sources = [torch.zeros(4, 1), torch.ones(4, 1)]
+    config = _config(method="spatial-checkerboard")
+    expected = encoder_helpers.fuse_visual_token_sources(
+        sources, config, "cpu", source_grids=[(2, 2)] * 2
+    )
+    actual = encoder_helpers.fuse_visual_token_sources(
+        sources,
+        {
+            **config,
+            "text_blend_config": _consensus_config("off"),
+            "fusion_strength": 0.0,
+        },
+        "cpu",
+        source_grids=[(2, 2)] * 2,
+    )
+    assert torch.equal(actual, expected)
+
+
+def test_resolution_branches_are_collapsed_before_return(monkeypatch):
+    image = torch.ones(1, 512, 512, 3)
+    encoded_shapes = []
+
+    class Clip:
+        @staticmethod
+        def tokenize(prompt, images, skip_template=True):
+            return {"qwen": [[(0, 1.0)]]}
+
+    def encode_sample(processed):
+        encoded_shapes.append(tuple(processed.shape[1:3]))
+        value = float(len(encoded_shapes))
+        tensor = torch.full((1, 6, 2), value)
+        return [[tensor, {"pooled_output": torch.tensor([[value]]), "marker": value}]]
+
+    monkeypatch.setattr(
+        encoder_helpers, "find_visual_token_range", lambda *args, **kwargs: (1, 5)
+    )
+    monkeypatch.setattr(
+        encoder_helpers, "visual_fusion_grid", lambda *args, **kwargs: (2, 2)
+    )
+    branch = encoder_helpers.encode_vlm_resolution_samples(
+        image,
+        384,
+        {
+            "resolution_samples": 3,
+            "text_blend_config": _consensus_config(),
+        },
+        encode_sample,
+        Clip(),
+        "prompt",
+        "grid-deepstack",
+        "cpu",
+    )
+
+    assert len(encoded_shapes) == 3
+    assert len(set(encoded_shapes)) == 3
+    assert branch["metadata"]["marker"] == 1.0
+    assert branch["tensor"].shape == (1, 6, 2)
+    assert branch["visual_range"] == (1, 5)
+    assert branch["grid"] == (2, 2)
+
+
+def test_invalid_visual_consensus_inputs_are_concise():
+    sources = [torch.zeros(4, 1), torch.ones(4, 1)]
+    with pytest.raises(ValueError, match="strength"):
+        encoder_helpers.fuse_visual_token_sources(
+            sources,
+            {
+                **_config(),
+                "text_blend_config": _consensus_config(),
+                "fusion_strength": -0.1,
+            },
+            "cpu",
+            source_grids=[(2, 2)] * 2,
+        )
+    with pytest.raises(ValueError, match="preset"):
+        encoder_helpers.fuse_visual_token_sources(
+            sources,
+            {
+                **_config(),
+                "text_blend_config": _consensus_config("invalid"),
+                "fusion_strength": 0.0,
+            },
+            "cpu",
+            source_grids=[(2, 2)] * 2,
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")

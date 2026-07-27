@@ -323,6 +323,188 @@ def _qwen3vl_resized_dimensions(height: int, width: int) -> tuple[int, int]:
     return resized_height, resized_width
 
 
+VLM_RESOLUTION_MIN = 256
+VLM_RESOLUTION_MAX = 3584
+VLM_RESOLUTION_STEP = 32
+
+
+def resolve_vlm_resolution(value) -> int | None:
+    """Return a valid equivalent-square side length, or None for Original."""
+    if isinstance(value, bool):
+        return None
+    try:
+        resolution = int(value)
+    except (TypeError, ValueError):
+        return None
+    if resolution < VLM_RESOLUTION_MIN or resolution > VLM_RESOLUTION_MAX:
+        return None
+    return round(resolution / VLM_RESOLUTION_STEP) * VLM_RESOLUTION_STEP
+
+
+def vlm_target_dimensions(height: int, width: int, resolution: int) -> tuple[int, int]:
+    """Fit an aspect-preserving target area and align both axes to Qwen's 32px grid."""
+    if height < 1 or width < 1:
+        raise ValueError("VLM image dimensions must be positive.")
+    scale = math.sqrt((resolution * resolution) / (height * width))
+    target_height = max(
+        VLM_RESOLUTION_STEP,
+        round(height * scale / VLM_RESOLUTION_STEP) * VLM_RESOLUTION_STEP,
+    )
+    target_width = max(
+        VLM_RESOLUTION_STEP,
+        round(width * scale / VLM_RESOLUTION_STEP) * VLM_RESOLUTION_STEP,
+    )
+    return target_height, target_width
+
+
+def prepare_vlm_image(image: torch.Tensor, resolution) -> torch.Tensor:
+    """Resize a BHWC VLM image to a numeric target, or preserve it for Original."""
+    if not torch.is_tensor(image) or image.ndim != 4:
+        raise ValueError("VLM image must have shape [batch, height, width, channels].")
+    target = resolve_vlm_resolution(resolution)
+    if target is None:
+        return image
+    height, width = image.shape[1:3]
+    target_height, target_width = vlm_target_dimensions(height, width, target)
+    samples = image.movedim(-1, 1)
+    return resize_nchw(
+        samples, target_width, target_height, "bicubic"
+    ).movedim(1, -1)
+
+
+def vlm_resolution_samples(
+    image: torch.Tensor, resolution, sample_count: int
+) -> list[int | None]:
+    """Build distinct alternating VLM grids without crossing the supported lower bound."""
+    count = int(sample_count)
+    if count < 1 or count > 15 or count % 2 == 0:
+        raise ValueError("VLM resolution samples must be an odd integer from 1 to 15.")
+    base = resolve_vlm_resolution(resolution)
+    if base is None or count == 1:
+        return [base]
+
+    lower_slots = math.ceil((count - 1) / 2)
+    base = max(base, VLM_RESOLUTION_MIN + lower_slots * VLM_RESOLUTION_STEP)
+    base = min(base, VLM_RESOLUTION_MAX)
+    height, width = image.shape[1:3]
+    samples = []
+    grids = set()
+
+    def append_if_distinct(candidate):
+        if candidate < VLM_RESOLUTION_MIN or candidate > VLM_RESOLUTION_MAX:
+            return
+        target_height, target_width = vlm_target_dimensions(
+            height, width, candidate
+        )
+        grid = _qwen3vl_resized_dimensions(target_height, target_width)
+        if grid in grids:
+            return
+        grids.add(grid)
+        samples.append(candidate)
+
+    append_if_distinct(base)
+    radius = 1
+    while len(samples) < count and (
+        base - radius * VLM_RESOLUTION_STEP >= VLM_RESOLUTION_MIN
+        or base + radius * VLM_RESOLUTION_STEP <= VLM_RESOLUTION_MAX
+    ):
+        append_if_distinct(base - radius * VLM_RESOLUTION_STEP)
+        if len(samples) < count:
+            append_if_distinct(base + radius * VLM_RESOLUTION_STEP)
+        radius += 1
+    return samples
+
+
+def encode_vlm_resolution_samples(
+    image,
+    resolution,
+    visual_fusion_config,
+    encode_sample,
+    clip,
+    token_prompt,
+    visual_encoder_path,
+    device,
+):
+    """Encode and immediately collapse adjacent resolutions for one source image."""
+    text_blend_config = visual_fusion_config.get("text_blend_config")
+    consensus_active = (
+        isinstance(text_blend_config, dict)
+        and text_blend_config.get("blend_preset", "baseline") != "off"
+    )
+    requested_count = (
+        visual_fusion_config.get("resolution_samples", 1) if consensus_active else 1
+    )
+    targets = vlm_resolution_samples(image, resolution, requested_count)
+    branches = []
+    for target in targets:
+        processed = prepare_vlm_image(image, target)
+        conditioning = encode_sample(processed)
+        if len(conditioning) != 1:
+            raise ValueError(
+                "Multi-resolution visual fusion requires one conditioning schedule entry."
+            )
+        tensor, metadata = conditioning[0]
+        tokens = clip.tokenize(token_prompt, images=[processed], skip_template=True)
+        visual_range = find_visual_token_range(
+            tokens,
+            tensor,
+            legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+        )
+        grid = visual_fusion_grid(
+            processed,
+            visual_range[1] - visual_range[0],
+            visual_encoder_path == "legacy-flat",
+        )
+        branches.append(
+            {
+                "tensor": tensor,
+                "metadata": metadata,
+                "pooled": metadata.get("pooled_output"),
+                "tokens": tokens,
+                "visual_range": visual_range,
+                "grid": grid,
+                "image": processed,
+            }
+        )
+
+    base = branches[0]
+    if len(branches) == 1:
+        return base
+
+    keys = [chr(97 + index) for index in range(len(branches))]
+    sequence_tensors = {
+        key: branch["tensor"] for key, branch in zip(keys, branches)
+    }
+    pooled_tensors = {
+        key: branch["pooled"]
+        for key, branch in zip(keys, branches)
+        if branch["pooled"] is not None
+    }
+    visual_ranges = {
+        key: branch["visual_range"] for key, branch in zip(keys, branches)
+    }
+    visual_grids = {key: branch["grid"] for key, branch in zip(keys, branches)}
+    resolution_config = {
+        "visual_fusion_method": "linear",
+        "fusion_strength": 0.0,
+        "text_blend_config": text_blend_config,
+    }
+    stabilized, pooled = evaluate_conditioning_consensus_blend(
+        sequence_tensors,
+        pooled_tensors,
+        visual_fusion_config=resolution_config,
+        device=device,
+        visual_ranges=visual_ranges,
+        visual_grids=visual_grids,
+    )
+    base["tensor"] = stabilized
+    base["pooled"] = pooled
+    base["metadata"] = base["metadata"].copy()
+    if pooled is not None:
+        base["metadata"]["pooled_output"] = pooled
+    return base
+
+
 def _qwen3vl_image_span(token) -> int | None:
     value = token[0] if isinstance(token, tuple) and token else token
     if not isinstance(value, dict) or value.get("type") != "image":
@@ -678,7 +860,93 @@ def _visual_fusion_mask(config, grid_shape, num_sources, mask_device, output_dev
     return mask_cache[key].to(output_device)
 
 
-def fuse_visual_token_sources(sources, visual_fusion_config, mask_device, mask_cache=None, expected_length=None, source_grids=None):
+def _align_visual_sources(sources, grids, canonical_grid, compute_float):
+    canonical_length = canonical_grid[0] * canonical_grid[1]
+    aligned = []
+    for source, grid in zip(sources, grids):
+        value = source.to(dtype=torch.float32) if compute_float else source
+        if grid != canonical_grid:
+            value = F.interpolate(
+                value.reshape(grid[0], grid[1], -1).permute(2, 0, 1)[None],
+                size=canonical_grid,
+                mode="nearest",
+            )[0].permute(1, 2, 0).reshape(canonical_length, -1)
+        aligned.append(value)
+    return torch.stack(aligned, dim=1)
+
+
+def _coordinate_consensus_weights(stacked, blend_config):
+    settings = resolve_consensus_blend_settings(blend_config)
+    if settings["blend_preset"] == "off":
+        return None
+    source_axis = 1
+    if settings["blend_method"] == "linear":
+        return stacked.new_full(
+            stacked.shape[:2], 1.0 / stacked.shape[source_axis], dtype=torch.float32
+        )
+
+    values = stacked.to(dtype=torch.float32)
+    if settings["consensus_type"] == "median":
+        consensus = values.median(dim=source_axis).values
+    else:
+        consensus = values.mean(dim=source_axis)
+    similarities = F.cosine_similarity(values, consensus[:, None, :], dim=-1, eps=1e-8)
+    weighted_similarities = similarities
+    if settings["dynamic_similarity_contrast"]:
+        minimum = similarities.amin(dim=source_axis, keepdim=True)
+        maximum = similarities.amax(dim=source_axis, keepdim=True)
+        span = maximum - minimum
+        stretched = 0.7 + 0.3 * (similarities - minimum) / (span + 1e-8)
+        weighted_similarities = torch.where(span > 0, stretched, similarities)
+
+    valid = similarities >= settings["similarity_threshold"]
+    safe = weighted_similarities.clamp(0.0, 1.0)
+    weights = safe.pow(settings["power_alpha"])
+    if settings["diversity_beta"] > 0.0:
+        distance_base = 1.5 if settings["soft_comfort_bandpass"] else 1.001
+        weights *= (distance_base - safe).clamp(min=0.0).pow(
+            settings["diversity_beta"]
+        )
+    weights = weights.masked_fill(~valid, 0.0)
+    totals = weights.sum(dim=source_axis, keepdim=True)
+    fallback = torch.full_like(weights, 1.0 / weights.shape[source_axis])
+    return torch.where(totals > 0, weights / totals.clamp_min(1e-8), fallback)
+
+
+def _baseline_visual_weights(
+    visual_fusion_config, canonical_grid, source_count, mask_device, output_device, mask_cache
+):
+    method = visual_fusion_config.get("visual_fusion_method", "spatial-checkerboard")
+    length = canonical_grid[0] * canonical_grid[1]
+    if method == "linear":
+        return torch.full(
+            (length, source_count),
+            1.0 / source_count,
+            device=output_device,
+            dtype=torch.float32,
+        )
+    mask = _visual_fusion_mask(
+        visual_fusion_config,
+        canonical_grid,
+        source_count,
+        mask_device,
+        output_device,
+        mask_cache,
+    )
+    return F.one_hot(mask, num_classes=source_count).to(dtype=torch.float32)
+
+
+def fuse_visual_token_sources(
+    sources,
+    visual_fusion_config,
+    mask_device,
+    mask_cache=None,
+    expected_length=None,
+    source_grids=None,
+    *,
+    weights_override=None,
+    return_weights=False,
+):
     if not sources:
         raise ValueError("Visual fusion requires at least one visual token source.")
 
@@ -703,23 +971,51 @@ def fuse_visual_token_sources(sources, visual_fusion_config, mask_device, mask_c
         raise ValueError(f"Visual token layout mismatch: expected {expected_length} tokens, received canonical grid {canonical_grid}.")
 
     output_dtype = sources[0].dtype
-    compute_float = method == "linear"
-    aligned = []
-    for source, grid in zip(sources, grids):
-        value = source.to(dtype=torch.float32) if compute_float else source
-        if grid != canonical_grid:
-            value = F.interpolate(value.reshape(grid[0], grid[1], -1).permute(2, 0, 1)[None], size=canonical_grid, mode="nearest")[0].permute(1, 2, 0).reshape(canonical_length, -1)
-        aligned.append(value)
-
-    stacked = torch.stack(aligned, dim=1)
-    if method == "linear":
-        return stacked.mean(dim=1).to(dtype=output_dtype)
-
+    text_blend_config = visual_fusion_config.get("text_blend_config")
+    fusion_strength = float(visual_fusion_config.get("fusion_strength", 1.0))
+    if not 0.0 <= fusion_strength <= 1.0:
+        raise ValueError("Visual fusion strength must be between 0.0 and 1.0.")
+    consensus_enabled = (
+        isinstance(text_blend_config, dict)
+        and text_blend_config.get("blend_preset", "baseline") != "off"
+        and fusion_strength < 1.0
+    )
+    stacked = _align_visual_sources(
+        sources, grids, canonical_grid, method == "linear" or consensus_enabled
+    )
     if mask_cache is None:
         mask_cache = {}
-    mask = _visual_fusion_mask(visual_fusion_config, canonical_grid, len(sources), mask_device, stacked.device, mask_cache)
-    fused = torch.take_along_dim(stacked, mask[:, None, None], dim=1).squeeze(1)
-    return fused.to(dtype=output_dtype)
+    if weights_override is None:
+        baseline = _baseline_visual_weights(
+            visual_fusion_config,
+            canonical_grid,
+            len(sources),
+            mask_device,
+            stacked.device,
+            mask_cache,
+        )
+        weights = baseline
+        if consensus_enabled:
+            consensus = _coordinate_consensus_weights(stacked, text_blend_config)
+            weights = fusion_strength * baseline + (1.0 - fusion_strength) * consensus
+            weights /= weights.sum(dim=1, keepdim=True).clamp_min(1e-8)
+    else:
+        weights = weights_override.to(device=stacked.device, dtype=torch.float32)
+        if weights.shape != stacked.shape[:2]:
+            raise ValueError("Visual fusion weights do not match the aligned visual grid.")
+
+    fused = (stacked.to(dtype=torch.float32) * weights[:, :, None]).sum(dim=1)
+    if consensus_enabled:
+        settings = resolve_consensus_blend_settings(text_blend_config)
+        if settings["rescale_norm"]:
+            average_norm = stacked.to(dtype=torch.float32).norm(dim=-1).mean(dim=1)
+            fused_norm = fused.norm(dim=-1)
+            fused = fused * (
+                average_norm / fused_norm.clamp_min(1e-8)
+            )[:, None]
+        fused *= settings["global_scale"]
+    fused = fused.to(dtype=output_dtype)
+    return (fused, weights) if return_weights else fused
 
 
 def fuse_deepstack_layers(deepstack_tensors, visual_fusion_config, device, mask_cache, expected_length, source_grids):
@@ -856,6 +1152,7 @@ def evaluate_conditioning_consensus_blend(
         raise ValueError("Every visual fusion source must have a valid visual token range.")
 
     C_blended_list = []
+    saved_visual_weights = None
     for b in range(B):
         batch_tensors_dict = {k: sequence_tensors[k][b].to(device=device) for k in active_keys}
         ref_key = active_keys[0]
@@ -872,7 +1169,17 @@ def evaluate_conditioning_consensus_blend(
             suffixes[k] = t[v_end:, :]
 
         sources = [visuals[key] for key in active_keys]
-        blended_vis_2d = fuse_visual_token_sources(sources, visual_fusion_config, device, mask_cache, expected_visual_length, source_grids)
+        blended_vis_2d, visual_weights = fuse_visual_token_sources(
+            sources,
+            visual_fusion_config,
+            device,
+            mask_cache,
+            expected_visual_length,
+            source_grids,
+            return_weights=True,
+        )
+        if saved_visual_weights is None:
+            saved_visual_weights = visual_weights
 
         # Surrounding text (prefixes & suffixes) are kept 100% pure from the reference pass
         blended_prefix = prefixes[ref_key]
@@ -907,7 +1214,15 @@ def evaluate_conditioning_consensus_blend(
             v_start, v_end = visual_ranges[key]
             raw_visuals.append(embeds[0, v_start:v_end, :].clone().cpu())
 
-        blended_raw = fuse_visual_token_sources(raw_visuals, visual_fusion_config, device, mask_cache, expected_visual_length, source_grids)
+        blended_raw = fuse_visual_token_sources(
+            raw_visuals,
+            visual_fusion_config,
+            device,
+            mask_cache,
+            expected_visual_length,
+            source_grids,
+            weights_override=saved_visual_weights,
+        )
         save_blended_visual_embeddings([blended_raw], visual_fusion_config, embedding_key)
 
     # Pooled output is kept pure from reference pass since text is identical
@@ -930,6 +1245,74 @@ POWER_BLEND_PRESET = {
     "dsc": True,
     "soft_comfort": False,
 }
+
+CONSENSUS_BLEND_PRESETS = {
+    "baseline": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
+    "high_clarity": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 3.0, "thresh": 0.3, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
+    "smooth": {"method": "consensus", "type": "mean", "align": "similarity", "alpha": 1.5, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
+    "varied_merge": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
+    "diverse_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 1.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
+    "high_diversity_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 2.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
+    "dsc_baseline": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
+    "dsc_high_clarity": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 4.0, "thresh": 0.3, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
+    "dsc_smooth": {"method": "consensus", "type": "mean", "align": "similarity", "alpha": 1.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
+    "dsc_varied_merge": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.5, "thresh": 0.0, "beta": 0.0, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
+    "dsc_diverse_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 1.5, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
+    "dsc_high_diversity_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 3.0, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
+    "power_blend": POWER_BLEND_PRESET,
+}
+
+
+def resolve_consensus_blend_settings(blend_config):
+    if not isinstance(blend_config, dict):
+        raise ValueError("Consensus configuration must be a TEXT_BLEND_CONFIG value.")
+    preset = blend_config.get("blend_preset", "baseline")
+    settings = {
+        "blend_preset": preset,
+        "blend_method": blend_config.get("blend_method", "consensus"),
+        "consensus_type": blend_config.get("consensus_type", "median"),
+        "alignment_method": blend_config.get("alignment_method", "similarity"),
+        "alignment_threshold": float(blend_config.get("alignment_threshold", 0.4)),
+        "similarity_threshold": float(blend_config.get("similarity_threshold", 0.0)),
+        "power_alpha": float(blend_config.get("power_alpha", 2.0)),
+        "diversity_beta": float(blend_config.get("diversity_beta", 0.0)),
+        "rescale_norm": bool(blend_config.get("rescale_norm", True)),
+        "global_scale": float(blend_config.get("global_scale", 1.0)),
+        "dynamic_similarity_contrast": False,
+        "soft_comfort_bandpass": False,
+        "position_weight": float(blend_config.get("position_weight", 0.0)),
+        "preserve_common_prefix": bool(blend_config.get("preserve_common_prefix", False)),
+    }
+    if not 0.0 <= settings["position_weight"] <= 1.0:
+        raise ValueError("Position weight must be between 0.0 and 1.0.")
+    if preset in CONSENSUS_BLEND_PRESETS:
+        selected = CONSENSUS_BLEND_PRESETS[preset]
+        settings.update(
+            blend_method=selected["method"],
+            consensus_type=selected["type"],
+            alignment_method=selected["align"],
+            alignment_threshold=float(
+                selected.get("alignment_threshold", settings["alignment_threshold"])
+            ),
+            similarity_threshold=float(selected["thresh"]),
+            power_alpha=float(selected["alpha"]),
+            diversity_beta=float(selected["beta"]),
+            rescale_norm=bool(selected["norm"]),
+            dynamic_similarity_contrast=bool(selected.get("dsc", False)),
+            soft_comfort_bandpass=bool(selected.get("soft_comfort", False)),
+        )
+        if settings["global_scale"] == 1.0:
+            settings["global_scale"] = float(selected["scale"])
+    elif preset == "custom":
+        settings["dynamic_similarity_contrast"] = bool(
+            blend_config.get("dynamic_similarity_contrast", False)
+        )
+        settings["soft_comfort_bandpass"] = bool(
+            blend_config.get("soft_comfort_bandpass", False)
+        )
+    elif preset != "off":
+        raise ValueError(f"Unsupported consensus blend preset: {preset}")
+    return settings
 
 
 def _common_conditioning_prefix_length(tensors, rtol=1e-5, atol=1e-6):
@@ -982,63 +1365,24 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
     B = tensors_list[0].shape[0]
     D = tensors_list[0].shape[2]
 
-    blend_preset = blend_config.get("blend_preset", "baseline")
+    settings = resolve_consensus_blend_settings(blend_config)
+    blend_preset = settings["blend_preset"]
     if blend_preset == "off":
         first_pooled = pooled_tensors.get(active_keys[0]) if pooled_tensors else None
         return tensors_list[0], first_pooled
-    blend_method = blend_config.get("blend_method", "consensus")
-    consensus_type = blend_config.get("consensus_type", "median")
-    alignment_method = blend_config.get("alignment_method", "similarity")
-    alignment_threshold = blend_config.get("alignment_threshold", 0.4)
-    similarity_threshold = blend_config.get("similarity_threshold", 0.0)
-    power_alpha = blend_config.get("power_alpha", 2.0)
-    diversity_beta = blend_config.get("diversity_beta", 0.0)
-    rescale_norm = blend_config.get("rescale_norm", True)
-    global_scale = blend_config.get("global_scale", 1.0)
-
-    presets = {
-        "baseline": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
-        "high_clarity": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 3.0, "thresh": 0.3, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
-        "smooth": {"method": "consensus", "type": "mean", "align": "similarity", "alpha": 1.5, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": False, "soft_comfort": False},
-        "varied_merge": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
-        "diverse_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 1.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
-        "high_diversity_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 2.0, "scale": 0.7, "norm": True, "dsc": False, "soft_comfort": False},
-        "dsc_baseline": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
-        "dsc_high_clarity": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 4.0, "thresh": 0.3, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
-        "dsc_smooth": {"method": "consensus", "type": "mean", "align": "similarity", "alpha": 1.0, "thresh": 0.0, "beta": 0.0, "scale": 1.0, "norm": False, "dsc": True, "soft_comfort": True},
-        "dsc_varied_merge": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.5, "thresh": 0.0, "beta": 0.0, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
-        "dsc_diverse_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 1.5, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
-        "dsc_high_diversity_concept": {"method": "consensus", "type": "median", "align": "similarity", "alpha": 2.0, "thresh": 0.0, "beta": 3.0, "scale": 0.7, "norm": True, "dsc": True, "soft_comfort": True},
-        "power_blend": POWER_BLEND_PRESET,
-    }
-
-    dsc_enabled = False
-    soft_comfort_enabled = False
-    position_weight = blend_config.get("position_weight", 0.0)
-    preserve_common_prefix = blend_config.get("preserve_common_prefix", False)
-    if not 0.0 <= position_weight <= 1.0:
-        raise ValueError("Position weight must be between 0.0 and 1.0.")
-
-    if blend_preset != "off" and blend_preset in presets:
-        p = presets[blend_preset]
-        blend_method = p["method"]
-        consensus_type = p["type"]
-        alignment_method = p["align"]
-        alignment_threshold = p.get("alignment_threshold", alignment_threshold)
-        power_alpha = p["alpha"]
-        similarity_threshold = p["thresh"]
-        diversity_beta = p["beta"]
-        rescale_norm = p["norm"]
-        dsc_enabled = p.get("dsc", False)
-        soft_comfort_enabled = p.get("soft_comfort", False)
-        user_global_scale = blend_config.get("global_scale", 1.0)
-        if user_global_scale != 1.0:
-            global_scale = user_global_scale
-        else:
-            global_scale = p["scale"]
-    elif blend_preset == "custom":
-        dsc_enabled = blend_config.get("dynamic_similarity_contrast", False)
-        soft_comfort_enabled = blend_config.get("soft_comfort_bandpass", False)
+    blend_method = settings["blend_method"]
+    consensus_type = settings["consensus_type"]
+    alignment_method = settings["alignment_method"]
+    alignment_threshold = settings["alignment_threshold"]
+    similarity_threshold = settings["similarity_threshold"]
+    power_alpha = settings["power_alpha"]
+    diversity_beta = settings["diversity_beta"]
+    rescale_norm = settings["rescale_norm"]
+    global_scale = settings["global_scale"]
+    dsc_enabled = settings["dynamic_similarity_contrast"]
+    soft_comfort_enabled = settings["soft_comfort_bandpass"]
+    position_weight = settings["position_weight"]
+    preserve_common_prefix = settings["preserve_common_prefix"]
 
     C_blended_list = []
     for b in range(B):

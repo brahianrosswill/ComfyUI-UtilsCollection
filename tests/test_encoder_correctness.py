@@ -190,7 +190,7 @@ def test_inline_image_placeholders_honor_legacy_flat_encoder_path():
         Clip(),
         prompt="image_input_1",
         system_prompt="",
-        vlm_resolution="Original",
+        vlm_resolution=0,
         image_inputs={"image_1": torch.ones(1, 2, 2, 3)},
         visual_fusion_config={
             "visual_fusion_method": "off",
@@ -513,7 +513,7 @@ def test_advanced_visual_text_only_path_preserves_custom_system_prompt():
         Clip(),
         prompt="subject",
         system_prompt="custom rules",
-        vlm_resolution="Fast (384)",
+        vlm_resolution=384,
         image_inputs={},
     )
 
@@ -524,7 +524,7 @@ def test_advanced_visual_text_only_path_preserves_custom_system_prompt():
         Clip(),
         prompt="subject",
         system_prompt="",
-        vlm_resolution="Fast (384)",
+        vlm_resolution=384,
         image_inputs={},
     )
 

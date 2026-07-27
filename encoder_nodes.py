@@ -34,7 +34,8 @@ from .encoder_helpers import(
     prepare_image_placeholder_prompt,
     extract_and_flatten_images,
     resolve_embedding_output_path,
-    visual_fusion_grid,
+    prepare_vlm_image,
+    encode_vlm_resolution_samples,
     prepare_vae_reference_image,
     qwen3vl_visual_encoder_path,
 )
@@ -299,6 +300,9 @@ class UC_VisualFusionConfig(io.ComfyNode):
                 io.Combo.Input("dither_secondary_pattern", options=["checkerboard", "block-interleave"], default="checkerboard", tooltip="Layout used for images 2+ in spatial-dither-random."),
                 io.Boolean.Input("dither_mask_cleanup", default=False, tooltip="Swap paired one-token image-1 islands and holes with a deterministic 3x3 pass while preserving every source's token count."),
                 io.Float.Input("spatial_perturbation", default=0.0, min=0.0, max=1.0, step=0.01, tooltip="Seeded spatial variation for hard fusion methods. Exchanges cells between sources without changing any source's token count; higher values may reduce spatial coherence."),
+                TextBlendConfig.Input("text_blend_config", display_name="Consensus Config", optional=True, tooltip="Optional consensus settings applied by grid coordinate."),
+                io.Float.Input("fusion_strength", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Balance between the selected spatial pattern and consensus weights."),
+                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Odd number of adjacent 32-pixel VLM resolution samples collapsed per source before image fusion."),
             ],
             outputs=[
                 VisualFusionConfig.Output("visual_fusion_config", display_name="Fusion Config")
@@ -318,6 +322,9 @@ class UC_VisualFusionConfig(io.ComfyNode):
         dither_secondary_pattern: str = "checkerboard",
         dither_mask_cleanup: bool = False,
         spatial_perturbation: float = 0.0,
+        text_blend_config: dict = None,
+        fusion_strength: float = 0.5,
+        resolution_samples: int = 1,
     ) -> io.NodeOutput:
         config = {
             "visual_fusion_method": visual_fusion_method,
@@ -328,6 +335,9 @@ class UC_VisualFusionConfig(io.ComfyNode):
             "dither_secondary_pattern": dither_secondary_pattern,
             "dither_mask_cleanup": dither_mask_cleanup,
             "spatial_perturbation": spatial_perturbation,
+            "text_blend_config": text_blend_config,
+            "fusion_strength": fusion_strength,
+            "resolution_samples": resolution_samples,
             "save_blended_embeds": save_blended_embeds,
             "save_path": save_path
         }
@@ -1860,11 +1870,13 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     tooltip="Main prompt. With fusion off, image_input_N places active image N inline. With fusion on, use image_input_fusion (image_input_1 is accepted as an alias).",
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=True, default="", tooltip="System prompt injected prior to user description."),
-                io.Combo.Input(
+                io.Int.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
-                    default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
+                    default=384,
+                    min=0,
+                    max=4096,
+                    step=32,
+                    tooltip="Equivalent-square VLM target from 256 to 3584. Values outside that range preserve original resolution.",
                 ),
 
                 # --- Modular Configurations ---
@@ -1953,31 +1965,9 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         visual_method = visual_fusion_config.get("visual_fusion_method", "off")
         visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
 
-        def process_vlm_image(image, res):
-            if image is None:
-                return None
-            VLM_RESOLUTIONS = {
-                "Fast (384)": 384,
-                "Balanced (512)": 512,
-                "Detailed (768)": 768,
-                "Large (1024)": 1024,
-                "X-Large (1280)": 1280,
-                "XX-Large (1536)": 1536
-            }
-            samples = image.movedim(-1, 1)
-            if res == "Original":
-                return image
-            else:
-                vlm_size = VLM_RESOLUTIONS[res]
-                total_vlm = vlm_size * vlm_size
-                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
-                width_vlm = round(samples.shape[3] * scale_by_vlm)
-                height_vlm = round(samples.shape[2] * scale_by_vlm)
-
-                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
-                return s_vlm.movedim(1, -1)
-
-        processed_active_images = [process_vlm_image(image, vlm_resolution) for image in active_images]
+        processed_active_images = [
+            prepare_vlm_image(image, vlm_resolution) for image in active_images
+        ]
         prepared_prompt, inline_numbers = prepare_image_placeholder_prompt(
             prompt,
             image_count=len(processed_active_images),
@@ -2029,9 +2019,14 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     )
                 formula = "a"
 
-        multipass_images = [] if inline_mode else processed_active_images
+        multipass_images = [] if inline_mode else active_images
+        fusion_device = (
+            comfy.model_management.get_torch_device()
+            if visual_method != "off"
+            else None
+        )
 
-        for idx, processed_img in enumerate(multipass_images):
+        for idx, source_image in enumerate(multipass_images):
             letter = chr(97 + idx)  # 0 -> 'a', 1 -> 'b', 2 -> 'c', ...
 
             # Ensure prompt has image pad tokens so tokenizer knows where to inject the image
@@ -2040,39 +2035,59 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 modified_prompt = VISION_BLOCK + modified_prompt
             full_prompt = format_krea_prompt(modified_prompt)
 
-            # Encode individual sequence pass
-            cond_X = encode_embedding_classical_scaled_bias(
-                clip,
-                full_prompt,
-                images=[processed_img],
-                skip_template=True,
-                visual_encoder_path=visual_encoder_path if visual_method != "off" else "grid-deepstack",
-            )
-            if len(cond_X) != 1:
-                raise ValueError("Advanced visual fusion requires a single conditioning schedule entry.")
-            C_X = cond_X[0][0]
-            P_X = cond_X[0][1].get("pooled_output", None)
+            if visual_method != "off":
+                try:
+                    branch = encode_vlm_resolution_samples(
+                        source_image,
+                        vlm_resolution,
+                        visual_fusion_config,
+                        lambda processed: encode_embedding_classical_scaled_bias(
+                            clip,
+                            full_prompt,
+                            images=[processed],
+                            skip_template=True,
+                            visual_encoder_path=visual_encoder_path,
+                        ),
+                        clip,
+                        full_prompt,
+                        visual_encoder_path,
+                        fusion_device,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"Could not encode visual samples for image {idx + 1}: {exc}"
+                    ) from exc
+                C_X = branch["tensor"]
+                P_X = branch["pooled"]
+                processed_img = branch["image"]
+                tokens = branch["tokens"]
+                tokens_dict[letter] = tokens
+                visual_ranges[letter] = branch["visual_range"]
+                visual_grids[letter] = branch["grid"]
+                cond_metadata = branch["metadata"]
+            else:
+                processed_img = prepare_vlm_image(source_image, vlm_resolution)
+                cond_X = encode_embedding_classical_scaled_bias(
+                    clip,
+                    full_prompt,
+                    images=[processed_img],
+                    skip_template=True,
+                    visual_encoder_path="grid-deepstack",
+                )
+                if len(cond_X) != 1:
+                    raise ValueError(
+                        "Advanced visual fusion requires a single conditioning schedule entry."
+                    )
+                C_X = cond_X[0][0]
+                P_X = cond_X[0][1].get("pooled_output")
+                cond_metadata = cond_X[0][1]
 
             sequence_tensors[letter] = C_X
             if P_X is not None:
                 pooled_tensors[letter] = P_X
 
-            if visual_method != "off":
-                try:
-                    tokens = clip.tokenize(full_prompt, images=[processed_img], skip_template=True)
-                    tokens_dict[letter] = tokens
-                    vis_start, vis_end = find_visual_token_range(
-                        tokens,
-                        C_X,
-                        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
-                    )
-                    visual_ranges[letter] = (vis_start, vis_end)
-                    visual_grids[letter] = visual_fusion_grid(processed_img, vis_end - vis_start, visual_encoder_path == "legacy-flat")
-                except Exception as e:
-                    raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
-
             if reference_cond_dict is None:
-                reference_cond_dict = cond_X[0][1]
+                reference_cond_dict = cond_metadata
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
         fusion_mask_cache = {}
@@ -2150,11 +2165,13 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                     dynamic_prompts=True,
                     tooltip="Main user text prompt. Supports classical weight syntax: (prompt:weight), e.g. (sunset:1.2).",
                 ),
-                io.Combo.Input(
+                io.Int.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
-                    default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path). 'Fast' = 384x384, 'Balanced' = 512x512, 'Detailed' = 768x768, 'Large' = 1024x1024, 'X-Large' = 1280x1280, 'XX-Large' = 1536x1536, 'Original' uses native resolution.",
+                    default=384,
+                    min=0,
+                    max=4096,
+                    step=32,
+                    tooltip="Equivalent-square VLM target from 256 to 3584. Values outside that range preserve original resolution.",
                 ),
 
                 # --- Modular Configurations ---
@@ -2218,71 +2235,70 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
         visual_method = visual_fusion_config.get("visual_fusion_method", "off")
         visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
 
-        def process_vlm_image(image, res):
-            if image is None:
-                return None
-            VLM_RESOLUTIONS = {
-                "Fast (384)": 384,
-                "Balanced (512)": 512,
-                "Detailed (768)": 768,
-                "Large (1024)": 1024,
-                "X-Large (1280)": 1280,
-                "XX-Large (1536)": 1536
-            }
-            samples = image.movedim(-1, 1)
-            if res == "Original":
-                return image
-            else:
-                vlm_size = VLM_RESOLUTIONS[res]
-                total_vlm = vlm_size * vlm_size
-                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
-                width_vlm = round(samples.shape[3] * scale_by_vlm)
-                height_vlm = round(samples.shape[2] * scale_by_vlm)
-
-                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
-                return s_vlm.movedim(1, -1)
+        fusion_device = (
+            comfy.model_management.get_torch_device()
+            if visual_method != "off"
+            else None
+        )
 
         for idx, img in enumerate(active_images):
             letter = chr(97 + idx)  # 0 -> 'a', 1 -> 'b', 2 -> 'c', ...
-            processed_img = process_vlm_image(img, vlm_resolution)
 
             # Ensure prompt has image pad tokens so tokenizer knows where to inject the image
             modified_prompt = prompt
             if not any(tag in prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>", "image_input_"]):
                 modified_prompt = "<|vision_start|><|image_pad|><|vision_end|>" + modified_prompt
 
-            # Encode individual sequence pass
-            cond_X = encode_embedding_classical_scaled_bias(
-                clip,
-                modified_prompt,
-                images=[processed_img],
-                visual_encoder_path=visual_encoder_path if visual_method != "off" else "grid-deepstack",
-            )
-            if len(cond_X) != 1:
-                raise ValueError("Advanced visual fusion requires a single conditioning schedule entry.")
-            C_X = cond_X[0][0]
-            P_X = cond_X[0][1].get("pooled_output", None)
+            if visual_method != "off":
+                try:
+                    branch = encode_vlm_resolution_samples(
+                        img,
+                        vlm_resolution,
+                        visual_fusion_config,
+                        lambda processed: encode_embedding_classical_scaled_bias(
+                            clip,
+                            modified_prompt,
+                            images=[processed],
+                            visual_encoder_path=visual_encoder_path,
+                        ),
+                        clip,
+                        modified_prompt,
+                        visual_encoder_path,
+                        fusion_device,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"Could not encode visual samples for image {idx + 1}: {exc}"
+                    ) from exc
+                C_X = branch["tensor"]
+                P_X = branch["pooled"]
+                tokens = branch["tokens"]
+                tokens_dict[letter] = tokens
+                visual_ranges[letter] = branch["visual_range"]
+                visual_grids[letter] = branch["grid"]
+                cond_metadata = branch["metadata"]
+            else:
+                processed_img = prepare_vlm_image(img, vlm_resolution)
+                cond_X = encode_embedding_classical_scaled_bias(
+                    clip,
+                    modified_prompt,
+                    images=[processed_img],
+                    visual_encoder_path="grid-deepstack",
+                )
+                if len(cond_X) != 1:
+                    raise ValueError(
+                        "Advanced visual fusion requires a single conditioning schedule entry."
+                    )
+                C_X = cond_X[0][0]
+                P_X = cond_X[0][1].get("pooled_output")
+                cond_metadata = cond_X[0][1]
 
             sequence_tensors[letter] = C_X
             if P_X is not None:
                 pooled_tensors[letter] = P_X
 
-            if visual_method != "off":
-                try:
-                    tokens = clip.tokenize(modified_prompt, images=[processed_img], skip_template=True)
-                    tokens_dict[letter] = tokens
-                    vis_start, vis_end = find_visual_token_range(
-                        tokens,
-                        C_X,
-                        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
-                    )
-                    visual_ranges[letter] = (vis_start, vis_end)
-                    visual_grids[letter] = visual_fusion_grid(processed_img, vis_end - vis_start, visual_encoder_path == "legacy-flat")
-                except Exception as e:
-                    raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
-
             if reference_cond_dict is None:
-                reference_cond_dict = cond_X[0][1]
+                reference_cond_dict = cond_metadata
 
         # Evaluate mathematical formula or consensus on sequence and pooled tensors
         fusion_mask_cache = {}
@@ -2752,11 +2768,13 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     default="",
                     tooltip="Space-separated non-negative attention odds weights. Example: (arms:1.5) (painting:0) (photo:2)",
                 ),
-                io.Combo.Input(
+                io.Int.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
-                    default="Fast (384)",
-                    tooltip="Resolution of the image passed to the VLM (semantic path).",
+                    default=384,
+                    min=0,
+                    max=4096,
+                    step=32,
+                    tooltip="Equivalent-square VLM target from 256 to 3584. Values outside that range preserve original resolution.",
                 ),
                 io.Float.Input("strength", default=1.0, min=0.0, max=4.0, step=0.05, tooltip="Global multiplier on the weighting effect. Effect compounds over all blocks."),
 
@@ -2801,7 +2819,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: str, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
+    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: int, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
@@ -2860,34 +2878,10 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
         clean_prompt = strip_contextual_weight_syntax(weighted_prompt)
         clean_system_prompt = strip_contextual_weight_syntax(weighted_system_prompt)
 
-        def process_vlm_image(image, res):
-            if image is None:
-                return None
-            VLM_RESOLUTIONS = {
-                "Fast (384)": 384,
-                "Balanced (512)": 512,
-                "Detailed (768)": 768,
-                "Large (1024)": 1024,
-                "X-Large (1280)": 1280,
-                "XX-Large (1536)": 1536
-            }
-            samples = image.movedim(-1, 1)
-            if res == "Original":
-                return image
-            else:
-                vlm_size = VLM_RESOLUTIONS[res]
-                total_vlm = vlm_size * vlm_size
-                scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
-                width_vlm = round(samples.shape[3] * scale_by_vlm)
-                height_vlm = round(samples.shape[2] * scale_by_vlm)
-
-                s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
-                return s_vlm.movedim(1, -1)
-
         # 2. Get tokens mapping on clean prompt with representative (first) image or fallback
         if active_images:
             first_img = active_images[0]
-            processed_first_img = process_vlm_image(first_img, vlm_resolution)
+            processed_first_img = prepare_vlm_image(first_img, vlm_resolution)
 
             modified_clean_prompt = add_image_marker(clean_prompt)
             modified_weighted_prompt = add_image_marker(weighted_prompt)
@@ -2961,46 +2955,70 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             visual_grids = {}
             tokens_dict = {}
             reference_cond_dict = None
+            fusion_device = (
+                comfy.model_management.get_torch_device()
+                if visual_method != "off"
+                else None
+            )
 
             for idx, img in enumerate(active_images):
                 letter = chr(97 + idx)
-                processed_img = process_vlm_image(img, vlm_resolution)
 
                 clean_pass_prompt = format_krea_prompt(add_image_marker(clean_prompt), clean_system_prompt)
                 weighted_pass_prompt = format_krea_prompt(add_image_marker(weighted_prompt), weighted_system_prompt)
 
-                cond_X = encode_embedding_classical_scaled_bias(
-                    clip,
-                    weighted_pass_prompt,
-                    images=[processed_img],
-                    skip_template=True,
-                    visual_encoder_path=visual_encoder_path,
-                )
-                if len(cond_X) != 1:
-                    raise ValueError("Krea2 attention visual fusion requires a single conditioning schedule entry.")
-                C_X = cond_X[0][0]
-                P_X = cond_X[0][1].get("pooled_output", None)
+                if visual_method != "off":
+                    try:
+                        branch = encode_vlm_resolution_samples(
+                            img,
+                            vlm_resolution,
+                            visual_fusion_config,
+                            lambda processed: encode_embedding_classical_scaled_bias(
+                                clip,
+                                weighted_pass_prompt,
+                                images=[processed],
+                                skip_template=True,
+                                visual_encoder_path=visual_encoder_path,
+                            ),
+                            clip,
+                            clean_pass_prompt,
+                            visual_encoder_path,
+                            fusion_device,
+                        )
+                    except Exception as exc:
+                        raise ValueError(
+                            f"Could not encode visual samples for image {idx + 1}: {exc}"
+                        ) from exc
+                    C_X = branch["tensor"]
+                    P_X = branch["pooled"]
+                    tokens = branch["tokens"]
+                    tokens_dict[letter] = tokens
+                    visual_ranges[letter] = branch["visual_range"]
+                    visual_grids[letter] = branch["grid"]
+                    cond_metadata = branch["metadata"]
+                else:
+                    processed_img = prepare_vlm_image(img, vlm_resolution)
+                    cond_X = encode_embedding_classical_scaled_bias(
+                        clip,
+                        weighted_pass_prompt,
+                        images=[processed_img],
+                        skip_template=True,
+                        visual_encoder_path=visual_encoder_path,
+                    )
+                    if len(cond_X) != 1:
+                        raise ValueError(
+                            "Krea2 attention visual fusion requires a single conditioning schedule entry."
+                        )
+                    C_X = cond_X[0][0]
+                    P_X = cond_X[0][1].get("pooled_output")
+                    cond_metadata = cond_X[0][1]
 
                 sequence_tensors[letter] = C_X
                 if P_X is not None:
                     pooled_tensors[letter] = P_X
 
-                if visual_method != "off":
-                    try:
-                        tokens = clip.tokenize(clean_pass_prompt, images=[processed_img], skip_template=True)
-                        tokens_dict[letter] = tokens
-                        vis_start, vis_end = find_visual_token_range(
-                            tokens,
-                            C_X,
-                            legacy_krea_spatial=visual_encoder_path == "legacy-flat",
-                        )
-                        visual_ranges[letter] = (vis_start, vis_end)
-                        visual_grids[letter] = visual_fusion_grid(processed_img, vis_end - vis_start, visual_encoder_path == "legacy-flat")
-                    except Exception as e:
-                        raise ValueError(f"Could not locate the visual token range for image {idx + 1}: {e}") from e
-
                 if reference_cond_dict is None:
-                    reference_cond_dict = cond_X[0][1]
+                    reference_cond_dict = cond_metadata
 
             fusion_mask_cache = {}
             if visual_method != "off":
