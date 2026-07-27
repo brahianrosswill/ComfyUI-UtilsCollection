@@ -1044,13 +1044,17 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 io.Combo.Input(
                     "topic",
                     options=[
-                        "system_prompt",
-                        "image_input_how_it_works",
-                        "scaled_bias_and_weighting",
-                        "math_expressions",
-                        "saving_embeddings",
+                        "node_catalog",
+                        "prompt_templates_and_weighting",
+                        "image_inputs_and_placeholders",
+                        "resolution_and_reference_latents",
+                        "visual_fusion",
+                        "consensus_settings",
+                        "formulas_and_alignment",
+                        "embedding_export",
+                        "compatibility_nodes",
                     ],
-                    default="system_prompt",
+                    default="node_catalog",
                     tooltip="Select the topic you would like to view documentation for.",
                 ),
             ],
@@ -1061,73 +1065,282 @@ class UC_EncoderNodesGuide(io.ComfyNode):
 
     @classmethod
     def execute(cls, topic: str) -> io.NodeOutput:
-        if topic == "system_prompt":
-            markdown = (
-                "##### System Prompt Guide\n"
-                "The System Prompt is a high-level instruction injected at the very beginning of the chat template "
-                "(before user prompt tokenization). It guides the behavior, style, and tone of the underlying Vision-Language Model (VLM).\n\n"
-                "##### Key Details:\n"
-                "- If system_prompt is left empty, the node falls back to a default high-quality description prompt (e.g., the detailed Krea2 visual formatting template).\n"
-                "- When a custom system_prompt is provided, it completely overrides the default block instructions (for example, instructing the VLM to focus exclusively on specific subjects, lighting styles, or color palettes).\n"
-                "- Safe concatenation templates are utilized to format the system, user, and assistant turns cleanly, ensuring special characters such as brackets or parentheses are never corrupted."
-            )
-        elif topic == "image_input_how_it_works":
-            markdown = (
-                "##### How Image Inputs Work\n"
-                "All advanced encoder nodes allow you to dynamically load multiple images through dynamic Autogrow inputs.\n\n"
-                "##### Key Details:\n"
-                "- When you connect images to the 'image_inputs' slot, they are automatically parsed.\n"
-                "- For advanced math blending nodes, the connected active images are dynamically mapped to sequential, contiguous letter variables: `a`, `b`, `c`, `d`, etc., starting from `a` for the first active connected image.\n"
-                "- Since the variables are assigned sequentially to only the active connections, empty/unconnected slots are skipped entirely, eliminating any missing variable errors.\n"
-                "- The node performs individual, sequential encoding passes for each active image using the prompt, and maps the resulting conditioning tensors to their respective letter variable.\n"
-                "- All images are resized to the set `vlm_resolution` (e.g. 'Fast (384)', 'Balanced (512)', etc.) using high-quality upscaling/downscaling."
-            )
-        elif topic == "scaled_bias_and_weighting":
-            markdown = (
-                "##### Scaled Bias & Weighting Syntax\n"
-                "Standard ComfyUI weighting (using parentheses and colons) is not natively supported by the custom tokenizers of advanced models like Qwen or Gemma. To bridge this gap, our Scaled Bias nodes implement a classical weight translation engine.\n\n"
-                "##### Key Details:\n"
-                "- You can write your weights using standard weighting syntax: `(prompt text:weight)`, for example `(beautiful sunset:1.25)` or `(red car:0.8)`.\n"
-                "- Before tokenization, our weight translation engine parses and extracts these markers, strips the outer parenthesis and weight markers, and compiles the clean text.\n"
-                "- Token positions mirror released Core's Krea2 prefix slice and validate it against the exact Qwen3-VL image-grid expansion. A mismatch is rejected instead of guessing a visual range.\n"
-                "- The precise slices of the conditioning tensor are then multiplied element-wise by the target strength.\n"
-                "- Local weights leave pooled output unchanged. The separate global multiplier scales both sequence and pooled output."
-            )
-        elif topic == "math_expressions":
-            markdown = (
-                "##### Math Expressions for Conditioning Blending\n"
-                "Mathematical conditioning blending allows you to perform continuous element-wise PyTorch mathematical operations directly in the CLIP/VLM conditioning embedding space (latent vector space) inside a single node, exactly mimicking the behavior of CES Conditioning Formula nodes.\n\n"
-                "##### Key Details:\n"
-                "- Enter your mathematical expression directly in the dedicated single-line `formula` input field (e.g., `(a + b) / 2`). No prompt pipe syntax is required.\n"
-                "- Inside the formula, use variables `a`, `b`, `c`, `d`... representing your active connected VLM image conditionings.\n"
-                "- Under the hood, the node runs independent single-image encoding passes, then evaluates the formula on the returned sequence tensors ($C \\in \\mathbb{R}^{B \\times L \\times D}$) and compatible pooled tensors ($P \\in \\mathbb{R}^{B \\times D}$). Core consumes Qwen DeepStack features inside the text encoder and does not expose them as conditioning metadata.\n"
-                "- Supported operations:\n"
-                "  - Addition (+), Subtraction (-), Multiplication (*), Division (/)\n"
-                "  - Parentheses for nesting operations: `((a * 1.05) + b) / 2`\n"
-                "  - Functions: `clamp(tensor, min, max)`, `min(tensor1, tensor2)`, `max(tensor1, tensor2)`, `abs(tensor)`\n"
-                "- **Nested Weights Support**: Inside the math expression, you can use classical weight syntax like `(a:1.2) + (b:0.8)`. Under the hood, these are dynamically preprocessed into scalar embedding multiplications `(a * 1.2)` and `(b * 0.8)` respectively before evaluation.\n"
-                "- **Sequence Alignment Modes**: If your images have different aspect ratios or resolutions, the node supports two alignment options below the multiplier widget:\n"
-                "  - `zero-pad`: Silently zero-pads shorter sequence tensors to align lengths (matches ComfyUI core conditioning logic exactly).\n"
-                "  - `interpolate`: Dynamically resizes the visual token sequence using 1D linear interpolation to align attention features perfectly across the entire sequence without dead space.\n"
-                "- Security: Formulas use a restricted AST grammar. Attribute access, indexing, comprehensions, imports, and arbitrary calls are rejected."
-            )
-        elif topic == "saving_embeddings":
-            markdown = (
-                "##### Saving Pre-Transformer Input Embeddings\n"
-                "You can save raw pre-transformer interleaved text and visual embeddings directly to disk before they enter the transformer layers.\n\n"
-                "##### Key Details:\n"
-                "- **VLM Input Embedding Export** (`UC_VLMInputEmbeds`) is the canonical node. The former Krea2 and Qwen3-VL IDs remain deprecated compatibility nodes for one release.\n"
-                "- The prompt text is tokenized with `skip_template=True` so that any model-specific chat/prompt wrappers are skipped, preserving raw text embeddings.\n"
-                "- If an image is connected, the image is tokenized and its visual token pad structures are interleaved within the language tokens.\n"
-                "- The model's `process_tokens` method extracts the high-dimensional continuous input embeddings.\n"
-                "- Slicing can be toggled optionally via the `slice_visual_tokens` widget (Method A) to extract pure language/text embedding tensors. If disabled (default), the raw interleaved sequence is preserved.\n"
-                "- Tensors are written as a `.safetensors` file under your specified name in ComfyUI's `embeddings/` folder."
-            )
-        else:
-            markdown = "Unknown topic selected."
+        topics = {
+            "node_catalog": (
+                "## Encoder node catalog\n\n"
+                "### Canonical encoder and conditioning nodes\n\n"
+                "- `UC_AttentionBiasTextEncode`: encodes `text` with the attention-bias encoder path.\n"
+                "- `UC_TextEncodeSystemPrompt`: selects the `flux2dev`, `klein`, `krea2`, `z-image`, or `z-image-thinking` prompt template.\n"
+                "- `UC_WeightedTextEncodeSystemPrompt`: uses the same model-type choices, classical scaled-bias prompt parsing, and a final `multiplier`.\n"
+                "- `UC_TextEncodeLtxv2SystemPrompt`: LTXV2 system-prompt encoding with optional image and reference latent.\n"
+                "- `UC_TextEncodeSystemEditAdvanced`: advanced system-edit encoding with autogrowing image inputs.\n"
+                "- `UC_TextEncodeGemmaSystemEditAdvanced`: Gemma system-edit encoding with autogrowing image inputs.\n"
+                "- `UC_AdvancedVisualConditioningEncode`: per-image visual encoding, formula fallback, optional grid fusion, and optional reference latents.\n"
+                "- `UC_Krea2TokenAttentionWeight`: returns a patched model and conditioning using phrase-level attention odds.\n"
+                "- `UC_VLMInputEmbeds`: exports processed input embeddings and a state dictionary.\n\n"
+                "### Configuration and post-encoding nodes\n\n"
+                "- `UC_TextConsensusBlendConfig`: outputs `TEXT_BLEND_CONFIG`.\n"
+                "- `UC_VisualFusionConfig`: outputs `VISUAL_FUSION_CONFIG` and optionally consumes `TEXT_BLEND_CONFIG`.\n"
+                "- `UC_ConditioningConsensusBlend`: combines autogrowing CONDITIONING inputs using `TEXT_BLEND_CONFIG`."
+            ),
+            "prompt_templates_and_weighting": (
+                "## Prompt templates and weighting\n\n"
+                "### System Prompt Encode\n\n"
+                "`UC_TextEncodeSystemPrompt` accepts `model_type`, `prompt`, `system_prompt`, and `thinking_content`.\n\n"
+                "- `flux2dev`, `klein`, `krea2`, `z-image`, and `z-image-thinking` select different serialized templates.\n"
+                "- `thinking_content` is inserted only by the Klein or `z-image-thinking` template branches.\n"
+                "- An empty `system_prompt` follows the empty-system branch implemented for the selected type.\n\n"
+                "### Weighted System Prompt Text Encode\n\n"
+                "`UC_WeightedTextEncodeSystemPrompt` accepts the same model types. `(text:weight)` markers are parsed by the classical scaled-bias path. Its final `multiplier` scales sequence conditioning and pooled output when present.\n\n"
+                "### Attention Bias Encode\n\n"
+                "`UC_AttentionBiasTextEncode` uses `<text=strength>` markers. It removes the markers before encoding and adds the logarithm of each finite non-negative strength to the corresponding key columns of `attention_mask`. Text without `<`, `>`, or `=` uses the ordinary tokenize-and-encode branch.\n\n"
+                "### Krea2 Token Attention Weight\n\n"
+                "`attention_weights` uses space-separated `(phrase:weight)` entries. Weights must be finite and non-negative. The node converts each weight to a logarithmic attention bias multiplied by `strength`. Phrases not found in the tokenized prompt are skipped with a warning. The node returns both MODEL and CONDITIONING."
+            ),
+            "image_inputs_and_placeholders": (
+                "## Image inputs and placeholders\n\n"
+                "Autogrowing image inputs are flattened in active socket order, including image batches. Per-image formula variables are assigned contiguously as `a`, `b`, `c`, and onward.\n\n"
+                "### Advanced Visual Conditioning Encode\n\n"
+                "- With fusion enabled, use `image_input_fusion`; `image_input_1` is accepted as its alias.\n"
+                "- With fusion disabled, numbered `image_input_N` placeholders select active images for one native inline encoding pass.\n"
+                "- If fusion is disabled and no numbered inline placeholders are present, each image is encoded separately for the formula path.\n"
+                "- If no image is connected, the node encodes text only.\n\n"
+                "### System Edit Text Encode (Advanced)\n\n"
+                "- `image_input_N` inserts the matching connected image at that prompt position.\n"
+                "- A pipe expression such as `|a + b|` evaluates an image-tensor expression and inserts its result at that position.\n"
+                "- If neither numbered placeholders nor pipe expressions are present, all connected images are prepended in socket order.\n\n"
+                "### Gemma System Edit Text Encode (Advanced)\n\n"
+                "- `image_input_N` inserts the matching connected image at that prompt position.\n"
+                "- If no numbered placeholder is present, all connected images are prepended in socket order.\n\n"
+                "### Krea2 Token Attention Weight\n\n"
+                "This node supports one visual slot in its prompt. With fusion enabled it accepts `image_input_fusion` or `image_input_1`. Numbered multi-image inline placement is not used by its attention-position mapping."
+            ),
+            "resolution_and_reference_latents": (
+                "## VLM resolution\n\n"
+                "The three visual-fusion consumers use an integer `vlm_resolution`:\n\n"
+                "- Default: `384`\n"
+                "- Widget range: `0` through `4096`\n"
+                "- Widget step: `32`\n"
+                "- Values from `256` through `3584` select an aspect-preserving equivalent-square target aligned to a 32-pixel grid.\n"
+                "- Values below `256` or above `3584` preserve the input resolution.\n\n"
+                "`UC_TextEncodeSystemEditAdvanced`, `UC_TextEncodeGemmaSystemEditAdvanced`, and `UC_VLMInputEmbeds` retain the preset choices `Fast (384)`, `Balanced (512)`, `Detailed (768)`, `Large (1024)`, `X-Large (1280)`, `XX-Large (1536)`, and `Original`.\n\n"
+                "VAE reference resolution choices are `Ultra (512)`, `Turbo (768)`, `Fast (1024)`, `Balanced (1280)`, `Detailed (1536)`, and `Original`.\n\n"
+                "`resolution_samples` belongs to `UC_VisualFusionConfig`. It accepts odd values from `1` through `15` with step `2`. Sampling is active only when a connected consensus config is not `off`. Original-resolution mode produces one sample. Numeric sampling alternates below and above the effective base and shifts the execution-local base upward when required to keep every sample at least `256`.\n\n"
+                "## Reference latents\n\n"
+                "Nodes exposing reference latents use `vae_resolution`, `ref_latent_mode`, optional `vae`, and a dimension multiple.\n\n"
+                "- `off`: adds no reference latent.\n"
+                "- `single` and `multi`: append encoded reference latents to conditioning metadata.\n"
+                "- `parallel-single` and `parallel-multi`: use a separate conditioning entry for supported non-Krea2 stages.\n"
+                "- Krea2 stages use the standard appended metadata path even when a parallel mode is selected.\n"
+                "- A reference latent is created only when the required VAE and image inputs are present."
+            ),
+            "visual_fusion": (
+                "## Visual Component Fusion Configurator\n\n"
+                "`UC_VisualFusionConfig` is consumed by `UC_AdvancedVisualConditioningEncode` and `UC_Krea2TokenAttentionWeight`.\n\n"
+                "### Fusion methods\n\n"
+                "- `off`: disables visual-token fusion and enables the formula fallback path.\n"
+                "- `linear`: averages aligned source tokens.\n"
+                "- `spatial-checkerboard`: assigns sources by alternating grid coordinates.\n"
+                "- `spatial-block-interleave`: assigns sources in blocks controlled by `visual_block_size` from `1` through `8`.\n"
+                "- `spatial-dither-random`: uses `seed` and `dither_ratio`; `dither_secondary_pattern` selects `checkerboard` or `block-interleave` for sources after the first.\n\n"
+                "### Additional controls\n\n"
+                "- `dither_mask_cleanup` applies the implemented deterministic paired-cell cleanup pass.\n"
+                "- `spatial_perturbation` ranges from `0.0` through `1.0` and exchanges seeded source assignments while retaining source counts.\n"
+                "- `visual_encoder_path` selects `grid-deepstack` or `legacy-flat`.\n"
+                "- `save_blended_embeds` writes the final isolated visual-token embedding under the relative `save_path` in ComfyUI's embeddings directory.\n"
+                "- Optional `Consensus Config` enables coordinate-aligned consensus weighting.\n"
+                "- `fusion_strength=1.0` uses only the selected fusion method. `0.0` uses only consensus weights. Intermediate values mix the two normalized weight sets."
+            ),
+            "consensus_settings": (
+                "## Text Consensus Blend Configurator\n\n"
+                "`blend_preset` accepts `off`, `custom`, `baseline`, `power_blend`, `high_clarity`, `smooth`, `varied_merge`, `diverse_concept`, `high_diversity_concept`, and the six `dsc_` presets shown by the widget.\n\n"
+                "- `off` bypasses consensus.\n"
+                "- A named preset supplies its stored blend method, consensus type, alignment method, similarity threshold, alpha, beta, norm-rescale, DSC, and soft-comfort values.\n"
+                "- `power_blend` also supplies its stored alignment threshold. Other named presets retain the `alignment_threshold` widget value.\n"
+                "- `custom` uses the manual values directly.\n"
+                "- A non-default `global_scale` overrides a named preset's stored scale.\n"
+                "- `blend_method`: `linear` or `consensus`.\n"
+                "- `consensus_type`: `mean` or `median`.\n"
+                "- `alignment_method`: `index` or `similarity` for text conditioning.\n"
+                "- `alignment_threshold` controls similarity-based text matching.\n"
+                "- `similarity_threshold`, `power_alpha`, and `diversity_beta` control consensus weights.\n"
+                "- `rescale_norm`, `global_scale`, `dynamic_similarity_contrast`, and `soft_comfort_bandpass` modify the blended values.\n"
+                "- `position_weight` biases text similarity matching toward nearby normalized token positions.\n"
+                "- `preserve_common_prefix` copies the longest numerically identical text-conditioning prefix from the first input.\n\n"
+                "When this config is nested inside visual fusion, visual tokens are aligned by grid coordinate. Text sequence alignment, position matching, and common-prefix matching are not applied to the visual span."
+            ),
+            "formulas_and_alignment": (
+                "## Formula fallback\n\n"
+                "The `formula` and `padding_method` inputs are used only when visual fusion is disconnected or set to `off`.\n\n"
+                "- Active image passes map to `a`, `b`, `c`, and onward.\n"
+                "- An empty formula selects `a`.\n"
+                "- Operators: `+`, `-`, `*`, `/`, unary `+`, and unary `-`.\n"
+                "- Functions: `abs`, `min`, `max`, and `clamp`.\n"
+                "- `(a:1.2)` is normalized to scalar multiplication before restricted expression evaluation.\n"
+                "- Attribute access, indexing, comprehensions, imports, and unapproved calls are rejected.\n"
+                "- `zero-pad` pads shorter sequence tensors with zero tokens.\n"
+                "- `interpolate` resizes shorter sequence tensors along their token dimension.\n\n"
+                "## Conditioning Consensus\n\n"
+                "`UC_ConditioningConsensusBlend` accepts autogrowing CONDITIONING inputs. One active input is returned unchanged. Multiple inputs must contain the same number of scheduled entries. A disconnected config uses the `baseline` preset; an `off` config returns the first active input."
+            ),
+            "embedding_export": (
+                "## VLM Input Embedding Export\n\n"
+                "`UC_VLMInputEmbeds` accepts `clip`, `prompt`, line-separated `image_paths`, preset `vlm_resolution`, line-separated `file_names`, and `slice_visual_tokens`.\n\n"
+                "- Every non-empty image path must map to one file name.\n"
+                "- Tokenization uses `skip_template=True`.\n"
+                "- With `slice_visual_tokens=False`, the full processed token embedding sequence is retained.\n"
+                "- With `slice_visual_tokens=True`, the first validated visual-token span is removed.\n"
+                "- Each state dictionary is saved as `.safetensors` below ComfyUI's embeddings directory.\n"
+                "- The node outputs the final state dictionary and final two-dimensional embedding tensor produced by the input list."
+            ),
+            "compatibility_nodes": (
+                "## Deprecated compatibility nodes\n\n"
+                "The following registered schemas are marked deprecated and delegate to existing implementations:\n\n"
+                "- Model-specific system-prompt nodes for Flux2 dev, Flux2 Klein, Krea2, Z-Image, and Z-Image Thinking.\n"
+                "- Model-specific scaled-bias system-prompt nodes for Flux2 dev, Flux2 Klein, LTXV2, Z-Image, and Z-Image Thinking.\n"
+                "- `UC_ScaledBiasTextEncodeSystemPrompt`.\n"
+                "- `TextEncodeSystemEditPlus`, `TextEncodeSystemEditPlusAdvanced`, `TextEncodeKrea2SystemEditPlusAdvanced`, `TextEncodeEditPlusAdvanced`, and `TextEncodeGemmaSystemEditPlusAdvanced`.\n"
+                "- `TextEncodeKrea2SystemEditScaledAdv` and `TextEncodeEditScaledAdv`.\n"
+                "- `UC_Krea2InputEmbeds` and `UC_Qwen3VLInputEmbeds`.\n"
+                "- `TextEncodeKrea2SysEditScaledAdvAttn`.\n\n"
+                "The canonical replacements are listed in the `node_catalog` topic. `UC_TextEncodeLtxv2SystemPrompt` remains a canonical registered node."
+            ),
+        }
+        markdown = topics.get(topic, "Unknown topic selected.")
 
         return io.NodeOutput(markdown)
 
 
+class UC_CompositeNodesGuide(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_CompositeNodesGuide",
+            display_name="Composite Nodes Guide",
+            category="utils/documentation",
+            inputs=[
+                io.Combo.Input(
+                    "topic",
+                    options=[
+                        "node_catalog",
+                        "model_inputs",
+                        "mask_cleanup_and_resize",
+                        "unified_background_replace",
+                        "layered_composite",
+                        "staged_workflow",
+                        "staged_face_workflow",
+                        "placement_editor",
+                        "mediapipe_face_composite",
+                    ],
+                    default="node_catalog",
+                    tooltip="Select the composite documentation topic.",
+                ),
+            ],
+            outputs=[io.String.Output(display_name="markdown")],
+        )
+
+    @classmethod
+    def execute(cls, topic: str) -> io.NodeOutput:
+        topics = {
+            "node_catalog": (
+                "## Background and face composite nodes\n\n"
+                "- `UC_UnifiedBackgroundReplace`: produces one independently composited result per flattened foreground image over one background.\n"
+                "- `UC_LayeredBackgroundComposite`: removes and places multiple foreground layers in one scene during every execution.\n"
+                "- `UC_StagedLayeredBackgroundCompositeOptions`: supplies cleanup, resize, feather, and foreground-blend settings to staged compositors.\n"
+                "- `UC_StagedLayeredBackgroundComposite`: retains cutouts between staging and final compositing executions.\n"
+                "- `UC_StagedMediaPipeFaceOptions`: supplies detection, extraction, face feather, initial scale, and face-blend settings.\n"
+                "- `UC_StagedMediaPipeFaceBackgroundComposite`: stages ordinary foreground layers and independently placeable detected face layers.\n"
+                "- `UC_MediaPipeFaceCompositeOptions`: supplies options for direct source-to-target face compositing.\n"
+                "- `UC_MediaPipeFaceComposite`: composites the largest detected source face into the largest detected target face."
+            ),
+            "model_inputs": (
+                "## Model inputs and defaults\n\n"
+                "Optional model sockets keep their backend IDs and display `_opt` in the node UI.\n\n"
+                "- A disconnected `background_removal_model_opt` loads the internal `birefnet.safetensors` checkpoint.\n"
+                "- A connected Core BACKGROUND_REMOVAL model overrides the internal default. This permits a connected Lucida model.\n"
+                "- A disconnected `face_detection_model_opt` on `UC_MediaPipeFaceComposite` loads `mediapipe_face_fp32.safetensors` from the detection model directory.\n"
+                "- A connected FACE_DETECTION_MODEL overrides that internal face model.\n"
+                "- The staged face compositor loads its MediaPipe face model internally.\n"
+                "- The staged model selectors accept `birefnet` and `lucida`. Missing or invalid internal checkpoint files produce an error containing the expected model location and source URL."
+            ),
+            "mask_cleanup_and_resize": (
+                "## Background-removal mask controls\n\n"
+                "- `mask_threshold`: minimum mask value retained before cleanup. Staged default is `0.5`.\n"
+                "- `border_cleanup_width`: source-edge strip width where weak predictions are removed. Default `2`; `0` disables it.\n"
+                "- `artifact_cleanup_radius`: morphological opening radius. Default `2`; `0` disables it.\n"
+                "- `gap_fill_radius`: morphological closing radius. Default `2`; `0` disables it.\n"
+                "- `feather_radius`: inward mask-edge softness. Staged default `2`; `0` keeps the resized edge unchanged.\n\n"
+                "Resize methods are `auto`, `nearest-exact`, `bilinear`, `area`, `bicubic`, and `lanczos`. For images, `auto` uses FP32 area reduction when shrinking and bicubic when enlarging. For masks, `auto` uses area when shrinking and bilinear when enlarging. `nearest-exact` produces a hard resized edge."
+            ),
+            "unified_background_replace": (
+                "## Unified Background Replace\n\n"
+                "This node requires one background image and at least one foreground image. Batched and autogrowing foreground inputs are flattened into separate outputs.\n\n"
+                "- `foreground_scale` sets the foreground's longest retained mask bound relative to the background's shortest side.\n"
+                "- `long_axis_shift` and `short_axis_shift` position the foreground along the background axes from `-1` through `1`.\n"
+                "- `workspace_padding` ranges from `0` through `1` and controls the permitted off-canvas margin.\n"
+                "- Cleanup, feather, image-resize, and mask-resize controls are applied independently to every foreground.\n"
+                "- Outputs are an IMAGE batch and the corresponding MASK batch."
+            ),
+            "layered_composite": (
+                "## Layered Background Composite\n\n"
+                "This node removes backgrounds and builds one scene in a single execution.\n\n"
+                "- Foregrounds are composited according to the layer order stored in `placement_data`.\n"
+                "- Each layer stores scale, normalized center, horizontal and vertical flips, rotation, local quadrilateral corners, and included or excluded state in the current placement format.\n"
+                "- Excluded layers do not contribute to the output.\n"
+                "- The node outputs the composited IMAGE and combined MASK.\n"
+                "- Unlike the staged nodes, foreground removal runs again whenever this node executes."
+            ),
+            "staged_workflow": (
+                "## Staged Background Composite workflow\n\n"
+                "`execution_mode` accepts:\n\n"
+                "- `run_staging`: evaluate foreground inputs, remove their backgrounds, retain the cutouts, and return the staging preview.\n"
+                "- `run_staged`: composite the retained cutouts without evaluating foreground inputs or loading a removal model.\n"
+                "- `full_run`: refresh the retained cutouts from current inputs and composite them in the same execution.\n\n"
+                "Run Staging queues this output node and its upstream closure. A retained stage belongs to the node instance. `run_staged` reports an error if that instance has no retained stage.\n\n"
+                "`Staged Composite Options` is optional. When disconnected, its defaults are used. `foreground_blend=1.0` keeps the layer fully foreground. `0.0` applies the implemented 50/50 normal blend only where an accumulated foreground or face mask already exists; background-only areas remain fully foreground."
+            ),
+            "staged_face_workflow": (
+                "## Staged Face Background Composite\n\n"
+                "During `run_staging` and `full_run`, each foreground is staged and MediaPipe detection is run on that foreground. Detected face layers are inserted immediately in front of their originating foreground. `run_staged` uses retained ordinary and face crops without loading either model.\n\n"
+                "`Staged MediaPipe Face Options` defaults:\n\n"
+                "- `detection_threshold=0.55`\n"
+                "- `maximum_faces=16`\n"
+                "- `bbox_expansion=64`\n"
+                "- `mask_expansion=0`\n"
+                "- `face_feather_radius=8`\n"
+                "- `initial_face_scale=0.25`\n"
+                "- `face_blend=1.0`\n\n"
+                "Detections are ordered deterministically by vertical and then horizontal center. Overlapping detections are merged by the implemented overlap grouping. A per-image detection failure or empty result leaves the ordinary foreground available. The node outputs IMAGE, MASK, final transformed bounding boxes, and final transformed layer masks."
+            ),
+            "placement_editor": (
+                "## Placement editor\n\n"
+                "- Drag a visible included layer to move it.\n"
+                "- Corner handles resize by default. Rotate mode changes corner dragging to rotation while ordinary movement remains available.\n"
+                "- Warp mode exposes four independently draggable local quadrilateral corners.\n"
+                "- Flip H and Flip V are stored per layer.\n"
+                "- Excl removes a layer from preview interaction and final compositing while retaining its row and placement data.\n"
+                "- Reset restores that layer's placement defaults.\n"
+                "- The grip and stacked triangle buttons reorder layers from back to front.\n"
+                "- Right-clicking the preview opens the layer context menu.\n"
+                "- Workspace Padding changes the visible and permitted off-canvas placement area.\n"
+                "- The layer list displays at most three and one-half rows before scrolling."
+            ),
+            "mediapipe_face_composite": (
+                "## MediaPipe Face Composite\n\n"
+                "The node accepts one source image and one target image. It requests full-range detection, selects the largest detected face from each image, and uses the detector's `face_oval` landmark ring.\n\n"
+                "`MediaPipe Face Composite Options`:\n\n"
+                "- `bbox_expansion`: expands source and target face boxes. Default `64`.\n"
+                "- `mask_expansion`: expands or contracts the source face mask. Default `0`.\n"
+                "- `feather_radius`: signed face-mask feather control. Default `8`.\n"
+                "- `target_warp_strength`: target deformation strength from `0.0` through `2.0`. Default `1.0`.\n"
+                "- `warp_decay_radius`: target-warp falloff radius. Default `64`.\n"
+                "- `score_thresh`: detector score threshold. Default `0.25`.\n\n"
+                "The source face mask is intersected with the source background-removal mask. Outputs are the composited target IMAGE and the extracted Face Crop."
+            ),
+        }
+        return io.NodeOutput(topics.get(topic, "Unknown topic selected."))
+
+
 EncoderNodesGuide = UC_EncoderNodesGuide
+CompositeNodesGuide = UC_CompositeNodesGuide
 
