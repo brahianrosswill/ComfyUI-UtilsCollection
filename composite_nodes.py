@@ -25,6 +25,7 @@ from .composite_helpers import (
     _parse_layer_placements,
     _placement_offsets,
     _refine_foreground_mask,
+    resolve_background_removal_model,
     _resize_composite_image,
     _resize_composite_mask,
     _resize_image,
@@ -317,7 +318,9 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
             inputs=[
                 io.BackgroundRemoval.Input(
                     "background_removal_model",
-                    tooltip="Core background-removal model used to isolate every foreground.",
+                    display_name="background_removal_model_opt",
+                    optional=True,
+                    tooltip="Optional Core background-removal model. Uses the internal BiRefNet model when disconnected.",
                 ),
                 io.Image.Input(
                     "background",
@@ -429,17 +432,17 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        background_removal_model,
-        background,
-        foreground_images,
-        foreground_scale,
-        long_axis_shift,
-        short_axis_shift,
-        mask_threshold,
-        border_cleanup_width,
-        artifact_cleanup_radius,
-        gap_fill_radius,
-        feather_radius,
+        background_removal_model=None,
+        background=None,
+        foreground_images=None,
+        foreground_scale=0.9,
+        long_axis_shift=0.0,
+        short_axis_shift=0.0,
+        mask_threshold=0.5,
+        border_cleanup_width=2,
+        artifact_cleanup_radius=2,
+        gap_fill_radius=2,
+        feather_radius=2,
         image_resize_method="auto",
         mask_resize_method="auto",
         workspace_padding=0.5,
@@ -464,6 +467,9 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
             raise ValueError(
                 "Unified Background Replace requires at least one foreground image."
             )
+        background_removal_model = resolve_background_removal_model(
+            background_removal_model
+        )
 
         background = background[..., :3]
         background_height, background_width = background.shape[1:3]
@@ -1051,7 +1057,9 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
             inputs=[
                 io.BackgroundRemoval.Input(
                     "background_removal_model",
-                    tooltip="Core background-removal model used to isolate every foreground layer.",
+                    display_name="background_removal_model_opt",
+                    optional=True,
+                    tooltip="Optional Core background-removal model. Uses the internal BiRefNet model when disconnected.",
                 ),
                 io.Image.Input(
                     "background", tooltip="Single image used as the scene canvas."
@@ -1132,15 +1140,15 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        background_removal_model,
-        background,
-        foreground_images,
-        placement_data,
-        mask_threshold,
-        border_cleanup_width,
-        artifact_cleanup_radius,
-        gap_fill_radius,
-        feather_radius,
+        background_removal_model=None,
+        background=None,
+        foreground_images=None,
+        placement_data='{"version":2,"workspace_padding":0.5,"layers":{}}',
+        mask_threshold=0.5,
+        border_cleanup_width=2,
+        artifact_cleanup_radius=2,
+        gap_fill_radius=2,
+        feather_radius=2,
         image_resize_method="auto",
         mask_resize_method="auto",
     ):
@@ -1159,6 +1167,9 @@ class UC_LayeredBackgroundComposite(io.ComfyNode):
             raise ValueError(
                 "Layered Background Composite requires at least one foreground image."
             )
+        background_removal_model = resolve_background_removal_model(
+            background_removal_model
+        )
         placements = _parse_layer_placements(placement_data)
         placement_version, _, _, workspace_padding = _parse_layer_payload(
             placement_data
@@ -1432,8 +1443,18 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
             category="utils/image",
             description="Composites the largest source face into the largest target face using full-range MediaPipe detection.",
             inputs=[
-                FaceDetectionType.Input("face_detection_model"),
-                io.BackgroundRemoval.Input("background_removal_model"),
+                FaceDetectionType.Input(
+                    "face_detection_model",
+                    display_name="face_detection_model_opt",
+                    optional=True,
+                    tooltip="Optional Core MediaPipe face model. Uses mediapipe_face_fp32.safetensors when disconnected.",
+                ),
+                io.BackgroundRemoval.Input(
+                    "background_removal_model",
+                    display_name="background_removal_model_opt",
+                    optional=True,
+                    tooltip="Optional Core background-removal model. Uses the internal BiRefNet model when disconnected.",
+                ),
                 io.Image.Input("source"),
                 io.Image.Input("target"),
                 FaceCompositeOptionsType.Input("options", optional=True),
@@ -1447,16 +1468,20 @@ class UC_MediaPipeFaceComposite(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        face_detection_model,
-        background_removal_model,
-        source,
-        target,
+        face_detection_model=None,
+        background_removal_model=None,
+        source=None,
+        target=None,
         options=None,
     ):
         if source.shape[0] != 1 or target.shape[0] != 1:
             raise ValueError(
                 "MediaPipe Face Composite currently requires one source and one target image."
             )
+        face_detection_model = face_detection_model or load_face_model()
+        background_removal_model = resolve_background_removal_model(
+            background_removal_model
+        )
         options = cls.DEFAULT_OPTIONS | (options or {})
         score_thresh = options["score_thresh"]
         source = source[..., :3]

@@ -87,6 +87,11 @@ def _load_internal_background_removal_model(model_name):
     return model
 
 
+def resolve_background_removal_model(model=None):
+    """Use a connected Core model or the internal BiRefNet default."""
+    return model if model is not None else _load_internal_background_removal_model("birefnet")
+
+
 def _resize_image(image, width, height, method, crop="disabled"):
     return resize_nchw(image.movedim(-1, 1), width, height, method, crop).movedim(1, -1)
 

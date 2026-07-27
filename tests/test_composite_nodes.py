@@ -464,6 +464,72 @@ def test_background_compositor_schemas_place_variable_foregrounds_after_static_c
         ]
 
 
+def test_nonstaged_background_and_face_models_are_optional():
+    for node in (
+        composite_nodes.UC_UnifiedBackgroundReplace,
+        composite_nodes.UC_LayeredBackgroundComposite,
+    ):
+        model_input = next(
+            value
+            for value in node.define_schema().inputs
+            if value.id == "background_removal_model"
+        )
+        assert model_input.optional is True
+        assert model_input.display_name == "background_removal_model_opt"
+
+    face_inputs = {
+        value.id: value
+        for value in composite_nodes.UC_MediaPipeFaceComposite.define_schema().inputs
+    }
+    assert face_inputs["face_detection_model"].optional is True
+    assert face_inputs["face_detection_model"].display_name == "face_detection_model_opt"
+    assert face_inputs["background_removal_model"].optional is True
+    assert (
+        face_inputs["background_removal_model"].display_name
+        == "background_removal_model_opt"
+    )
+
+
+def test_background_model_resolver_uses_internal_birefnet_only_when_disconnected(
+    monkeypatch,
+):
+    internal = object()
+    external = object()
+    requested = []
+    monkeypatch.setattr(
+        composite_helpers,
+        "_load_internal_background_removal_model",
+        lambda name: requested.append(name) or internal,
+    )
+
+    assert composite_helpers.resolve_background_removal_model(None) is internal
+    assert composite_helpers.resolve_background_removal_model(external) is external
+    assert requested == ["birefnet"]
+
+
+def test_nonstaged_compositors_resolve_disconnected_background_model(monkeypatch):
+    fallback = _QueuedBackgroundModel(
+        [torch.ones(1, 4, 4), torch.ones(1, 4, 4)]
+    )
+    requested = []
+    monkeypatch.setattr(
+        composite_nodes,
+        "resolve_background_removal_model",
+        lambda model: requested.append(model) or fallback,
+    )
+    background = torch.zeros(1, 16, 16, 3)
+    foreground = torch.ones(1, 4, 4, 3)
+
+    _replace_background(
+        None, background, {"foreground_0": foreground}, foreground_scale=0.5
+    )
+    _layered_composite(
+        None, background, {"foreground_0": foreground}
+    )
+
+    assert requested == [None, None]
+
+
 def test_composite_smooth_mask_resize_preserves_subpixel_coverage():
     mask = torch.tensor([[[0.0, 1.0], [0.0, 1.0]]])
 
@@ -1354,6 +1420,34 @@ def test_face_composite_uses_full_detector_and_target_crop_coordinates():
     assert image[0, 6:22, 8:24, 0].sum() > 0
     assert image[0, :6].sum() == 0
     assert image[0, :, :8].sum() == 0
+
+
+def test_face_composite_loads_internal_models_when_disconnected(monkeypatch):
+    face_model = _FaceModel()
+    background_model = _BackgroundModel()
+    monkeypatch.setattr(composite_nodes, "load_face_model", lambda: face_model)
+    monkeypatch.setattr(
+        composite_nodes,
+        "resolve_background_removal_model",
+        lambda model: background_model if model is None else model,
+    )
+
+    output = composite_nodes.UC_MediaPipeFaceComposite.execute(
+        None,
+        None,
+        torch.zeros(1, 20, 20, 3),
+        torch.zeros(1, 30, 30, 3),
+        {
+            "bbox_expansion": 2,
+            "mask_expansion": 0,
+            "feather_radius": 0,
+            "target_warp_strength": 0.0,
+            "warp_decay_radius": 4,
+        },
+    )
+
+    assert output.result[0].shape == (1, 30, 30, 3)
+    assert len(face_model.calls) == 2
 
 
 def test_face_composite_rejects_batches_and_missing_faces():
