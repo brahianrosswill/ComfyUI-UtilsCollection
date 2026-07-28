@@ -83,6 +83,8 @@ class SamplingUtils(ComfyExtension):
             UC_TagNormalizeCombine,
             UC_LoadImagePath,
             UC_LoadImageDirectory,
+            UC_HighResolutionTileSplit,
+            UC_HighResolutionTileAccumulator,
             UC_ListToImageBatch,
             UC_SwitchInverseNode,
             UC_SoftSwitchInverseNode,

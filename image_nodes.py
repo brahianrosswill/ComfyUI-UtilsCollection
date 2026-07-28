@@ -11,12 +11,16 @@ from tqdm import tqdm
 from PIL import Image, ImageOps, ImageSequence, ImageDraw, ImageFont
 import kornia.morphology as morph
 from .helper_functions import pil2tensor, math_diag, pct_to_px, composite, fill_mask_from_edges, iterative_directional_stretch_fill, gaussian_blur_nchw, hex_to_rgb, string_to_color, match_image_properties, resize_nchw, FLOW_PRESETS
+from .tile_helpers import accumulate_tile_images, split_and_encode_tiles
 
 
 from comfy_api.latest import io
 from comfy import model_management
 import node_helpers
 from nodes import MAX_RESOLUTION
+
+HighResolutionTileLayout = io.Custom("UC_HIGH_RES_TILE_LAYOUT")
+
 
 class UC_Image_Color_Noise(io.ComfyNode):
     @classmethod
@@ -1406,6 +1410,180 @@ class UC_ImagePad(io.ComfyNode):
                 out_masks[m, pad_top:pad_top+H, pad_left:pad_left+W] = 0.0
 
         return io.NodeOutput(out_image, out_masks)
+
+
+class UC_HighResolutionTileSplit(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_HighResolutionTileSplit",
+            display_name="High Resolution Tile Split & VAE Encode",
+            category="image/tiling",
+            description=(
+                "Splits one pre-upscaled image into overlapping tiles, then "
+                "VAE-encodes every tile sequentially for list-mapped sampling."
+            ),
+            inputs=[
+                io.Image.Input("image"),
+                io.Vae.Input("vae"),
+                io.Combo.Input(
+                    "tile_mode",
+                    options=["tile_size", "grid"],
+                    default="tile_size",
+                    tooltip=(
+                        "tile_size uses tile width and height. grid uses rows "
+                        "and columns. Controls for the other mode are ignored."
+                    ),
+                ),
+                io.Int.Input(
+                    "tile_width",
+                    default=1024,
+                    min=64,
+                    max=MAX_RESOLUTION,
+                    step=8,
+                    tooltip="Processed tile width in tile_size mode.",
+                ),
+                io.Int.Input(
+                    "tile_height",
+                    default=1024,
+                    min=64,
+                    max=MAX_RESOLUTION,
+                    step=8,
+                    tooltip="Processed tile height in tile_size mode.",
+                ),
+                io.Int.Input(
+                    "rows",
+                    default=2,
+                    min=1,
+                    max=256,
+                    step=1,
+                    tooltip="Number of tile rows in grid mode.",
+                ),
+                io.Int.Input(
+                    "columns",
+                    default=2,
+                    min=1,
+                    max=256,
+                    step=1,
+                    tooltip="Number of tile columns in grid mode.",
+                ),
+                io.Int.Input(
+                    "overlap",
+                    default=128,
+                    min=0,
+                    max=MAX_RESOLUTION // 2,
+                    step=8,
+                    tooltip=(
+                        "Actual shared pixels between neighboring tiles in "
+                        "both tiling modes."
+                    ),
+                ),
+                io.Combo.Input(
+                    "mask_profile",
+                    options=["cosine", "linear"],
+                    default="cosine",
+                    tooltip="Transition profile used for overlap denoising and reconstruction.",
+                ),
+                io.Float.Input(
+                    "feather_width",
+                    default=1.0,
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    tooltip="Fraction of each overlap occupied by the mask transition.",
+                ),
+                io.Float.Input(
+                    "mask_strength",
+                    default=1.0,
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    tooltip=(
+                        "Overlap edge protection. 0 leaves the mask flat; "
+                        "1 reaches zero at protected internal tile edges."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Image.Output(
+                    "tile_images",
+                    display_name="tile images",
+                    is_output_list=True,
+                    tooltip="Individual image tiles for list-mapped visual conditioning.",
+                ),
+                io.Latent.Output(
+                    "tile_latents",
+                    display_name="tile latents",
+                    is_output_list=True,
+                    tooltip="Matching VAE latents with Core-compatible noise masks.",
+                ),
+                HighResolutionTileLayout.Output(
+                    "tile_layout",
+                    display_name="tile layout",
+                    tooltip="Coordinate and overlap metadata for the tile accumulator.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        image,
+        vae,
+        tile_mode,
+        tile_width,
+        tile_height,
+        rows,
+        columns,
+        overlap,
+        mask_profile,
+        feather_width,
+        mask_strength,
+    ) -> io.NodeOutput:
+        image_tiles, latent_tiles, layout = split_and_encode_tiles(
+            image,
+            vae,
+            tile_mode,
+            tile_width,
+            tile_height,
+            rows,
+            columns,
+            overlap,
+            mask_profile,
+            feather_width,
+            mask_strength,
+        )
+        return io.NodeOutput(image_tiles, latent_tiles, layout)
+
+
+class UC_HighResolutionTileAccumulator(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_HighResolutionTileAccumulator",
+            display_name="High Resolution Tile Accumulator",
+            category="image/tiling",
+            description=(
+                "Collects a completed decoded tile list and reconstructs the "
+                "original canvas with normalized overlap blending."
+            ),
+            is_input_list=True,
+            inputs=[
+                io.Image.Input(
+                    "images",
+                    tooltip="Decoded image list produced by the mapped sampler path.",
+                ),
+                HighResolutionTileLayout.Input(
+                    "tile_layout",
+                    tooltip="Layout from High Resolution Tile Split & VAE Encode.",
+                ),
+            ],
+            outputs=[io.Image.Output("image", display_name="image")],
+        )
+
+    @classmethod
+    def execute(cls, images, tile_layout) -> io.NodeOutput:
+        return io.NodeOutput(accumulate_tile_images(images, tile_layout))
 
 
 class UC_ListToImageBatch(io.ComfyNode):
