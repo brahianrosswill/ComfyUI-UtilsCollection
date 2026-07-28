@@ -1341,6 +1341,88 @@ class UC_CompositeNodesGuide(io.ComfyNode):
         return io.NodeOutput(topics.get(topic, "Unknown topic selected."))
 
 
+class UC_HighResolutionTilingGuide(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_HighResolutionTilingGuide",
+            display_name="High Resolution Tiling Guide",
+            category="utils/documentation",
+            inputs=[
+                io.Combo.Input(
+                    "topic",
+                    options=[
+                        "workflow",
+                        "split_settings",
+                        "overlap_masks",
+                        "visual_conditioning",
+                        "sampling",
+                        "accumulation",
+                    ],
+                    default="workflow",
+                    tooltip="Select the high-resolution tiled workflow topic.",
+                ),
+            ],
+            outputs=[io.String.Output(display_name="markdown")],
+        )
+
+    @classmethod
+    def execute(cls, topic: str) -> io.NodeOutput:
+        topics = {
+            "workflow": (
+                "## High-resolution tiled workflow\n\n"
+                "1. Upscale or otherwise prepare one complete source image.\n"
+                "2. Connect it and the generation VAE to `UC_HighResolutionTileSplit`.\n"
+                "3. Send `tile images` through any list-mapped image processing and visual-conditioning branches.\n"
+                "4. Send `tile latents` to the latent input of a Core sampler. ComfyUI pairs image conditioning and latents by list index.\n"
+                "5. Decode the sampled latent list with the same VAE.\n"
+                "6. Connect the decoded image list and the original `tile layout` to `UC_HighResolutionTileAccumulator`.\n\n"
+                "The splitter accepts one source image. It VAE-encodes tiles sequentially and returns true ComfyUI lists so downstream nodes execute once per tile."
+            ),
+            "split_settings": (
+                "## Split settings\n\n"
+                "- `tile_mode=tile_size` uses `tile_width` and `tile_height`; `rows` and `columns` are ignored.\n"
+                "- `tile_mode=grid` uses `rows` and `columns`; `tile_width` and `tile_height` are ignored.\n"
+                "- `overlap` is the number of source-image pixels shared by adjacent tiles on both axes.\n"
+                "- Tile-size mode advances by tile dimension minus overlap. Edge tiles are padded only as required for VAE compression.\n"
+                "- Grid mode divides the complete image into the requested cells and adds overlap around internal cell boundaries.\n\n"
+                "More overlap provides a wider transition area but processes more pixels. Overlap must remain smaller than the applicable tile or grid-cell dimension."
+            ),
+            "overlap_masks": (
+                "## Overlap masks\n\n"
+                "Every latent contains a Core-compatible `noise_mask`. The non-overlapping interior is solid `1.0`. Only edges shared with neighboring tiles are feathered; outer image boundaries remain solid.\n\n"
+                "- `mask_profile=cosine` uses an eased transition. `linear` uses a constant-rate transition.\n"
+                "- `feather_width` selects the fraction of the overlap occupied by the transition. `1.0` uses the full overlap.\n"
+                "- `mask_strength` controls the minimum at a protected shared edge. `1.0` reaches `0`; `0.5` reaches `0.5`; `0.0` leaves the mask solid.\n\n"
+                "These masks are also the normalized reconstruction weights used by the accumulator."
+            ),
+            "visual_conditioning": (
+                "## Visual conditioning and image lists\n\n"
+                "Connecting `tile images` to `UC_AdvancedVisualConditioningEncode` executes that encoder once per tile.\n\n"
+                "Two image lists connected to two image sockets are paired by index. For example, an original tile list and its radius-2 blurred list become `(original 0, blurred 0)`, `(original 1, blurred 1)`, and so on. With a visual fusion configuration, each pair follows that fusion method.\n\n"
+                "Lists are not combined across tile indices. If list lengths differ, standard ComfyUI mapping repeats the final item of the shorter list. A shared text prompt is broadcast to every tile, so a full-image caption can introduce globally described subjects into every tile."
+            ),
+            "sampling": (
+                "## Sampling the tile list\n\n"
+                "Connect the conditioning list and `tile latents` to the ordinary Core sampling path. Matching indices are sampled together.\n\n"
+                "The sigma schedule controls overall change, including the solid non-overlap interiors. Lowering its start sigma generally preserves more of each encoded tile.\n\n"
+                "The splitter can optionally apply Differential Diffusion to a connected model. Connect its `model` output to the sampler guider. `off` returns the connected model unchanged, `core` uses ComfyUI Core Differential Diffusion, and `advanced` uses the KJNodes-compatible threshold multiplier. The model input is required only when either active mode is selected.\n\n"
+                "`differential_diffusion_value` is mode-dependent:\n\n"
+                "- In `core` mode it is strength from `0` through `1`, blending Core's progressive binary mask with the original soft mask.\n"
+                "- In `advanced` mode it is the KJNodes-compatible threshold divisor from `-10` through `10`; it cannot be zero.\n"
+                "- Differential Diffusion does not replace sigma selection; start sigma still controls overall change in solid non-overlap interiors.\n\n"
+                "The splitter still does not implement a sampler or noise generator. A single noise-provider connection is broadcast to every mapped tile execution."
+            ),
+            "accumulation": (
+                "## Decoding and accumulation\n\n"
+                "Decode the sampled latent list with the same VAE used by the splitter. Connect that decoded image list to `images` and connect the splitter's matching `tile layout` directly to the accumulator.\n\n"
+                "`UC_HighResolutionTileAccumulator` consumes the complete image list in one execution. It removes VAE padding, places every tile at its recorded source coordinates, applies the stored feather weights, and normalizes overlapping contributions.\n\n"
+                "Do not reorder, omit, or insert list items before accumulation. The image list must contain exactly the tiles described by that layout."
+            ),
+        }
+        return io.NodeOutput(topics.get(topic, "Unknown topic selected."))
+
+
 EncoderNodesGuide = UC_EncoderNodesGuide
 CompositeNodesGuide = UC_CompositeNodesGuide
 

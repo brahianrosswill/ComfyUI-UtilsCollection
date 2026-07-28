@@ -11,7 +11,11 @@ from tqdm import tqdm
 from PIL import Image, ImageOps, ImageSequence, ImageDraw, ImageFont
 import kornia.morphology as morph
 from .helper_functions import pil2tensor, math_diag, pct_to_px, composite, fill_mask_from_edges, iterative_directional_stretch_fill, gaussian_blur_nchw, hex_to_rgb, string_to_color, match_image_properties, resize_nchw, FLOW_PRESETS
-from .tile_helpers import accumulate_tile_images, split_and_encode_tiles
+from .tile_helpers import (
+    accumulate_tile_images,
+    apply_tile_differential_diffusion,
+    split_and_encode_tiles,
+)
 
 
 from comfy_api.latest import io
@@ -1426,6 +1430,14 @@ class UC_HighResolutionTileSplit(io.ComfyNode):
             inputs=[
                 io.Image.Input("image"),
                 io.Vae.Input("vae"),
+                io.Model.Input(
+                    "model",
+                    optional=True,
+                    tooltip=(
+                        "Optional diffusion model. Required only when a "
+                        "Differential Diffusion mode is enabled."
+                    ),
+                ),
                 io.Combo.Input(
                     "tile_mode",
                     options=["tile_size", "grid"],
@@ -1503,6 +1515,29 @@ class UC_HighResolutionTileSplit(io.ComfyNode):
                         "1 reaches zero at protected internal tile edges."
                     ),
                 ),
+                io.Combo.Input(
+                    "differential_diffusion_mode",
+                    options=["off", "core", "advanced"],
+                    default="off",
+                    tooltip=(
+                        "off leaves the model unchanged. core applies "
+                        "ComfyUI Core Differential Diffusion. advanced uses "
+                        "the threshold multiplier control."
+                    ),
+                ),
+                io.Float.Input(
+                    "differential_diffusion_value",
+                    default=1.0,
+                    min=-10.0,
+                    max=10.0,
+                    step=0.001,
+                    tooltip=(
+                        "Mode-dependent value. Core: strength from 0 to 1, "
+                        "blending its progressive binary mask with the soft "
+                        "mask. Advanced: nonzero threshold divisor from -10 "
+                        "to 10, matching KJNodes Differential Diffusion Advanced."
+                    ),
+                ),
             ],
             outputs=[
                 io.Image.Output(
@@ -1522,6 +1557,14 @@ class UC_HighResolutionTileSplit(io.ComfyNode):
                     display_name="tile layout",
                     tooltip="Coordinate and overlap metadata for the tile accumulator.",
                 ),
+                io.Model.Output(
+                    "model",
+                    display_name="model",
+                    tooltip=(
+                        "Differential Diffusion model for the sampler guider, "
+                        "or the unchanged connected model when mode is off."
+                    ),
+                ),
             ],
         )
 
@@ -1539,6 +1582,9 @@ class UC_HighResolutionTileSplit(io.ComfyNode):
         mask_profile,
         feather_width,
         mask_strength,
+        model=None,
+        differential_diffusion_mode="off",
+        differential_diffusion_value=1.0,
     ) -> io.NodeOutput:
         image_tiles, latent_tiles, layout = split_and_encode_tiles(
             image,
@@ -1553,7 +1599,12 @@ class UC_HighResolutionTileSplit(io.ComfyNode):
             feather_width,
             mask_strength,
         )
-        return io.NodeOutput(image_tiles, latent_tiles, layout)
+        output_model = apply_tile_differential_diffusion(
+            model,
+            differential_diffusion_mode,
+            differential_diffusion_value,
+        )
+        return io.NodeOutput(image_tiles, latent_tiles, layout, output_model)
 
 
 class UC_HighResolutionTileAccumulator(io.ComfyNode):

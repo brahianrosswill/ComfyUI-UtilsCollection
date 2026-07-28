@@ -117,6 +117,7 @@ class SamplingUtils(ComfyExtension):
             UC_Qwen3VLInputEmbeds,
             UC_EncoderNodesGuide,
             UC_CompositeNodesGuide,
+            UC_HighResolutionTilingGuide,
             UC_LoraLoaderCLIPOnly,
             UC_LoadImageWithAlpha,
             UC_BoldFrakturTextStyle,

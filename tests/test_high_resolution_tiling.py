@@ -19,6 +19,7 @@ from utils_collection_high_resolution_tiling_test.image_nodes import (
 )
 from utils_collection_high_resolution_tiling_test.tile_helpers import (
     accumulate_tile_images,
+    apply_tile_differential_diffusion,
     build_tile_records,
     split_and_encode_tiles,
     tile_weight_mask,
@@ -47,6 +48,46 @@ class MockVAE:
         )
 
 
+class MockFiveDimensionalImageVAE(MockVAE):
+    def encode(self, image):
+        self.calls.append(tuple(image.shape))
+        return torch.zeros(
+            (
+                image.shape[0],
+                16,
+                1,
+                image.shape[1] // self.compression,
+                image.shape[2] // self.compression,
+            ),
+            dtype=image.dtype,
+            device=image.device,
+        )
+
+
+class MockModel:
+    def __init__(self):
+        self.denoise_mask_function = None
+
+    def clone(self):
+        return MockModel()
+
+    def set_model_denoise_mask_function(self, function):
+        self.denoise_mask_function = function
+
+
+class MockSampling:
+    sigma_min = 0.0
+
+    @staticmethod
+    def timestep(sigma):
+        return sigma
+
+
+class MockSamplingModel:
+    def __init__(self):
+        self.inner_model = types.SimpleNamespace(model_sampling=MockSampling())
+
+
 def _split(image, vae=None, **overrides):
     settings = {
         "tile_mode": "tile_size",
@@ -73,14 +114,21 @@ def test_public_schema_and_list_contract():
         "tile_images",
         "tile_latents",
         "tile_layout",
+        "model",
     ]
     assert [output.is_output_list for output in split_schema.outputs] == [
         True,
         True,
         False,
+        False,
     ]
     assert split_schema.outputs[2].io_type == "UC_HIGH_RES_TILE_LAYOUT"
     assert HighResolutionTileLayout.io_type == "UC_HIGH_RES_TILE_LAYOUT"
+    input_ids = [value.id for value in split_schema.inputs]
+    assert input_ids[-2:] == [
+        "differential_diffusion_mode",
+        "differential_diffusion_value",
+    ]
 
     assert accumulator_schema.node_id == "UC_HighResolutionTileAccumulator"
     assert accumulator_schema.display_name == "High Resolution Tile Accumulator"
@@ -231,6 +279,18 @@ def test_split_encodes_each_tile_sequentially_and_attaches_masks():
     assert torch.all(latents[2]["noise_mask"][:, :, 4:, :] == 0)
 
 
+def test_split_accepts_image_vae_with_singleton_temporal_latent_axis():
+    image = torch.rand(1, 8, 14, 3)
+    images, latents, layout = _split(
+        image,
+        MockFiveDimensionalImageVAE(compression=8),
+    )
+
+    assert len(images) == len(latents) == len(layout["tiles"]) == 2
+    assert all(latent["samples"].shape == (1, 16, 1, 1, 1) for latent in latents)
+    assert all(latent["noise_mask"].ndim == 4 for latent in latents)
+
+
 @pytest.mark.parametrize(
     ("shape", "settings"),
     [
@@ -336,3 +396,53 @@ def test_node_execute_returns_synchronized_outputs():
         [output[2]],
     ).args[0]
     assert torch.allclose(merged, image, atol=1e-6)
+    assert output[3] is None
+
+
+def test_tile_differential_diffusion_off_preserves_model_identity():
+    model = MockModel()
+
+    assert apply_tile_differential_diffusion(model, "off", 1.0) is model
+
+
+def test_tile_differential_diffusion_core_uses_core_mask_behavior():
+    model = apply_tile_differential_diffusion(MockModel(), "core", 0.5)
+    mask = torch.tensor([[[[0.2, 0.6]]]])
+    result = model.denoise_mask_function(
+        torch.tensor([0.5]),
+        mask,
+        {
+            "model": MockSamplingModel(),
+            "sigmas": torch.tensor([1.0, 0.0]),
+        },
+    )
+
+    assert torch.allclose(result, torch.tensor([[[[0.1, 0.8]]]]))
+
+
+def test_tile_differential_diffusion_advanced_uses_threshold_multiplier():
+    model = apply_tile_differential_diffusion(
+        MockModel(),
+        "advanced",
+        2.0,
+    )
+    mask = torch.tensor([[[[0.2, 0.3]]]])
+    result = model.denoise_mask_function(
+        torch.tensor([0.5]),
+        mask,
+        {
+            "model": MockSamplingModel(),
+            "sigmas": torch.tensor([1.0, 0.0]),
+        },
+    )
+
+    assert torch.equal(result, torch.tensor([[[[0.0, 1.0]]]]))
+
+
+def test_tile_differential_diffusion_validation_is_actionable():
+    with pytest.raises(ValueError, match="Connect a model"):
+        apply_tile_differential_diffusion(None, "core", 1.0)
+    with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+        apply_tile_differential_diffusion(MockModel(), "core", 2.0)
+    with pytest.raises(ValueError, match="cannot be zero"):
+        apply_tile_differential_diffusion(MockModel(), "advanced", 0.0)

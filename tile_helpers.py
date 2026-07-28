@@ -7,6 +7,59 @@ import torch.nn.functional as F
 TILE_LAYOUT_FORMAT_VERSION = 1
 TILE_MODES = ("tile_size", "grid")
 TILE_MASK_PROFILES = ("cosine", "linear")
+TILE_DIFFERENTIAL_DIFFUSION_MODES = ("off", "core", "advanced")
+
+
+def apply_tile_differential_diffusion(
+    model,
+    mode,
+    value,
+):
+    if mode not in TILE_DIFFERENTIAL_DIFFUSION_MODES:
+        raise ValueError(f"Unsupported tile Differential Diffusion mode: {mode}.")
+    if mode == "off":
+        return model
+    if model is None:
+        raise ValueError(
+            "Connect a model when tile Differential Diffusion is enabled."
+        )
+    if mode == "core":
+        strength = float(value)
+        if not 0.0 <= strength <= 1.0:
+            raise ValueError(
+                "Core Differential Diffusion value must be between 0.0 and 1.0."
+            )
+        from comfy_extras.nodes_differential_diffusion import DifferentialDiffusion
+
+        return DifferentialDiffusion.execute(model, strength).args[0]
+
+    multiplier = float(value)
+    if multiplier == 0.0:
+        raise ValueError(
+            "Advanced Differential Diffusion multiplier cannot be zero."
+        )
+
+    patched_model = model.clone()
+
+    def advanced_mask(sigma, denoise_mask, extra_options):
+        sampling = extra_options["model"].inner_model.model_sampling
+        step_sigmas = extra_options["sigmas"]
+        sigma_to = sampling.sigma_min
+        if step_sigmas[-1] > sigma_to:
+            sigma_to = step_sigmas[-1]
+        sigma_from = step_sigmas[0]
+        timestep_from = sampling.timestep(sigma_from)
+        timestep_to = sampling.timestep(sigma_to)
+        current_timestep = sampling.timestep(sigma[0])
+        threshold = (
+            (current_timestep - timestep_to)
+            / (timestep_from - timestep_to)
+            / multiplier
+        )
+        return (denoise_mask >= threshold).to(denoise_mask.dtype)
+
+    patched_model.set_model_denoise_mask_function(advanced_mask)
+    return patched_model
 
 
 def _validate_common_tiling_inputs(
@@ -277,8 +330,15 @@ def split_and_encode_tiles(
         ]
         padded_tile, pad_bottom, pad_right = _pad_tile_for_vae(tile, compression)
         samples = vae.encode(padded_tile)
-        if not torch.is_tensor(samples) or samples.ndim != 4 or samples.shape[0] != 1:
-            raise ValueError("The VAE must return one four-dimensional latent per tile.")
+        if (
+            not torch.is_tensor(samples)
+            or samples.ndim not in (4, 5)
+            or samples.shape[0] != 1
+            or (samples.ndim == 5 and samples.shape[2] != 1)
+        ):
+            raise ValueError(
+                "The VAE must return one spatial latent per image tile."
+            )
 
         mask = tile_weight_mask(
             record,
