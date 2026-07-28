@@ -1423,6 +1423,38 @@ class UC_HighResolutionTilingGuide(io.ComfyNode):
         return io.NodeOutput(topics.get(topic, "Unknown topic selected."))
 
 
+class UC_MarkdownPreview(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_MarkdownPreview",
+            display_name="Preview as Markdown",
+            category="utils/documentation",
+            description="Displays a connected value using the Core Markdown renderer.",
+            inputs=[
+                io.AnyType.Input(
+                    "source",
+                    tooltip="Text or another serializable value to render as Markdown.",
+                ),
+            ],
+            outputs=[io.String.Output("text", display_name="text")],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(cls, source=None) -> io.NodeOutput:
+        if isinstance(source, str):
+            value = source
+        elif isinstance(source, (int, float, bool)) or source is None:
+            value = str(source)
+        else:
+            try:
+                value = json.dumps(source, indent=2)
+            except (TypeError, ValueError):
+                value = str(source)
+        return io.NodeOutput(value, ui={"markdown": (value,)})
+
+
 EncoderNodesGuide = UC_EncoderNodesGuide
 CompositeNodesGuide = UC_CompositeNodesGuide
 
