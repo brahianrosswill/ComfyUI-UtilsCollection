@@ -1538,13 +1538,39 @@ class UC_HighResolutionTileSplit(io.ComfyNode):
                         "to 10, matching KJNodes Differential Diffusion Advanced."
                     ),
                 ),
+                io.Image.Input(
+                    "depth_map",
+                    optional=True,
+                    tooltip=(
+                        "Optional grayscale depth image used to preserve "
+                        "structure across solid and feathered denoise-mask "
+                        "regions. It is converted to luminance and resized to "
+                        "the source image."
+                    ),
+                ),
+                io.Float.Input(
+                    "depth_influence",
+                    default=1.0,
+                    min=-1.0,
+                    max=1.0,
+                    step=0.01,
+                    tooltip=(
+                        "Signed depth-mask influence. Positive values use the "
+                        "map as supplied, negative values use its inverse, and "
+                        "the magnitude controls the effect. 0 disables depth "
+                        "modulation."
+                    ),
+                ),
             ],
             outputs=[
                 io.Image.Output(
                     "tile_images",
                     display_name="tile images",
                     is_output_list=True,
-                    tooltip="Individual image tiles for list-mapped visual conditioning.",
+                    tooltip=(
+                        "The exact padded image tensors sent to VAE encoding, "
+                        "for spatially matched list-mapped visual conditioning."
+                    ),
                 ),
                 io.Latent.Output(
                     "tile_latents",
@@ -1585,6 +1611,8 @@ class UC_HighResolutionTileSplit(io.ComfyNode):
         model=None,
         differential_diffusion_mode="off",
         differential_diffusion_value=1.0,
+        depth_map=None,
+        depth_influence=1.0,
     ) -> io.NodeOutput:
         image_tiles, latent_tiles, layout = split_and_encode_tiles(
             image,
@@ -1598,6 +1626,8 @@ class UC_HighResolutionTileSplit(io.ComfyNode):
             mask_profile,
             feather_width,
             mask_strength,
+            depth_map,
+            depth_influence,
         )
         output_model = apply_tile_differential_diffusion(
             model,

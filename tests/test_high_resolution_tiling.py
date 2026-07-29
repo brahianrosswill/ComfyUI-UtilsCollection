@@ -19,8 +19,10 @@ from utils_collection_high_resolution_tiling_test.image_nodes import (
 )
 from utils_collection_high_resolution_tiling_test.tile_helpers import (
     accumulate_tile_images,
+    apply_depth_structure_mask,
     apply_tile_differential_diffusion,
     build_tile_records,
+    prepare_depth_structure_map,
     split_and_encode_tiles,
     tile_weight_mask,
 )
@@ -30,12 +32,14 @@ class MockVAE:
     def __init__(self, compression=8):
         self.compression = compression
         self.calls = []
+        self.inputs = []
 
     def spacial_compression_encode(self):
         return self.compression
 
     def encode(self, image):
         self.calls.append(tuple(image.shape))
+        self.inputs.append(image)
         return torch.zeros(
             (
                 image.shape[0],
@@ -51,6 +55,7 @@ class MockVAE:
 class MockFiveDimensionalImageVAE(MockVAE):
     def encode(self, image):
         self.calls.append(tuple(image.shape))
+        self.inputs.append(image)
         return torch.zeros(
             (
                 image.shape[0],
@@ -126,9 +131,11 @@ def test_public_schema_and_list_contract():
     assert HighResolutionTileLayout.io_type == "UC_HIGH_RES_TILE_LAYOUT"
     input_ids = [value.id for value in split_schema.inputs]
     assert input_ids[-2:] == [
-        "differential_diffusion_mode",
-        "differential_diffusion_value",
+        "depth_map",
+        "depth_influence",
     ]
+    assert "invert_depth" not in input_ids
+    assert "depth_strength" not in input_ids
 
     assert accumulator_schema.node_id == "UC_HighResolutionTileAccumulator"
     assert accumulator_schema.display_name == "High Resolution Tile Accumulator"
@@ -273,10 +280,34 @@ def test_split_encodes_each_tile_sequentially_and_attaches_masks():
         (1, 8, 8, 3),
         (1, 8, 8, 3),
     ]
-    assert images[2].shape == (1, 4, 8, 3)
+    assert all(output is encoded for output, encoded in zip(images, vae.inputs))
+    assert images[2].shape == (1, 8, 8, 3)
+    assert torch.equal(images[2][:, 4:, :, :], images[2][:, 3:4, :, :].expand(-1, 4, -1, -1))
     assert latents[2]["samples"].shape == (1, 4, 1, 1)
     assert latents[2]["noise_mask"].shape == (1, 1, 8, 8)
     assert torch.all(latents[2]["noise_mask"][:, :, 4:, :] == 0)
+
+
+def test_grid_outputs_exact_vae_aligned_inputs():
+    image = torch.rand(1, 31, 47, 3)
+    vae = MockVAE(compression=16)
+
+    images, _, layout = _split(
+        image,
+        vae,
+        tile_mode="grid",
+        rows=2,
+        columns=3,
+        overlap=3,
+    )
+
+    assert len(images) == len(vae.inputs) == 6
+    for output, encoded, record in zip(images, vae.inputs, layout["tiles"]):
+        assert output is encoded
+        assert output.shape[1] % 16 == 0
+        assert output.shape[2] % 16 == 0
+        assert output.shape[1] == record["encoded_height"]
+        assert output.shape[2] == record["encoded_width"]
 
 
 def test_split_accepts_image_vae_with_singleton_temporal_latent_axis():
@@ -289,6 +320,166 @@ def test_split_accepts_image_vae_with_singleton_temporal_latent_axis():
     assert len(images) == len(latents) == len(layout["tiles"]) == 2
     assert all(latent["samples"].shape == (1, 16, 1, 1, 1) for latent in latents)
     assert all(latent["noise_mask"].ndim == 4 for latent in latents)
+
+
+def test_depth_structure_mask_multiplies_solid_and_overlap_regions():
+    mask = torch.tensor(
+        [
+            [1.0, 1.0, 0.75, 0.0],
+            [1.0, 1.0, 0.25, 0.0],
+        ]
+    )
+    depth = torch.tensor(
+        [
+            [0.0, 1.0, 1.0, 1.0],
+            [0.25, 0.5, 1.0, 1.0],
+        ]
+    )
+
+    result = apply_depth_structure_mask(mask, depth, 1.0)
+
+    assert torch.equal(
+        result,
+        torch.tensor(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.75, 0.5, 0.0, 0.0],
+            ]
+        ),
+    )
+    assert torch.equal(apply_depth_structure_mask(mask, depth, 0.0), mask)
+
+
+def test_depth_structure_mask_signed_influence_selects_polarity():
+    mask = torch.tensor([[0.25, 0.75]])
+    depth = torch.tensor([[0.2, 0.8]])
+
+    positive = apply_depth_structure_mask(mask, depth, 0.5)
+    negative = apply_depth_structure_mask(mask, depth, -0.5)
+
+    assert torch.allclose(positive, mask * torch.tensor([[0.9, 0.6]]))
+    assert torch.allclose(negative, mask * torch.tensor([[0.6, 0.9]]))
+    assert positive[0, 0] / positive[0, 1] == pytest.approx(
+        (mask[0, 0] / mask[0, 1]) * (0.9 / 0.6)
+    )
+
+
+def test_depth_structure_mask_preserves_neighboring_feather_proportions():
+    neighboring_masks = torch.tensor([[0.25], [0.75]])
+    shared_depth = torch.tensor([[0.6], [0.6]])
+
+    result = apply_depth_structure_mask(
+        neighboring_masks,
+        shared_depth,
+        1.0,
+    )
+
+    assert torch.allclose(result, torch.tensor([[0.1], [0.3]]))
+    assert result[0, 0] / result[1, 0] == pytest.approx(1.0 / 3.0)
+
+
+@pytest.mark.parametrize("influence", [-1.01, 1.01])
+def test_depth_structure_mask_rejects_invalid_influence(influence):
+    with pytest.raises(ValueError, match="between -1.0 and 1.0"):
+        apply_depth_structure_mask(
+            torch.ones(1, 1),
+            torch.zeros(1, 1),
+            influence,
+        )
+
+
+def test_depth_map_converts_luminance_clamps_and_resizes():
+    depth = torch.tensor(
+        [[[[2.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 1.0]]]],
+        dtype=torch.float64,
+    )
+
+    prepared = prepare_depth_structure_map(
+        depth,
+        target_height=2,
+        target_width=4,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert prepared.shape == (1, 2, 4)
+    assert prepared.dtype == torch.float32
+    assert torch.all((prepared >= 0) & (prepared <= 1))
+    assert prepared[0, 0, 0] == pytest.approx(0.4252)
+    assert prepared[0, 0, -1] == pytest.approx(0.7152)
+
+
+def test_depth_map_accepts_single_channel_and_ignores_alpha():
+    single = torch.tensor([[[[0.2], [0.8]]]])
+    rgb = single.repeat(1, 1, 1, 3)
+    rgba = torch.cat(
+        [rgb, torch.tensor([[[[0.0], [1.0]]]])],
+        dim=-1,
+    )
+
+    prepared_single = prepare_depth_structure_map(
+        single, 1, 2, torch.device("cpu"), torch.float32
+    )
+    prepared_rgba = prepare_depth_structure_map(
+        rgba, 1, 2, torch.device("cpu"), torch.float32
+    )
+
+    assert torch.allclose(prepared_single, prepared_rgba)
+
+
+@pytest.mark.parametrize(
+    ("depth_map", "message"),
+    [
+        (torch.zeros(2, 4, 4, 3), "exactly one image"),
+        (torch.zeros(1, 4, 4, 2), "one, three, or four channels"),
+        (
+            torch.full((1, 4, 4, 3), float("nan")),
+            "non-finite",
+        ),
+    ],
+)
+def test_depth_map_validation_is_actionable(depth_map, message):
+    with pytest.raises(ValueError, match=message):
+        prepare_depth_structure_map(
+            depth_map,
+            4,
+            4,
+            torch.device("cpu"),
+            torch.float32,
+        )
+
+
+def test_split_depth_modulation_combines_with_overlap_and_preserves_padding():
+    image = torch.rand(1, 10, 14, 3)
+    depth = torch.full((1, 5, 7, 3), 0.5)
+    _, base_latents, _ = _split(image)
+    image_tiles, depth_latents, layout = _split(
+        image,
+        depth_map=depth,
+        depth_influence=1.0,
+    )
+
+    assert layout["depth_structure"] is True
+    assert layout["depth_influence"] == 1.0
+    for base, modulated in zip(base_latents, depth_latents):
+        base_mask = base["noise_mask"]
+        depth_mask = modulated["noise_mask"]
+        assert torch.allclose(depth_mask, base_mask * 0.5)
+        assert torch.all(depth_mask[base_mask == 0.0] == 0.0)
+    assert torch.allclose(accumulate_tile_images(image_tiles, layout), image)
+
+
+def test_disconnected_depth_map_preserves_existing_masks_exactly():
+    image = torch.rand(1, 10, 14, 3)
+    _, implicit_latents, _ = _split(image)
+    _, explicit_latents, _ = _split(
+        image,
+        depth_map=None,
+        depth_influence=-0.25,
+    )
+
+    for implicit, explicit in zip(implicit_latents, explicit_latents):
+        assert torch.equal(implicit["noise_mask"], explicit["noise_mask"])
 
 
 @pytest.mark.parametrize(

@@ -1355,6 +1355,7 @@ class UC_HighResolutionTilingGuide(io.ComfyNode):
                         "workflow",
                         "split_settings",
                         "overlap_masks",
+                        "depth_structure_mask",
                         "visual_conditioning",
                         "sampling",
                         "accumulation",
@@ -1377,15 +1378,16 @@ class UC_HighResolutionTilingGuide(io.ComfyNode):
                 "4. Send `tile latents` to the latent input of a Core sampler. ComfyUI pairs image conditioning and latents by list index.\n"
                 "5. Decode the sampled latent list with the same VAE.\n"
                 "6. Connect the decoded image list and the original `tile layout` to `UC_HighResolutionTileAccumulator`.\n\n"
-                "The splitter accepts one source image. It VAE-encodes tiles sequentially and returns true ComfyUI lists so downstream nodes execute once per tile."
+                "The splitter accepts one source image. It VAE-encodes tiles sequentially and returns true ComfyUI lists so downstream nodes execute once per tile. Every `tile images` item is the exact padded tensor sent to VAE encoding, keeping visual-conditioning grids aligned with their matching latents."
             ),
             "split_settings": (
                 "## Split settings\n\n"
                 "- `tile_mode=tile_size` uses `tile_width` and `tile_height`; `rows` and `columns` are ignored.\n"
                 "- `tile_mode=grid` uses `rows` and `columns`; `tile_width` and `tile_height` are ignored.\n"
                 "- `overlap` is the number of source-image pixels shared by adjacent tiles on both axes.\n"
-                "- Tile-size mode advances by tile dimension minus overlap. Edge tiles are padded only as required for VAE compression.\n"
-                "- Grid mode divides the complete image into the requested cells and adds overlap around internal cell boundaries.\n\n"
+                "- Tile-size mode advances by tile dimension minus overlap.\n"
+                "- Grid mode divides the complete image into the requested cells and adds overlap around internal cell boundaries.\n"
+                "- In both modes, every real crop is replicate-padded on its bottom and right to the connected VAE's reported compression multiple. That complete padded tensor is both VAE-encoded and emitted through `tile images`; the layout retains the real dimensions for final cropping.\n\n"
                 "More overlap provides a wider transition area but processes more pixels. Overlap must remain smaller than the applicable tile or grid-cell dimension."
             ),
             "overlap_masks": (
@@ -1396,9 +1398,15 @@ class UC_HighResolutionTilingGuide(io.ComfyNode):
                 "- `mask_strength` controls the minimum at a protected shared edge. `1.0` reaches `0`; `0.5` reaches `0.5`; `0.0` leaves the mask solid.\n\n"
                 "These masks are also the normalized reconstruction weights used by the accumulator."
             ),
+            "depth_structure_mask": (
+                "## Depth-guided structure mask\n\n"
+                "Connect one grayscale depth-map IMAGE to modulate every real pixel of each tile's latent `noise_mask`, including feathered overlaps. The complete depth map is converted to luminance, clamped to `0–1`, and bilinearly resized to the complete source-image dimensions before tile crops are taken.\n\n"
+                "`depth_influence` ranges from `-1` to `1`. Positive values use the supplied depth map, negative values use `1 - depth`, the magnitude controls the effect, and `0` disables depth modulation. The node calculates `depth_factor = 1 - abs(depth_influence) × selected_depth`, then multiplies the existing overlap mask by that factor. This preserves neighboring feather proportions without a boundary between depth and overlap behavior. Zero-valued VAE padding remains unchanged.\n\n"
+                "Depth modulation affects denoising only. The accumulator continues using the original overlap feather for reconstruction. Core and Advanced Differential Diffusion consume the depth-modulated latent masks automatically."
+            ),
             "visual_conditioning": (
                 "## Visual conditioning and image lists\n\n"
-                "Connecting `tile images` to `UC_AdvancedVisualConditioningEncode` executes that encoder once per tile.\n\n"
+                "Connecting `tile images` to `UC_AdvancedVisualConditioningEncode` executes that encoder once per tile. Each image includes the same replicate padding used for its matching VAE latent, so Original-resolution grid/DeepStack encoding sees the complete sampled extent.\n\n"
                 "Two image lists connected to two image sockets are paired by index. For example, an original tile list and its radius-2 blurred list become `(original 0, blurred 0)`, `(original 1, blurred 1)`, and so on. With a visual fusion configuration, each pair follows that fusion method.\n\n"
                 "Lists are not combined across tile indices. If list lengths differ, standard ComfyUI mapping repeats the final item of the shorter list. A shared text prompt is broadcast to every tile, so a full-image caption can introduce globally described subjects into every tile."
             ),

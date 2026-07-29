@@ -10,6 +10,62 @@ TILE_MASK_PROFILES = ("cosine", "linear")
 TILE_DIFFERENTIAL_DIFFUSION_MODES = ("off", "core", "advanced")
 
 
+def prepare_depth_structure_map(
+    depth_map,
+    target_height,
+    target_width,
+    device,
+    dtype,
+):
+    if depth_map is None:
+        return None
+    if not torch.is_tensor(depth_map) or depth_map.ndim != 4:
+        raise ValueError("Depth map must be one BHWC IMAGE tensor.")
+    if depth_map.shape[0] != 1:
+        raise ValueError("Depth map must contain exactly one image, not a batch.")
+    channels = depth_map.shape[-1]
+    if channels not in (1, 3, 4):
+        raise ValueError("Depth map must have one, three, or four channels.")
+
+    depth_map = depth_map.to(device=device, dtype=dtype)
+    if channels == 1:
+        depth = depth_map[..., 0]
+    else:
+        rgb = depth_map[..., :3]
+        weights = torch.tensor(
+            (0.2126, 0.7152, 0.0722),
+            device=device,
+            dtype=dtype,
+        )
+        depth = torch.sum(rgb * weights, dim=-1)
+    if not torch.isfinite(depth).all():
+        raise ValueError("Depth map contains non-finite values.")
+
+    depth = depth.clamp(0.0, 1.0)
+    if depth.shape[1:] != (target_height, target_width):
+        depth = F.interpolate(
+            depth.unsqueeze(1),
+            size=(target_height, target_width),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(1)
+        depth = depth.clamp(0.0, 1.0)
+    return depth
+
+
+def apply_depth_structure_mask(mask, depth, influence):
+    influence = float(influence)
+    if not -1.0 <= influence <= 1.0:
+        raise ValueError("Depth influence must be between -1.0 and 1.0.")
+    if depth is None:
+        return mask
+    if depth.shape != mask.shape:
+        raise ValueError("Depth tile does not match its denoise mask.")
+    selected_depth = depth if influence >= 0.0 else 1.0 - depth
+    depth_factor = (1.0 - abs(influence) * selected_depth).clamp(0.0, 1.0)
+    return mask * depth_factor
+
+
 def apply_tile_differential_diffusion(
     model,
     mode,
@@ -290,6 +346,8 @@ def split_and_encode_tiles(
     mask_profile,
     feather_width,
     mask_strength,
+    depth_map=None,
+    depth_influence=1.0,
 ):
     _validate_common_tiling_inputs(
         image,
@@ -307,6 +365,13 @@ def split_and_encode_tiles(
         raise ValueError("Connect a VAE to encode the image tiles.")
 
     height, width = image.shape[1:3]
+    prepared_depth = prepare_depth_structure_map(
+        depth_map,
+        height,
+        width,
+        image.device,
+        image.dtype,
+    )
     records, actual_rows, actual_columns = build_tile_records(
         height,
         width,
@@ -348,13 +413,24 @@ def split_and_encode_tiles(
             device=padded_tile.device,
             dtype=padded_tile.dtype,
         )
+        if prepared_depth is not None:
+            depth_tile = prepared_depth[
+                :,
+                record["y0"]:record["y1"],
+                record["x0"]:record["x1"],
+            ][0]
+            mask = apply_depth_structure_mask(
+                mask,
+                depth_tile,
+                depth_influence,
+            )
         if pad_bottom or pad_right:
             mask = F.pad(mask, (0, pad_right, 0, pad_bottom), value=0.0)
         record["pad_bottom"] = pad_bottom
         record["pad_right"] = pad_right
         record["encoded_width"] = padded_tile.shape[2]
         record["encoded_height"] = padded_tile.shape[1]
-        image_tiles.append(tile)
+        image_tiles.append(padded_tile)
         latent_tiles.append(
             {
                 "samples": samples,
@@ -375,6 +451,8 @@ def split_and_encode_tiles(
         "mask_profile": mask_profile,
         "feather_width": float(feather_width),
         "mask_strength": float(mask_strength),
+        "depth_structure": prepared_depth is not None,
+        "depth_influence": float(depth_influence),
         "vae_compression": compression,
         "tiles": records,
     }
