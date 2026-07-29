@@ -61,9 +61,10 @@ sampling remain available.
 `block_size` is specific to block-interleave. `dither_ratio` and
 `dither_pattern` are specific to random-dither. The simple joint node exposes
 `resolution_samples` as a consensus control; Advanced Consensus Configuration
-overrides it when connected. With fewer than three batch lanes, active
-consensus raises its effective value to at least three. Original VLM resolution
-therefore needs three batch lanes when consensus is active.
+overrides it when connected. The configured value is exact, so `1` remains one
+resolution sample regardless of visual-source or batch-lane count. Original VLM
+resolution supports one sample but cannot construct adjacent resolution
+variants.
 
 A batch in the only connected image socket behaves like its images were
 connected as separate visual sources. With multiple connected batched sockets,

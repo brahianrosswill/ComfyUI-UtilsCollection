@@ -2004,21 +2004,17 @@ def execute_advanced_visual_consensus(
             or requested_samples % 2 == 0
         ):
             raise ValueError("Resolution samples must be an odd integer from 1 to 15.")
-        effective_samples = (
-            max(3, requested_samples)
-            if len(lanes) < 3
-            else requested_samples
-        )
+        effective_samples = requested_samples
     else:
         effective_samples = 1
     if (
         consensus_enabled
-        and len(lanes) < 3
+        and effective_samples > 1
         and resolve_vlm_resolution(vlm_resolution) is None
     ):
         raise ValueError(
-            "Original VLM resolution needs at least three batch lanes for consensus; "
-            "select a numeric VLM resolution or connect three aligned batches."
+            "Original VLM resolution cannot construct adjacent resolution samples; "
+            "set resolution_samples to 1 or select a numeric VLM resolution."
         )
 
     completed_conditionings = []

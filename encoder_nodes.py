@@ -417,7 +417,7 @@ class UC_AdvancedConsensusConfiguration(io.ComfyNode):
                 io.Boolean.Input("soft_comfort_bandpass", default=False),
                 io.Float.Input("position_weight", default=0.0, min=0.0, max=1.0, step=0.01),
                 io.Boolean.Input("preserve_common_prefix", default=False),
-                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Odd adjacent-resolution sample count used only when consensus is enabled. Fewer than three batch lanes enforce a minimum of three."),
+                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Exact odd adjacent-resolution sample count used only when consensus is enabled. A value of 1 remains one resolution sample."),
             ],
             outputs=[
                 AdvancedConsensusConfig.Output("advanced_consensus_config", display_name="Advanced Consensus Config"),
@@ -480,7 +480,7 @@ class UC_VisualConsensusConfiguration(io.ComfyNode):
                 io.Boolean.Input("enable_consensus", default=True, tooltip="Authoritative activation switch, including when Advanced Consensus Configuration is connected."),
                 io.Combo.Input("consensus_preset", options=list(CONSENSUS_BLEND_PRESETS), default="baseline", tooltip="Existing named consensus mathematics. Advanced Consensus Configuration replaces this preset and global scale."),
                 io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Basal consensus scale. Advanced Consensus Configuration replaces it."),
-                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Odd adjacent-resolution sample count used when consensus is enabled. Fewer than three batch lanes enforce an effective minimum of three. Advanced Consensus Configuration overrides this value."),
+                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Exact odd adjacent-resolution sample count used when consensus is enabled. A value of 1 remains one resolution sample. Advanced Consensus Configuration overrides this value."),
                 AdvancedVisualConfig.Input("advanced_visual_config", display_name="Advanced Visual Configuration", optional=True, tooltip="Overrides duplicated simple visual tuning. The spatial activation and method above remain authoritative."),
                 AdvancedConsensusConfig.Input("advanced_consensus_config", display_name="Advanced Consensus Configuration", optional=True, tooltip="Completely replaces the simple preset, global scale, and resolution sample count. Its own authoritative preset defaults to custom. Consensus activation above remains authoritative."),
             ],

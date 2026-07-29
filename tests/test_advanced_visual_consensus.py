@@ -350,18 +350,18 @@ def _execute_mocked(image_inputs, config):
     )
 
 
-def test_one_batched_socket_fuses_all_sources_at_three_resolutions(monkeypatch):
+def test_one_requested_resolution_sample_is_not_automatically_expanded(monkeypatch):
     encoded, fused, blended = _mock_execution_boundaries(monkeypatch)
     images = torch.tensor([[[[1.0]]], [[[2.0]]], [[[3.0]]]])
     _execute_mocked({"image0": images}, _execution_config())
 
-    assert len(encoded) == 9
+    assert len(encoded) == 3
     assert [resolution for _, resolution, _ in encoded[:3]] == [384, 384, 384]
-    assert [count for count, _ in fused] == [3, 3, 3]
-    assert blended[0][0] == 3
+    assert [count for count, _ in fused] == [3]
+    assert blended[0][0] == 1
 
 
-def test_three_batch_lanes_suppress_automatic_resolution_expansion(monkeypatch):
+def test_one_requested_resolution_sample_is_exact_across_batch_lanes(monkeypatch):
     encoded, fused, blended = _mock_execution_boundaries(monkeypatch)
     first = torch.tensor([[[[1.0]]], [[[2.0]]], [[[3.0]]]])
     second = torch.tensor([[[[4.0]]], [[[5.0]]], [[[6.0]]]])
@@ -383,9 +383,9 @@ def test_consensus_only_retains_every_source_resolution_conditioning(monkeypatch
         _execution_config(spatial=False, consensus=True),
     )
 
-    assert len(encoded) == 9
+    assert len(encoded) == 3
     assert fused == []
-    assert blended[0][0] == 9
+    assert blended[0][0] == 3
 
 
 def test_configured_five_resolution_samples_reach_consensus(monkeypatch):
@@ -414,16 +414,41 @@ def test_both_disabled_encodes_only_first_source_at_base_resolution(monkeypatch)
     assert output[0][0].item() == 1.0
 
 
-def test_original_resolution_requires_three_lanes_for_consensus(monkeypatch):
+def test_original_resolution_accepts_one_exact_sample(monkeypatch):
+    encoded, fused, blended = _mock_execution_boundaries(monkeypatch)
+    encoder_helpers.execute_advanced_visual_consensus(
+        object(),
+        "prompt",
+        "",
+        0,
+        {"image0": torch.ones(1, 2, 2, 1)},
+        _execution_config(samples=1),
+        "Original",
+        "off",
+        None,
+        1.0,
+        8,
+        lambda clip, conditioning, latents, mode: conditioning,
+    )
+
+    assert encoded == [(1.0, None, "grid-deepstack")]
+    assert fused == [(1, True)]
+    assert blended[0][0] == 1
+
+
+def test_original_resolution_rejects_multiple_adjacent_samples(monkeypatch):
     _mock_execution_boundaries(monkeypatch)
-    with pytest.raises(ValueError, match="Original VLM resolution needs at least three"):
+    with pytest.raises(
+        ValueError,
+        match="Original VLM resolution cannot construct adjacent resolution samples",
+    ):
         encoder_helpers.execute_advanced_visual_consensus(
             object(),
             "prompt",
             "",
             0,
             {"image0": torch.ones(1, 2, 2, 1)},
-            _execution_config(),
+            _execution_config(samples=3),
             "Original",
             "off",
             None,
