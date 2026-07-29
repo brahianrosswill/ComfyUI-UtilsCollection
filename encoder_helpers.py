@@ -415,96 +415,6 @@ def vlm_resolution_samples(
     return samples
 
 
-def encode_vlm_resolution_samples(
-    image,
-    resolution,
-    visual_fusion_config,
-    encode_sample,
-    clip,
-    token_prompt,
-    visual_encoder_path,
-    device,
-):
-    """Encode and immediately collapse adjacent resolutions for one source image."""
-    text_blend_config = visual_fusion_config.get("text_blend_config")
-    consensus_active = (
-        isinstance(text_blend_config, dict)
-        and text_blend_config.get("blend_preset", "baseline") != "off"
-    )
-    requested_count = (
-        visual_fusion_config.get("resolution_samples", 1) if consensus_active else 1
-    )
-    targets = vlm_resolution_samples(image, resolution, requested_count)
-    branches = []
-    for target in targets:
-        processed = prepare_vlm_image(image, target)
-        conditioning = encode_sample(processed)
-        if len(conditioning) != 1:
-            raise ValueError(
-                "Multi-resolution visual fusion requires one conditioning schedule entry."
-            )
-        tensor, metadata = conditioning[0]
-        tokens = clip.tokenize(token_prompt, images=[processed], skip_template=True)
-        visual_range = find_visual_token_range(
-            tokens,
-            tensor,
-            legacy_krea_spatial=visual_encoder_path == "legacy-flat",
-        )
-        grid = visual_fusion_grid(
-            processed,
-            visual_range[1] - visual_range[0],
-            visual_encoder_path == "legacy-flat",
-        )
-        branches.append(
-            {
-                "tensor": tensor,
-                "metadata": metadata,
-                "pooled": metadata.get("pooled_output"),
-                "tokens": tokens,
-                "visual_range": visual_range,
-                "grid": grid,
-                "image": processed,
-            }
-        )
-
-    base = branches[0]
-    if len(branches) == 1:
-        return base
-
-    keys = [chr(97 + index) for index in range(len(branches))]
-    sequence_tensors = {
-        key: branch["tensor"] for key, branch in zip(keys, branches)
-    }
-    pooled_tensors = {
-        key: branch["pooled"]
-        for key, branch in zip(keys, branches)
-        if branch["pooled"] is not None
-    }
-    visual_ranges = {
-        key: branch["visual_range"] for key, branch in zip(keys, branches)
-    }
-    visual_grids = {key: branch["grid"] for key, branch in zip(keys, branches)}
-    resolution_config = {
-        "visual_fusion_method": "linear",
-        "fusion_strength": 0.0,
-        "text_blend_config": text_blend_config,
-    }
-    stabilized, pooled = evaluate_conditioning_consensus_blend(
-        sequence_tensors,
-        pooled_tensors,
-        visual_fusion_config=resolution_config,
-        device=device,
-        visual_ranges=visual_ranges,
-        visual_grids=visual_grids,
-    )
-    base["tensor"] = stabilized
-    base["pooled"] = pooled
-    base["metadata"] = base["metadata"].copy()
-    if pooled is not None:
-        base["metadata"]["pooled_output"] = pooled
-    return base
-
-
 def _qwen3vl_image_span(token) -> int | None:
     value = token[0] if isinstance(token, tuple) and token else token
     if not isinstance(value, dict) or value.get("type") != "image":
@@ -827,18 +737,38 @@ def generate_spatial_fusion_mask(N: int, num_sources: int, method: str, block_si
     elif method == "spatial-block-interleave":
         mask = (rows // block_size + columns // block_size) % num_sources
     else:
-        if dither_secondary_pattern not in {"checkerboard", "block-interleave"}:
+        if dither_secondary_pattern not in {
+            "checkerboard",
+            "block-interleave",
+            "dither-random-reverse",
+            "dither-random-forward",
+        }:
             raise ValueError(f"Unsupported dither secondary pattern: {dither_secondary_pattern}")
         if block_size < 1:
             raise ValueError("Visual block size must be at least 1.")
         generator = torch.Generator(device=device).manual_seed(seed)
-        random = torch.rand(N, generator=generator, device=device)
-        if dither_secondary_pattern == "block-interleave":
-            secondary = rows // block_size + columns // block_size
+        if dither_secondary_pattern == "dither-random-reverse":
+            mask = torch.full((N,), num_sources - 1, dtype=torch.long, device=device)
+            for base_source in range(num_sources - 2, -1, -1):
+                random = torch.rand(N, generator=generator, device=device)
+                mask = torch.where(random < dither_ratio, base_source, mask)
+            mask = mask.reshape(h, w)
+        elif dither_secondary_pattern == "dither-random-forward":
+            mask = torch.zeros(N, dtype=torch.long, device=device)
+            for secondary_source in range(1, num_sources):
+                random = torch.rand(N, generator=generator, device=device)
+                mask = torch.where(
+                    random < dither_ratio, mask, secondary_source
+                )
+            mask = mask.reshape(h, w)
         else:
-            secondary = rows + columns
-        other_sources = 1 + (secondary % (num_sources - 1)).flatten()
-        mask = torch.where(random < dither_ratio, 0, other_sources).reshape(h, w)
+            random = torch.rand(N, generator=generator, device=device)
+            if dither_secondary_pattern == "block-interleave":
+                secondary = rows // block_size + columns // block_size
+            else:
+                secondary = rows + columns
+            other_sources = 1 + (secondary % (num_sources - 1)).flatten()
+            mask = torch.where(random < dither_ratio, 0, other_sources).reshape(h, w)
 
     mask = _perturb_spatial_assignments(mask, spatial_perturbation, seed)
     if method == "spatial-dither-random" and dither_mask_cleanup and 0.0 < dither_ratio < 1.0:
@@ -873,44 +803,6 @@ def _align_visual_sources(sources, grids, canonical_grid, compute_float):
             )[0].permute(1, 2, 0).reshape(canonical_length, -1)
         aligned.append(value)
     return torch.stack(aligned, dim=1)
-
-
-def _coordinate_consensus_weights(stacked, blend_config):
-    settings = resolve_consensus_blend_settings(blend_config)
-    if settings["blend_preset"] == "off":
-        return None
-    source_axis = 1
-    if settings["blend_method"] == "linear":
-        return stacked.new_full(
-            stacked.shape[:2], 1.0 / stacked.shape[source_axis], dtype=torch.float32
-        )
-
-    values = stacked.to(dtype=torch.float32)
-    if settings["consensus_type"] == "median":
-        consensus = values.median(dim=source_axis).values
-    else:
-        consensus = values.mean(dim=source_axis)
-    similarities = F.cosine_similarity(values, consensus[:, None, :], dim=-1, eps=1e-8)
-    weighted_similarities = similarities
-    if settings["dynamic_similarity_contrast"]:
-        minimum = similarities.amin(dim=source_axis, keepdim=True)
-        maximum = similarities.amax(dim=source_axis, keepdim=True)
-        span = maximum - minimum
-        stretched = 0.7 + 0.3 * (similarities - minimum) / (span + 1e-8)
-        weighted_similarities = torch.where(span > 0, stretched, similarities)
-
-    valid = similarities >= settings["similarity_threshold"]
-    safe = weighted_similarities.clamp(0.0, 1.0)
-    weights = safe.pow(settings["power_alpha"])
-    if settings["diversity_beta"] > 0.0:
-        distance_base = 1.5 if settings["soft_comfort_bandpass"] else 1.001
-        weights *= (distance_base - safe).clamp(min=0.0).pow(
-            settings["diversity_beta"]
-        )
-    weights = weights.masked_fill(~valid, 0.0)
-    totals = weights.sum(dim=source_axis, keepdim=True)
-    fallback = torch.full_like(weights, 1.0 / weights.shape[source_axis])
-    return torch.where(totals > 0, weights / totals.clamp_min(1e-8), fallback)
 
 
 def _baseline_visual_weights(
@@ -971,17 +863,8 @@ def fuse_visual_token_sources(
         raise ValueError(f"Visual token layout mismatch: expected {expected_length} tokens, received canonical grid {canonical_grid}.")
 
     output_dtype = sources[0].dtype
-    text_blend_config = visual_fusion_config.get("text_blend_config")
-    fusion_strength = float(visual_fusion_config.get("fusion_strength", 1.0))
-    if not 0.0 <= fusion_strength <= 1.0:
-        raise ValueError("Visual fusion strength must be between 0.0 and 1.0.")
-    consensus_enabled = (
-        isinstance(text_blend_config, dict)
-        and text_blend_config.get("blend_preset", "baseline") != "off"
-        and fusion_strength < 1.0
-    )
     stacked = _align_visual_sources(
-        sources, grids, canonical_grid, method == "linear" or consensus_enabled
+        sources, grids, canonical_grid, method == "linear"
     )
     if mask_cache is None:
         mask_cache = {}
@@ -995,25 +878,12 @@ def fuse_visual_token_sources(
             mask_cache,
         )
         weights = baseline
-        if consensus_enabled:
-            consensus = _coordinate_consensus_weights(stacked, text_blend_config)
-            weights = fusion_strength * baseline + (1.0 - fusion_strength) * consensus
-            weights /= weights.sum(dim=1, keepdim=True).clamp_min(1e-8)
     else:
         weights = weights_override.to(device=stacked.device, dtype=torch.float32)
         if weights.shape != stacked.shape[:2]:
             raise ValueError("Visual fusion weights do not match the aligned visual grid.")
 
     fused = (stacked.to(dtype=torch.float32) * weights[:, :, None]).sum(dim=1)
-    if consensus_enabled:
-        settings = resolve_consensus_blend_settings(text_blend_config)
-        if settings["rescale_norm"]:
-            average_norm = stacked.to(dtype=torch.float32).norm(dim=-1).mean(dim=1)
-            fused_norm = fused.norm(dim=-1)
-            fused = fused * (
-                average_norm / fused_norm.clamp_min(1e-8)
-            )[:, None]
-        fused *= settings["global_scale"]
     fused = fused.to(dtype=output_dtype)
     return (fused, weights) if return_weights else fused
 

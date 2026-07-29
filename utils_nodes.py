@@ -1076,11 +1076,13 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "- `UC_TextEncodeSystemEditAdvanced`: advanced system-edit encoding with autogrowing image inputs.\n"
                 "- `UC_TextEncodeGemmaSystemEditAdvanced`: Gemma system-edit encoding with autogrowing image inputs.\n"
                 "- `UC_AdvancedVisualConditioningEncode`: per-image visual encoding, formula fallback, optional grid fusion, and optional reference latents.\n"
+                "- `UC_AdvancedVisConEncoder`: sequential per-resolution spatial fusion followed by complete-conditioning consensus.\n"
                 "- `UC_Krea2TokenAttentionWeight`: returns a patched model and conditioning using phrase-level attention odds.\n"
                 "- `UC_VLMInputEmbeds`: exports processed input embeddings and a state dictionary.\n\n"
                 "### Configuration and post-encoding nodes\n\n"
                 "- `UC_TextConsensusBlendConfig`: outputs `TEXT_BLEND_CONFIG`.\n"
-                "- `UC_VisualFusionConfig`: outputs `VISUAL_FUSION_CONFIG` and optionally consumes `TEXT_BLEND_CONFIG`.\n"
+                "- `UC_VisualFusionConfig`: outputs the spatial-only `VISUAL_FUSION_CONFIG`.\n"
+                "- `UC_VisualConsensusConfiguration`: outputs the joint configuration for `UC_AdvancedVisConEncoder` and accepts optional Advanced Visual and Advanced Consensus configurations.\n"
                 "- `UC_ConditioningConsensusBlend`: combines autogrowing CONDITIONING inputs using `TEXT_BLEND_CONFIG`."
             ),
             "prompt_templates_and_weighting": (
@@ -1125,7 +1127,7 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "- Values below `256` or above `3584` preserve the input resolution.\n\n"
                 "`UC_TextEncodeSystemEditAdvanced`, `UC_TextEncodeGemmaSystemEditAdvanced`, and `UC_VLMInputEmbeds` retain the preset choices `Fast (384)`, `Balanced (512)`, `Detailed (768)`, `Large (1024)`, `X-Large (1280)`, `XX-Large (1536)`, and `Original`.\n\n"
                 "VAE reference resolution choices are `Ultra (512)`, `Turbo (768)`, `Fast (1024)`, `Balanced (1280)`, `Detailed (1536)`, and `Original`.\n\n"
-                "`resolution_samples` belongs to `UC_VisualFusionConfig`. It accepts odd values from `1` through `15` with step `2`. Sampling is active only when a connected consensus config is not `off`. Original-resolution mode produces one sample. Numeric sampling alternates below and above the effective base and shifts the execution-local base upward when required to keep every sample at least `256`.\n\n"
+                "`resolution_samples` belongs to the fresh Visual Consensus configuration, not `UC_VisualFusionConfig`. It accepts odd values from `1` through `15` with step `2` and is used only when consensus is enabled. Advanced Consensus Configuration overrides the simple value. The fresh encoder retains every resolution as a complete conditioning until consensus; the legacy visual-fusion consumers encode only the selected base resolution.\n\n"
                 "## Reference latents\n\n"
                 "Nodes exposing reference latents use `vae_resolution`, `ref_latent_mode`, optional `vae`, and a dimension multiple.\n\n"
                 "- `off`: adds no reference latent.\n"
@@ -1142,14 +1144,13 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "- `linear`: averages aligned source tokens.\n"
                 "- `spatial-checkerboard`: assigns sources by alternating grid coordinates.\n"
                 "- `spatial-block-interleave`: assigns sources in blocks controlled by `visual_block_size` from `1` through `8`.\n"
-                "- `spatial-dither-random`: uses `seed` and `dither_ratio`; `dither_secondary_pattern` selects `checkerboard` or `block-interleave` for sources after the first.\n\n"
+                "- `spatial-dither-random`: uses `seed` and `dither_ratio`; `dither_secondary_pattern` selects `checkerboard`, `block-interleave`, `dither-random-reverse`, or `dither-random-forward`. Reverse starts with the final pair and recursively works toward source 1. Forward starts with sources 1 and 2 and recursively accumulates each later source.\n\n"
                 "### Additional controls\n\n"
                 "- `dither_mask_cleanup` applies the implemented deterministic paired-cell cleanup pass.\n"
                 "- `spatial_perturbation` ranges from `0.0` through `1.0` and exchanges seeded source assignments while retaining source counts.\n"
                 "- `visual_encoder_path` selects `grid-deepstack` or `legacy-flat`.\n"
-                "- `save_blended_embeds` writes the final isolated visual-token embedding under the relative `save_path` in ComfyUI's embeddings directory.\n"
-                "- Optional `Consensus Config` enables coordinate-aligned consensus weighting.\n"
-                "- `fusion_strength=1.0` uses only the selected fusion method. `0.0` uses only consensus weights. Intermediate values mix the two normalized weight sets."
+                "- `save_blended_embeds` writes the final isolated visual-token embedding under the relative `save_path` in ComfyUI's embeddings directory.\n\n"
+                "`UC_VisualFusionConfig` performs spatial fusion only. Use `UC_AdvancedVisConEncoder` with `UC_VisualConsensusConfiguration` when complete spatially fused conditionings should subsequently pass through consensus."
             ),
             "consensus_settings": (
                 "## Text Consensus Blend Configurator\n\n"
@@ -1167,7 +1168,7 @@ class UC_EncoderNodesGuide(io.ComfyNode):
                 "- `rescale_norm`, `global_scale`, `dynamic_similarity_contrast`, and `soft_comfort_bandpass` modify the blended values.\n"
                 "- `position_weight` biases text similarity matching toward nearby normalized token positions.\n"
                 "- `preserve_common_prefix` copies the longest numerically identical text-conditioning prefix from the first input.\n\n"
-                "When this config is nested inside visual fusion, visual tokens are aligned by grid coordinate. Text sequence alignment, position matching, and common-prefix matching are not applied to the visual span."
+                "`UC_TextConsensusBlendConfig` is consumed directly by `UC_ConditioningConsensusBlend`. The fresh Advanced Visual Consensus Encoder exposes equivalent consensus behavior through its dedicated joint and advanced configurations."
             ),
             "formulas_and_alignment": (
                 "## Formula fallback\n\n"

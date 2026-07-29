@@ -87,6 +87,18 @@ def test_joint_schema_has_literal_simple_contract():
         "block-interleave",
         "random-dither",
     ]
+    assert inputs["dither_pattern"].options == [
+        "checkerboard",
+        "block-interleave",
+        "dither-random-reverse",
+        "dither-random-forward",
+    ]
+    assert _inputs(UC_AdvancedVisualConfiguration)["dither_pattern"].options == [
+        "checkerboard",
+        "block-interleave",
+        "dither-random-reverse",
+        "dither-random-forward",
+    ]
     assert "off" not in inputs["consensus_preset"].options
     assert "custom" not in inputs["consensus_preset"].options
 

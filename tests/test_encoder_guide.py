@@ -52,7 +52,16 @@ def test_encoder_guide_covers_current_visual_fusion_contract():
     fusion = UC_EncoderNodesGuide.execute("visual_fusion").args[0]
     consensus = UC_EncoderNodesGuide.execute("consensus_settings").args[0]
 
-    assert all(value in resolution for value in ("256", "3584", "step `2`", "1` through `15"))
+    assert all(
+        value in resolution
+        for value in (
+            "256",
+            "3584",
+            "1` through `15",
+            "fresh Visual Consensus configuration",
+            "legacy visual-fusion consumers encode only the selected base resolution",
+        )
+    )
     assert all(
         value in fusion
         for value in (
@@ -61,13 +70,15 @@ def test_encoder_guide_covers_current_visual_fusion_contract():
             "spatial-checkerboard",
             "spatial-block-interleave",
             "spatial-dither-random",
-            "`fusion_strength=1.0`",
-            "`0.0` uses only consensus weights",
+            "`dither-random-reverse`",
+            "`dither-random-forward`",
+            "performs spatial fusion only",
+            "UC_AdvancedVisConEncoder",
         )
     )
     assert "Text Scaled Encoder (Advanced)" not in fusion
-    assert "aligned by grid coordinate" in consensus
-    assert "common-prefix matching are not applied to the visual span" in consensus
+    assert "consumed directly by `UC_ConditioningConsensusBlend`" in consensus
+    assert "equivalent consensus behavior" in consensus
 
 
 def test_encoder_guide_labels_compatibility_nodes_separately():
