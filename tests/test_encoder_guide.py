@@ -58,8 +58,10 @@ def test_encoder_guide_covers_current_visual_fusion_contract():
             "256",
             "3584",
             "1` through `15",
-            "fresh Visual Consensus configuration",
-            "legacy visual-fusion consumers encode only the selected base resolution",
+            "UC_AdvancedVisualConditioningEncode",
+            "encode only the selected base VLM resolution",
+            "`1` remains one resolution sample",
+            "complete conditioning until consensus",
         )
     )
     assert all(
@@ -72,21 +74,63 @@ def test_encoder_guide_covers_current_visual_fusion_contract():
             "spatial-dither-random",
             "`dither-random-reverse`",
             "`dither-random-forward`",
-            "performs spatial fusion only",
+            "optional spatial-only configuration",
             "UC_AdvancedVisConEncoder",
+            "sequential stages",
+            "never crossfaded",
         )
     )
     assert "Text Scaled Encoder (Advanced)" not in fusion
     assert "consumed directly by `UC_ConditioningConsensusBlend`" in consensus
-    assert "equivalent consensus behavior" in consensus
+    assert "complete per-lane and per-resolution conditionings" in consensus
+    assert "does not replace, disable, or crossfade against spatial fusion" in consensus
 
 
-def test_encoder_guide_labels_compatibility_nodes_separately():
+def test_encoder_guide_makes_primary_and_specialized_hierarchy_explicit():
     catalog = UC_EncoderNodesGuide.execute("node_catalog").args[0]
-    compatibility = UC_EncoderNodesGuide.execute("compatibility_nodes").args[0]
 
-    assert "`UC_AdvancedVisualConditioningEncode`" in catalog
-    assert "`UC_VLMInputEmbeds`" in catalog
-    assert "`UC_Krea2TokenAttentionWeight`" in catalog
-    assert "`TextEncodeKrea2SystemEditScaledAdv`" in compatibility
-    assert "`UC_Qwen3VLInputEmbeds`" in compatibility
+    assert "### Primary encoder — use this by default" in catalog
+    assert "the recommended encoder for nearly all conditioning workflows" in catalog
+    assert "no image connected" in catalog
+    assert "text-only conditioning" in catalog
+    assert "It is not a replacement for `UC_AdvancedVisualConditioningEncode`" in catalog
+    assert "### Specialized encoders" in catalog
+    assert "### Embedding export" in catalog
+
+    primary_position = catalog.index("`UC_AdvancedVisualConditioningEncode`")
+    consensus_position = catalog.index("`UC_AdvancedVisConEncoder`")
+    specialized_position = catalog.index("### Specialized encoders")
+    export_position = catalog.index("### Embedding export")
+    assert primary_position < consensus_position < specialized_position < export_position
+
+    assert catalog.index("`UC_VisualFusionConfig`") < consensus_position
+    assert "`UC_AdvancedVisualConfiguration`" in catalog
+    assert "`UC_AdvancedConsensusConfiguration`" in catalog
+    assert "`UC_ConditioningConsensusBlend`" in catalog
+
+
+def test_encoder_guide_separates_flattened_sources_from_consensus_lanes():
+    images = UC_EncoderNodesGuide.execute("image_inputs_and_placeholders").args[0]
+
+    assert "flattens active autogrow sockets and image batches" in images
+    assert "does not use global image flattening" in images
+    assert "Visual sources, batch lanes, and resolution variants remain separate" in images
+    assert "pair equal-index images into independent lanes" in images
+    assert "Singleton image sockets broadcast into every batch lane" in images
+
+
+def test_encoder_guide_lists_only_registered_compatibility_migrations_as_mappings():
+    compatibility = UC_EncoderNodesGuide.execute("compatibility_nodes").args[0]
+    mappings = (
+        "`TextEncodeSystemEditPlusAdvanced` → `UC_TextEncodeSystemEditAdvanced`",
+        "`TextEncodeGemmaSystemEditPlusAdvanced` → `UC_TextEncodeGemmaSystemEditAdvanced`",
+        "`TextEncodeKrea2SystemEditScaledAdv` → `UC_AdvancedVisualConditioningEncode`",
+        "`UC_Krea2InputEmbeds` → `UC_VLMInputEmbeds`",
+        "`UC_Qwen3VLInputEmbeds` → `UC_VLMInputEmbeds`",
+        "`TextEncodeKrea2SysEditScaledAdvAttn` → `UC_Krea2TokenAttentionWeight`",
+    )
+
+    assert all(mapping in compatibility for mapping in mappings)
+    assert "no interface-preserving migration is registered" in compatibility
+    assert "Do not infer a widget mapping" in compatibility
+    assert "`UC_TextEncodeLtxv2SystemPrompt` remains a current specialized node" in compatibility
