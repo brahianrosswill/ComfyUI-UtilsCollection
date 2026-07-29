@@ -72,7 +72,12 @@ class Ideogram4SchedulerPreset(Ideogram4Scheduler):
             category="sampling/custom_sampling/schedulers",
             description="Schedule Presets for Ideogram 4. They are as follows: Quality=48, High=34, Default=20, Fast=16, Turbo=12",
             inputs=[
-                io.Combo.Input("preset", options=[e.value for e in Ideogram4Enum], default=Ideogram4Enum.DEFAULT.value),
+                io.Combo.Input(
+                    "preset",
+                    display_name="ideogram4_scheduler_preset",
+                    options=[e.value for e in Ideogram4Enum],
+                    default=Ideogram4Enum.DEFAULT.value,
+                ),
                 io.Int.Input("width", default=1024, min=256, max=8192, step=16),
                 io.Int.Input("height", default=1024, min=256, max=8192, step=16),
             ],

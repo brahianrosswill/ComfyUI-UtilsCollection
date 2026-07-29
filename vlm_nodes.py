@@ -19,6 +19,7 @@ class UC_VLMSysInstrPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="vlm_system_instruction_preset",
                     options=options,
                     default=default,
                 ),
@@ -54,6 +55,7 @@ class UC_VLMSysQueryAddPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="vlm_system_query_add_preset",
                     options=options,
                     default=default,
                 ),
@@ -96,6 +98,7 @@ class UC_VLMSysInstrAdvPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="vlm_system_instruction_advanced_preset",
                     options=options,
                     default=default,
                 ),

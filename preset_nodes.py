@@ -38,6 +38,7 @@ class UC_SystemMessagePresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="system_styles_preset",
                     options=sorted(list(presets.keys())),
                     default="F2_SYSTEM_MESSAGE" if "F2_SYSTEM_MESSAGE" in presets else sorted(list(presets.keys()))[0],
                 ),
@@ -76,6 +77,7 @@ class UC_InstructPromptPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="instruct_styles_preset",
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
@@ -114,6 +116,7 @@ class UC_BonusPromptPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="bonus_styles_preset",
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
@@ -152,6 +155,7 @@ class UC_LegacyPromptPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="legacy_prompt_preset",
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
@@ -184,6 +188,7 @@ class UC_SystemMessageVideoPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="system_video_styles_preset",
                     options=sorted(list(presets.keys())),
                     default="F2_SYSTEM_MESSAGE" if "F2_SYSTEM_MESSAGE" in presets else sorted(list(presets.keys()))[0],
                 ),
@@ -216,6 +221,7 @@ class UC_InstructPromptVideoPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="instruct_video_styles_preset",
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
@@ -248,6 +254,7 @@ class UC_BonusPromptVideoPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="bonus_video_styles_preset",
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
@@ -286,6 +293,7 @@ class UC_EditTargetPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="edit_target_preset",
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
@@ -324,6 +332,7 @@ class UC_EditOpPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="edit_op_preset",
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
@@ -362,6 +371,7 @@ class UC_CameraShotPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="camera_shot_preset",
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
@@ -408,6 +418,7 @@ class UC_UnifiedPresets(io.ComfyNode):
             inputs=[
                 io.Combo.Input(
                     "preset",
+                    display_name="styles_preset",
                     options=shared_presets,
                     default=default_preset,
                 ),

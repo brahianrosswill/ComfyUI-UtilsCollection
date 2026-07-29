@@ -11,7 +11,7 @@ package = types.ModuleType(PACKAGE_NAME)
 package.__path__ = [str(CUSTOM_NODE_ROOT)]
 sys.modules.setdefault(PACKAGE_NAME, package)
 
-from utils_collection_preset_test import preset_nodes
+from utils_collection_preset_test import preset_nodes, scheduler_nodes, vlm_nodes
 
 
 PRESET_NODES = (
@@ -53,5 +53,38 @@ def test_style_3d_pbr_parentheses_are_escaped(node):
 def test_unified_presets_forwards_named_boolean_output():
     schema = preset_nodes.UC_UnifiedPresets.define_schema()
     assert [value.id for value in schema.inputs] == ["preset", "escape_parentheses"]
+    assert schema.inputs[0].display_name == "styles_preset"
     result = preset_nodes.UC_UnifiedPresets.execute("STYLE_3D", True)
     assert result.args == ("STYLE_3D", True)
+
+
+def test_preset_widget_labels_are_unique_and_descriptive():
+    expected = {
+        preset_nodes.UC_SystemMessagePresets: "system_styles_preset",
+        preset_nodes.UC_InstructPromptPresets: "instruct_styles_preset",
+        preset_nodes.UC_BonusPromptPresets: "bonus_styles_preset",
+        preset_nodes.UC_SystemMessageVideoPresets: "system_video_styles_preset",
+        preset_nodes.UC_InstructPromptVideoPresets: "instruct_video_styles_preset",
+        preset_nodes.UC_BonusPromptVideoPresets: "bonus_video_styles_preset",
+        preset_nodes.UC_LegacyPromptPresets: "legacy_prompt_preset",
+        preset_nodes.UC_EditTargetPresets: "edit_target_preset",
+        preset_nodes.UC_EditOpPresets: "edit_op_preset",
+        preset_nodes.UC_CameraShotPresets: "camera_shot_preset",
+        preset_nodes.UC_UnifiedPresets: "styles_preset",
+        vlm_nodes.UC_VLMSysInstrPresets: "vlm_system_instruction_preset",
+        vlm_nodes.UC_VLMSysQueryAddPresets: "vlm_system_query_add_preset",
+        vlm_nodes.UC_VLMSysInstrAdvPresets: "vlm_system_instruction_advanced_preset",
+        scheduler_nodes.Ideogram4SchedulerPreset: "ideogram4_scheduler_preset",
+    }
+
+    actual = {
+        node: node.define_schema().inputs[0].display_name
+        for node in expected
+    }
+    assert actual == expected
+    assert len(set(actual.values())) == len(actual)
+    assert all(node.define_schema().inputs[0].id == "preset" for node in expected)
+
+    for node, label in expected.items():
+        frontend_input = node.INPUT_TYPES()["required"]["preset"]
+        assert frontend_input[1]["display_name"] == label
