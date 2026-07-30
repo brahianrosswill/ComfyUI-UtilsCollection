@@ -27,6 +27,7 @@ class SamplingUtils(ComfyExtension):
             UC_ResolutionSelectorExtended,
             UC_ImageScaleAndResolutionPicker,
             UC_Image_Color_Noise,
+            UC_ExtractPrevalentColors,
             UC_TextEncodeFlux2SystemPrompt,
             UC_TextEncodeKleinSystemPrompt,
             UC_TextEncodeKrea2SystemPrompt,

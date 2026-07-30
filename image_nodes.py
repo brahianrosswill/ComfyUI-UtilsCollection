@@ -16,6 +16,7 @@ from .tile_helpers import (
     apply_tile_differential_diffusion,
     split_and_encode_tiles,
 )
+from .color_palette_helpers import extract_prevalent_color_outputs
 
 
 from comfy_api.latest import io
@@ -24,6 +25,84 @@ import node_helpers
 from nodes import MAX_RESOLUTION
 
 HighResolutionTileLayout = io.Custom("UC_HIGH_RES_TILE_LAYOUT")
+
+
+class UC_ExtractPrevalentColors(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_ExtractPrevalentColors",
+            display_name="Extract Prevalent Colors",
+            category="image/color",
+            description=(
+                "Extracts perceptually distinct prevalent colors from every image "
+                "without resizing or spatial sampling."
+            ),
+            inputs=[
+                io.Image.Input("image"),
+                io.Int.Input(
+                    "color_count",
+                    default=8,
+                    min=1,
+                    max=64,
+                    step=1,
+                    tooltip="Maximum number of prevalent colors returned per image.",
+                ),
+                io.Boolean.Input(
+                    "prefix_hash",
+                    default=True,
+                    tooltip="Prefix every six-digit hexadecimal color with #.",
+                ),
+            ],
+            outputs=[
+                io.String.Output(
+                    "colors",
+                    display_name="colors",
+                    tooltip=(
+                        "One comma-separated palette ordered from most prevalent "
+                        "to least prevalent."
+                    ),
+                ),
+                io.Image.Output(
+                    "palette_grid",
+                    display_name="palette grid",
+                    tooltip=(
+                        "RGB color blocks in reading order from the top-left. "
+                        "Unused cells are flattened to black."
+                    ),
+                ),
+                io.String.Output(
+                    "color_names",
+                    display_name="color names",
+                    tooltip=(
+                        "Nearest human color names in the same order as the "
+                        "exact hexadecimal colors."
+                    ),
+                ),
+                io.String.Output(
+                    "palette_description",
+                    display_name="palette description",
+                    tooltip=(
+                        "Deterministic palette-level temperature, lightness, "
+                        "chroma, neutrality, and contrast description."
+                    ),
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image, color_count, prefix_hash) -> io.NodeOutput:
+        palette, grid, color_names, palette_description = (
+            extract_prevalent_color_outputs(
+                image, color_count, prefix_hash
+            )
+        )
+        return io.NodeOutput(
+            palette,
+            grid,
+            color_names,
+            palette_description,
+        )
 
 
 class UC_Image_Color_Noise(io.ComfyNode):
