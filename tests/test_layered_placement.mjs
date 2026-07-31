@@ -294,6 +294,15 @@ test("version 3 normalizes ordinary foreground transforms deterministically", ()
   );
 });
 
+test("layer locks round trip additively without changing unlocked workflows", () => {
+  const locked = parsePlacementData('{"version":3,"layers":{"foreground_0":{"locked":true}}}');
+  assert.equal(locked.layers.foreground_0.locked, true);
+  assert.match(serializePlacementData(locked), /"locked":true/);
+  const unlocked = parsePlacementData('{"version":3,"layers":{"foreground_0":{"locked":false}}}');
+  assert.equal(unlocked.layers.foreground_0.locked, undefined);
+  assert.doesNotMatch(serializePlacementData(unlocked), /"locked"/);
+});
+
 test("rect edits preserve every face-specific transform field", () => {
   const prior = {
     scale: 0.25, center_x: 0.5, center_y: 0.5,

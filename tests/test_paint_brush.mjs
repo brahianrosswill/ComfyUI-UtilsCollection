@@ -6,7 +6,35 @@ import {
   interpolatedPoints,
   imageDataAlphaBounds,
   normalizeBrushSettings,
+  paintLayerVisible,
+  PaintLayerCanvas,
 } from "../web/paint_brush.js";
+
+function mockCanvas() {
+  const calls = [];
+  const gradient = { addColorStop: (...args) => calls.push(["stop", ...args]) };
+  const context = {
+    calls,
+    globalCompositeOperation: "source-over",
+    save: () => calls.push(["save"]), restore: () => calls.push(["restore"]),
+    clearRect: (...args) => calls.push(["clearRect", ...args]),
+    drawImage: (...args) => calls.push(["drawImage", ...args]),
+    getImageData: (_x, _y, width, height) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+    putImageData: (...args) => calls.push(["putImageData", ...args]),
+    createRadialGradient: () => gradient,
+    beginPath: () => calls.push(["beginPath"]), arc: (...args) => calls.push(["arc", ...args]),
+    fill: () => calls.push(["fill"]),
+    createImageData: (width, height) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
+  };
+  return { width: 0, height: 0, calls, getContext: () => context };
+}
+
+test("paint remains visible while editing even when excluded from final composition", () => {
+  assert.equal(paintLayerVisible(false, false), false);
+  assert.equal(paintLayerVisible(false, true), true);
+  assert.equal(paintLayerVisible(true, false), true);
+  assert.equal(paintLayerVisible(undefined, false), true);
+});
 
 test("brush settings clamp without losing supported shapes", () => {
   assert.deepEqual(normalizeBrushSettings({
@@ -46,4 +74,23 @@ test("fast strokes receive stamps no farther apart than requested spacing", () =
     assert.ok(Math.hypot(point.x - prior.x, point.y - prior.y) <= 2);
     prior = point;
   }
+});
+
+test("paint canvas allocates, previews, commits, and traverses history", () => {
+  const created = [];
+  const paint = new PaintLayerCanvas(() => {
+    const canvas = mockCanvas();
+    created.push(canvas);
+    return canvas;
+  });
+  paint.resize(64, 48);
+  assert.equal(paint.begin({ x: 8, y: 9 }, { color: "#123456", size: 4 }), true);
+  assert.equal(paint.move([{ x: 20, y: 9 }]), true);
+  const preview = mockCanvas().getContext("2d");
+  paint.draw(preview, 0, 0, 64, 48);
+  assert.ok(preview.calls.some(([name]) => name === "drawImage"));
+  assert.equal(paint.end(false), true);
+  assert.equal(paint.history.canUndo, true);
+  assert.equal(paint.undo(), true);
+  assert.equal(paint.redo(), true);
 });

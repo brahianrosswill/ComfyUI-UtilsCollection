@@ -29,6 +29,9 @@ from .composite_helpers import (
 )
 
 
+_PAINT_LAYER_ENABLED = False
+
+
 _DEFAULT_CORNERS = ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
 
 
@@ -490,7 +493,7 @@ def _composite_staged_foregrounds(
         raise ValueError("Staged foreground data contains no layers.")
     placements = _parse_layer_placements(placement_data)
     placement_version, _, _, workspace_padding = _parse_layer_payload(placement_data)
-    paint = _parse_paint_layer(placement_data)
+    paint = _parse_paint_layer(placement_data) if _PAINT_LAYER_ENABLED else None
     layers_by_socket = {layer["socket"]: layer for layer in layers}
     if paint is not None:
         layers_by_socket[_PAINT_LAYER_KEY] = {

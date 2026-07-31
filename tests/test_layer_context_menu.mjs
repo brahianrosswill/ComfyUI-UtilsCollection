@@ -64,6 +64,7 @@ test("context actions expose state and boundary availability", () => {
     flipVertical: callback("flipVertical"),
     toggleWarp: callback("toggleWarp"),
     toggleRotate: callback("toggleRotate"),
+    toggleLock: callback("toggleLock"),
     exclude: callback("exclude"),
     reset: callback("reset"),
   }).filter((item) => !item.separator);
@@ -74,8 +75,25 @@ test("context actions expose state and boundary availability", () => {
   assert.equal(actions.find((item) => item.label === "Flip V").checked, false);
   assert.equal(actions.find((item) => item.label === "Warp").checked, true);
   assert.equal(actions.find((item) => item.label === "Rotate").checked, false);
+  assert.equal(actions.find((item) => item.label === "Lock").checked, false);
   actions.find((item) => item.label === "Move Forward").callback();
   actions.find((item) => item.label === "Bring to Front").callback();
   actions.find((item) => item.label === "Exclude").callback();
   assert.deepEqual(invoked, ["moveForward", "bringToFront", "exclude"]);
+});
+
+test("locked context state keeps ordering and inclusion available while disabling transforms", () => {
+  const noop = () => {};
+  const actions = buildLayerContextActions({
+    index: 1, count: 3, placement: { locked: true }, warpActive: false, rotateActive: false,
+    moveBack: noop, moveForward: noop, sendToBack: noop, bringToFront: noop,
+    flipHorizontal: noop, flipVertical: noop, toggleWarp: noop, toggleRotate: noop,
+    toggleLock: noop, exclude: noop, reset: noop,
+  }).filter((item) => !item.separator);
+  assert.equal(actions.find((item) => item.label === "Unlock").checked, true);
+  assert.equal(actions.find((item) => item.label === "Exclude").disabled, false);
+  assert.equal(actions.find((item) => item.label === "Move Back").disabled, false);
+  for (const label of ["Flip H", "Flip V", "Warp", "Rotate", "Reset"]) {
+    assert.equal(actions.find((item) => item.label === label).disabled, true);
+  }
 });

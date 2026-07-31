@@ -4,8 +4,9 @@ import assert from "node:assert/strict";
 import {
   BACKGROUND_PREVIEW_ALPHA,
   editorWidgetHeight,
-  floatingPanelPosition,
+  flexContentWidth,
   growNodeSize,
+  inlinePanelLayout,
   naturalEditorWidth,
   previewHeight,
   visibleLayerListHeight,
@@ -19,6 +20,22 @@ test("natural editor width follows its widest complete control row", () => {
   assert.equal(naturalEditorWidth({
     coreWidth: 300, toolbarWidth: 620, rowWidths: [480, 840], overlayWidths: [410], chromeWidth: 20,
   }), 860);
+});
+
+test("complete flex rows accumulate controls, gaps, chrome, and rounding allowance", () => {
+  assert.equal(flexContentWidth([28, 24, 48, 32, 820], 3, 8), 977);
+  assert.equal(naturalEditorWidth({
+    coreWidth: 300, toolbarWidth: 620, rowWidths: [977], overlayWidths: [410], chromeWidth: 20,
+  }), 997);
+});
+
+test("inline picker expands node without changing preview width", () => {
+  assert.deepEqual(inlinePanelLayout(900, 16, 0, 0), {
+    extraWidth: 0, nodeWidth: 900, previewWidth: 884,
+  });
+  assert.deepEqual(inlinePanelLayout(900, 16, 220, 6), {
+    extraWidth: 226, nodeWidth: 1126, previewWidth: 884,
+  });
 });
 
 test("preview uses 16:9 without an image and the real image aspect when known", () => {
@@ -39,24 +56,8 @@ test("widget height is composed from measured sections", () => {
   }), 656);
 });
 
-test("automatic sizing grows but never shrinks a node", () => {
+test("required sizing grows from the manual size floor rather than previous automatic growth", () => {
   assert.deepEqual(growNodeSize([900, 700], [800, 600]), [900, 700]);
   assert.deepEqual(growNodeSize([700, 500], [800, 600]), [800, 600]);
   assert.deepEqual(growNodeSize([800, 600], [800, 600]), [800, 600]);
-});
-
-test("floating picker prefers right, then left, then vertical placement", () => {
-  const base = {
-    avoid: { left: 300, right: 700, top: 100, bottom: 600 },
-    trigger: { left: 320, top: 300, width: 30, height: 28 },
-    panelWidth: 220, panelHeight: 330, viewportWidth: 1200, viewportHeight: 800,
-  };
-  assert.deepEqual(floatingPanelPosition(base), { left: 708, top: 149 });
-  assert.deepEqual(floatingPanelPosition({ ...base, viewportWidth: 900 }), { left: 72, top: 149 });
-  assert.deepEqual(floatingPanelPosition({
-    ...base,
-    avoid: { left: 120, right: 780, top: 200, bottom: 500 },
-    trigger: { left: 400, top: 300, width: 30, height: 28 },
-    viewportWidth: 900, viewportHeight: 900,
-  }), { left: 305, top: 508 });
 });

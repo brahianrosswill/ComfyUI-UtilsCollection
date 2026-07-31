@@ -9,6 +9,10 @@ export const DEFAULT_BRUSH_SETTINGS = Object.freeze({
   erasing: false,
 });
 
+export function paintLayerVisible(included, editing = false) {
+  return editing || included !== false;
+}
+
 export function normalizeBrushSettings(value = {}) {
   return {
     shape: value.shape === "square" ? "square" : "circle",

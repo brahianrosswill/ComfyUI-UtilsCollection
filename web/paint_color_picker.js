@@ -1,10 +1,12 @@
-import { floatingPanelPosition } from "./staged_editor_layout.js";
-
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, Number(value)));
 
 export function normalizeHex(value) {
   const match = String(value || "").trim().match(/^#?([0-9a-f]{6})$/i);
   return match ? `#${match[1].toLowerCase()}` : null;
+}
+
+export function pickerOwnsTarget(trigger, panel, target) {
+  return trigger?.contains?.(target) === true || panel?.contains?.(target) === true;
 }
 
 export function rgbToHex(red, green, blue) {
@@ -53,12 +55,12 @@ function assignStyle(element, values) {
 function make(tag, style = {}) { return assignStyle(document.createElement(tag), style); }
 
 export class PaintColorPicker {
-  constructor({ color = "#ff0000", onChange, onEyedropper, avoidElement = null }) {
+  constructor({ color = "#ff0000", onChange, onEyedropper, panelHost, onOpenChange }) {
     this.color = normalizeHex(color) || "#ff0000";
     this.previous = this.color;
     this.onChange = onChange;
     this.onEyedropper = onEyedropper;
-    this.avoidElement = avoidElement;
+    this.onOpenChange = onOpenChange;
     this.recent = this.loadRecent();
     this.root = make("div", { position: "relative", display: "inline-flex" });
     this.trigger = make("button", {
@@ -70,7 +72,9 @@ export class PaintColorPicker {
     this.trigger.append(this.swatch);
     this.panel = this.createPanel();
     this.root.append(this.trigger);
-    document.body.append(this.panel);
+    panelHost.append(this.panel);
+    this.resizeObserver = new ResizeObserver(() => this.resizeInteractionPlane());
+    this.resizeObserver.observe(this.sl);
     this.trigger.addEventListener("click", (event) => {
       event.stopPropagation();
       const opening = this.panel.style.display === "none";
@@ -79,14 +83,17 @@ export class PaintColorPicker {
       this.sync();
     });
     this.documentPointerDown = (event) => {
-      if (!this.root.contains(event.target) && !this.panel.contains(event.target)) this.setOpen(false);
+      if (!pickerOwnsTarget(this.trigger, this.panel, event.target)) this.setOpen(false);
     };
-    this.repositionPanel = () => {
-      if (this.panel.style.display !== "none") this.positionPanel();
+    this.documentKeyDown = (event) => {
+      if (event.key !== "Escape" || this.panel.style.display === "none") return;
+      event.preventDefault();
+      this.setColor(this.previous, false);
+      this.setOpen(false);
+      this.trigger.focus();
     };
-    document.addEventListener("pointerdown", this.documentPointerDown);
-    window.addEventListener("resize", this.repositionPanel);
-    window.addEventListener("scroll", this.repositionPanel, true);
+    document.addEventListener("pointerdown", this.documentPointerDown, true);
+    document.addEventListener("keydown", this.documentKeyDown, true);
     this.sync();
   }
 
@@ -105,7 +112,7 @@ export class PaintColorPicker {
 
   createPanel() {
     const panel = make("div", {
-      position: "fixed", zIndex: "10000", width: "220px", boxSizing: "border-box",
+      flex: "0 0 220px", width: "220px", boxSizing: "border-box", alignSelf: "stretch", minHeight: "0",
       display: "flex", flexDirection: "column", gap: "7px", padding: "9px", border: "1px solid rgba(255,255,255,.3)",
       borderRadius: "7px", color: "#ddd", background: "#20242a", boxShadow: "0 5px 18px rgba(0,0,0,.55)",
     });
@@ -114,9 +121,9 @@ export class PaintColorPicker {
     const title = make("div", { fontWeight: "600", opacity: ".9" });
     title.textContent = "HSL color";
     this.sl = make("div", {
-      position: "relative", width: "202px", height: "150px", borderRadius: "4px", cursor: "crosshair", touchAction: "none",
+      position: "relative", width: "100%", flex: "1 1 150px", minHeight: "80px", borderRadius: "4px", cursor: "crosshair", touchAction: "none",
     });
-    this.slCanvas = make("canvas", { display: "block", width: "202px", height: "150px", borderRadius: "4px" });
+    this.slCanvas = make("canvas", { position: "absolute", inset: "0", display: "block", width: "100%", height: "100%", borderRadius: "4px" });
     this.slCanvas.width = 202;
     this.slCanvas.height = 150;
     this.slMarker = make("span", {
@@ -199,24 +206,24 @@ export class PaintColorPicker {
   setOpen(open) {
     this.panel.style.display = open ? "flex" : "none";
     this.trigger.setAttribute("aria-expanded", String(open));
-    if (open) requestAnimationFrame(() => this.positionPanel());
+    this.onOpenChange?.(open);
   }
 
-  positionPanel() {
-    const avoid = this.avoidElement?.getBoundingClientRect?.() || this.trigger.getBoundingClientRect();
-    const trigger = this.trigger.getBoundingClientRect();
-    const width = this.panel.offsetWidth || 220;
-    const height = this.panel.offsetHeight || 330;
-    const { left, top } = floatingPanelPosition({
-      avoid,
-      trigger,
-      panelWidth: width,
-      panelHeight: height,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-    });
-    this.panel.style.left = `${Math.round(left)}px`;
-    this.panel.style.top = `${Math.round(top)}px`;
+  isOpen() { return this.panel.style.display !== "none"; }
+
+  setPanelHeight(height) {
+    this.panel.style.height = `${Math.max(1, Math.round(height))}px`;
+    this.resizeInteractionPlane();
+  }
+
+  resizeInteractionPlane() {
+    const width = Math.max(1, Math.round(this.sl.clientWidth || 202));
+    const height = Math.max(1, Math.round(this.sl.clientHeight || 150));
+    if (this.slCanvas.width === width && this.slCanvas.height === height) return;
+    this.slCanvas.width = width;
+    this.slCanvas.height = height;
+    this.renderedHue = null;
+    this.sync();
   }
 
   renderSlPlane() {
@@ -256,9 +263,9 @@ export class PaintColorPicker {
   }
 
   dispose() {
-    document.removeEventListener("pointerdown", this.documentPointerDown);
-    window.removeEventListener("resize", this.repositionPanel);
-    window.removeEventListener("scroll", this.repositionPanel, true);
+    document.removeEventListener("pointerdown", this.documentPointerDown, true);
+    document.removeEventListener("keydown", this.documentKeyDown, true);
+    this.resizeObserver?.disconnect();
     this.panel.remove();
   }
 }

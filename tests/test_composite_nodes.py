@@ -944,6 +944,7 @@ def test_paint_loader_requires_a_single_rgba_png(tmp_path, monkeypatch):
 def test_paint_composites_at_its_exact_layer_position(
     monkeypatch, order, expected_pixel
 ):
+    monkeypatch.setattr(staged_compositor_helpers, "_PAINT_LAYER_ENABLED", True)
     rgba = torch.zeros(1, 4, 4, 4)
     rgba[0, 1, 1] = torch.tensor([0.0, 1.0, 0.0, 1.0])
     monkeypatch.setattr(
@@ -969,6 +970,7 @@ def test_paint_composites_at_its_exact_layer_position(
 
 
 def test_excluded_paint_keeps_ordered_empty_outputs_without_affecting_rgb(monkeypatch):
+    monkeypatch.setattr(staged_compositor_helpers, "_PAINT_LAYER_ENABLED", True)
     rgba = torch.ones(1, 4, 4, 4)
     monkeypatch.setattr(
         staged_compositor_helpers,
@@ -989,6 +991,7 @@ def test_excluded_paint_keeps_ordered_empty_outputs_without_affecting_rgb(monkey
 
 
 def test_transparent_paint_is_an_rgb_and_mask_noop(monkeypatch):
+    monkeypatch.setattr(staged_compositor_helpers, "_PAINT_LAYER_ENABLED", True)
     monkeypatch.setattr(
         staged_compositor_helpers,
         "load_staged_paint_rgba",
@@ -1006,6 +1009,26 @@ def test_transparent_paint_is_an_rgb_and_mask_noop(monkeypatch):
     assert torch.all(combined == 1)
     assert masks[1].sum() == 0
     assert boxes[0][1] == {"x": 0, "y": 0, "width": 0, "height": 0}
+
+
+def test_disabled_paint_layer_is_not_assigned_or_composited(monkeypatch):
+    monkeypatch.setattr(
+        staged_compositor_helpers,
+        "load_staged_paint_rgba",
+        lambda *args, **kwargs: pytest.fail("disabled paint must not load"),
+    )
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 4, 4, 3),
+        _paint_test_stage(),
+        _paint_placement(["__uc_paint__", "foreground_0"]),
+        0,
+    )
+    image, combined, boxes, masks = output.result
+
+    assert torch.allclose(image, torch.tensor([1.0, 0.0, 0.0]).expand_as(image))
+    assert torch.all(combined == 1)
+    assert masks.shape == (1, 4, 4)
+    assert boxes[0] == [{"x": 0, "y": 0, "width": 4, "height": 4}]
 
 
 def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):

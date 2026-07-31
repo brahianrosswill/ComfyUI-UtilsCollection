@@ -53,6 +53,7 @@ export function normalizePlacement(value = {}, version = 2, face = false) {
       short_axis_shift: clamp(finite(value.short_axis_shift, 0), -1, 1),
       flip_horizontal: value.flip_horizontal === true,
       flip_vertical: value.flip_vertical === true,
+      ...(value.locked === true ? { locked: true } : {}),
     };
   }
   const normalized = {
@@ -69,6 +70,7 @@ export function normalizePlacement(value = {}, version = 2, face = false) {
   if (version === 3) {
     normalized.included = value.included !== false;
   }
+  if (value.locked === true) normalized.locked = true;
   return normalized;
 }
 
@@ -314,7 +316,7 @@ export function rectToPlacement(backgroundWidth, backgroundHeight, rect, prior =
     flip_horizontal: prior.flip_horizontal === true,
     flip_vertical: prior.flip_vertical === true,
   };
-  for (const field of ["rotation", "corners", "included"]) {
+  for (const field of ["rotation", "corners", "included", "locked"]) {
     if (prior[field] !== undefined) placement[field] = prior[field];
   }
   return placement;

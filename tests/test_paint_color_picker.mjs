@@ -5,9 +5,19 @@ import {
   hexToRgb,
   hslToRgb,
   normalizeHex,
+  pickerOwnsTarget,
   rgbToHex,
   rgbToHsl,
 } from "../web/paint_color_picker.js";
+
+test("picker ownership excludes unrelated controls in same node", () => {
+  const triggerTarget = {}, panelTarget = {}, otherControl = {};
+  const trigger = { contains: (target) => target === triggerTarget };
+  const panel = { contains: (target) => target === panelTarget };
+  assert.equal(pickerOwnsTarget(trigger, panel, triggerTarget), true);
+  assert.equal(pickerOwnsTarget(trigger, panel, panelTarget), true);
+  assert.equal(pickerOwnsTarget(trigger, panel, otherControl), false);
+});
 
 test("hex validation accepts only complete six-digit colors", () => {
   assert.equal(normalizeHex("ABCDEF"), "#abcdef");

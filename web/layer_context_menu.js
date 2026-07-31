@@ -16,6 +16,7 @@ export function buildLayerContextActions({
   flipVertical,
   toggleWarp,
   toggleRotate,
+  toggleLock,
   exclude,
   reset,
 }) {
@@ -25,13 +26,14 @@ export function buildLayerContextActions({
     action("Send to Back", sendToBack, { disabled: index <= 0 }),
     action("Bring to Front", bringToFront, { disabled: index >= count - 1 }),
     { separator: true },
-    action("Flip H", flipHorizontal, { checked: placement.flip_horizontal === true }),
-    action("Flip V", flipVertical, { checked: placement.flip_vertical === true }),
-    action("Warp", toggleWarp, { checked: warpActive }),
-    action("Rotate", toggleRotate, { checked: rotateActive }),
+    action("Flip H", flipHorizontal, { checked: placement.flip_horizontal === true, disabled: placement.locked === true }),
+    action("Flip V", flipVertical, { checked: placement.flip_vertical === true, disabled: placement.locked === true }),
+    action("Warp", toggleWarp, { checked: warpActive, disabled: placement.locked === true }),
+    action("Rotate", toggleRotate, { checked: rotateActive, disabled: placement.locked === true }),
+    action(placement.locked === true ? "Unlock" : "Lock", toggleLock, { checked: placement.locked === true }),
     action("Exclude", exclude),
     { separator: true },
-    action("Reset", reset),
+    action("Reset", reset, { disabled: placement.locked === true }),
   ];
 }
 
