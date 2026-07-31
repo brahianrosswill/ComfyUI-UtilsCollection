@@ -30,6 +30,7 @@ EXPECTED_TOPICS = [
     "staged_workflow",
     "staged_face_workflow",
     "placement_editor",
+    "paint_layer",
     "mediapipe_face_composite",
 ]
 

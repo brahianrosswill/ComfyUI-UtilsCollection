@@ -1262,6 +1262,7 @@ class UC_CompositeNodesGuide(io.ComfyNode):
                         "staged_workflow",
                         "staged_face_workflow",
                         "placement_editor",
+                        "paint_layer",
                         "mediapipe_face_composite",
                     ],
                     default="node_catalog",
@@ -1356,6 +1357,18 @@ class UC_CompositeNodesGuide(io.ComfyNode):
                 "- Right-clicking the preview opens the layer context menu.\n"
                 "- Workspace Padding changes the visible and permitted off-canvas placement area.\n"
                 "- The layer list displays at most three and one-half rows before scrolling."
+            ),
+            "paint_layer": (
+                "## Native RGBA paint layer\n\n"
+                "Both staged compositors provide one background-sized Paint layer. It starts at the front of the back-to-front layer list and can be reordered or excluded like other layers. Its position controls normal occlusion; painting still targets the Paint layer when a foreground is above it.\n\n"
+                "- Enable `Paint` to suspend foreground selection, movement, resizing, rotation, and warping. Disable it to return to placement editing.\n"
+                "- Choose a circle or square brush, color, native-pixel radius, opacity, and hardness. Brush opacity controls the alpha written into the RGBA raster; the color selector intentionally has no second alpha control.\n"
+                "- The custom HSL selector accepts complete six-digit hex or RGB values, keeps recent colors, and can sample the clean rendered composition with `Pick from composition`. It opens beside the node instead of covering the composition view.\n"
+                "- Eraser removes only Paint-layer alpha. Undo and redo retain twenty completed paint operations; Clear is also undoable.\n"
+                "- Completed operations autosave losslessly under `input/clipspace`. Leaving Paint mode or queueing waits for the current upload, and upload failure blocks stale execution while preserving the local canvas.\n"
+                "- Copying a node shares its current raster until the copy is first edited, when a new asset ID is assigned. Exported workflows must include the referenced input PNG.\n"
+                "- A background-size change resizes the complete RGBA raster with premultiplied-alpha bilinear scaling before saving.\n"
+                "- Final outputs include Paint alpha in the combined mask and at the Paint layer's exact position in ordered layer masks and bounding boxes. Fully transparent paint is a no-op."
             ),
             "mediapipe_face_composite": (
                 "## MediaPipe Face Composite\n\n"
