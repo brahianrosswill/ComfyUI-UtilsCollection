@@ -1,5 +1,8 @@
 # Agent Instructions
 
+Read `AGENTS-LOCAL.md` when present. It contains repository-machine-specific
+operating rules and must remain local only; do not stage or commit it.
+
 Use `$comfyui-custom-node-development` for all development, testing, review, and packaging work in this repository.
 
 If the skill is unavailable, stop and tell the user that it must be installed before continuing.
