@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildOutputClosure, buildStagingPrompt } from "../web/staged_queue.js";
+import { buildOutputClosure, buildStagingPrompt, updatePromptNodeInputs } from "../web/staged_queue.js";
 
 test("staging prompt keeps only the target and recursive upstream closure", () => {
   const output = {
@@ -43,4 +43,14 @@ test("missing staging target fails clearly", () => {
     () => buildStagingPrompt({ output: {} }, "missing"),
     /prompt node missing is missing/,
   );
+});
+
+test("paint upload revisions replace placement data in the already-built prompt", () => {
+  const prompt = { output: { "3": { class_type: "Node", inputs: { placement_data: "old" } } } };
+  const updated = updatePromptNodeInputs(prompt, [
+    { nodeId: 3, inputs: { placement_data: "new" } },
+    { nodeId: 9, inputs: { placement_data: "ignored" } },
+  ]);
+  assert.equal(updated.output["3"].inputs.placement_data, "new");
+  assert.equal(prompt.output["3"].inputs.placement_data, "old");
 });

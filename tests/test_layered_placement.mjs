@@ -17,7 +17,30 @@ import {
   dragQuadCorner,
   isValidQuad,
   normalizeRotation,
+  PAINT_LAYER_KEY,
 } from "../web/placement_geometry.js";
+
+test("paint placement metadata round trips without changing paint-free workflows", () => {
+  const legacy = parsePlacementData('{"version":2,"layer_order":["foreground_0"],"layers":{}}');
+  assert.equal(legacy.paint_layer, undefined);
+  assert.equal(
+    serializePlacementData(legacy),
+    '{"version":2,"workspace_padding":0.5,"layer_order":["foreground_0"],"layers":{}}',
+  );
+  const parsed = parsePlacementData(JSON.stringify({
+    version: 3,
+    layer_order: ["foreground_0", PAINT_LAYER_KEY],
+    layers: {},
+    paint_layer: {
+      included: false, asset_id: "paint-id", owner_node_id: "12", revision: 4,
+      width: 640, height: 480,
+      asset: { filename: "paint.png", subfolder: "clipspace", type: "input" },
+    },
+  }));
+  assert.equal(parsed.paint_layer.asset.filename, "paint.png");
+  assert.equal(parsed.paint_layer.included, false);
+  assert.deepEqual(JSON.parse(serializePlacementData(parsed)).layer_order, ["foreground_0", PAINT_LAYER_KEY]);
+});
 
 test("corner rotation follows pointer angle without snapping", () => {
   const rotation = rotationFromPointer(

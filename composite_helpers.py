@@ -16,6 +16,8 @@ _RESIZE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
 
 _COMPOSITE_RESIZE_METHODS = ["auto", *_RESIZE_METHODS]
 
+_PAINT_LAYER_KEY = "__uc_paint__"
+
 _DEFAULT_LAYER_PLACEMENT = {
     "scale": 0.9,
     "long_axis_shift": 0.0,
@@ -307,7 +309,7 @@ def _parse_layer_payload(value):
         not isinstance(key, str) for key in layer_order
     ):
         raise ValueError(
-            "Layer placement data 'layer_order' must be an array of socket names."
+            "Layer placement data 'layer_order' must be an array of layer identifiers."
         )
     workspace_padding = value.get("workspace_padding", 0.5)
     if isinstance(workspace_padding, bool):
@@ -321,6 +323,52 @@ def _parse_layer_payload(value):
     if not math.isfinite(workspace_padding) or not 0.0 <= workspace_padding <= 1.0:
         raise ValueError("Layer placement workspace_padding must be between 0 and 1.")
     return version, layers, layer_order, workspace_padding
+
+
+def _parse_paint_layer(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        if value.strip() in _COMPOSITE_RESIZE_METHODS:
+            return None
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"Layer placement data is not valid JSON: {error.msg}."
+            ) from error
+    if not isinstance(value, dict):
+        raise ValueError("Layer placement data must be a JSON object.")
+    paint = value.get("paint_layer")
+    if paint is None:
+        return None
+    if not isinstance(paint, dict):
+        raise ValueError("Layer placement paint_layer must be an object.")
+    included = paint.get("included", True)
+    if not isinstance(included, bool):
+        raise ValueError("Layer placement paint_layer included must be Boolean.")
+    asset = paint.get("asset")
+    if asset is None:
+        return None
+    if not isinstance(asset, dict):
+        raise ValueError("Layer placement paint_layer asset must be an object.")
+    filename = asset.get("filename")
+    subfolder = asset.get("subfolder", "clipspace")
+    folder_type = asset.get("type", "input")
+    if not isinstance(filename, str) or not filename:
+        raise ValueError("Layer placement paint_layer asset filename is missing.")
+    if not isinstance(subfolder, str):
+        raise ValueError("Layer placement paint_layer asset subfolder must be text.")
+    if folder_type != "input":
+        raise ValueError("Layer placement paint_layer asset must use input storage.")
+    return {
+        "included": included,
+        "asset": {
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": "input",
+        },
+    }
 
 
 def _parse_layer_placements(value):

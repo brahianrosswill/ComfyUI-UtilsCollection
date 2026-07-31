@@ -8,6 +8,30 @@ export const DEFAULT_PLACEMENT = Object.freeze({
 export const LEGACY_DEFAULT_PLACEMENT = Object.freeze({ scale: 0.9, long_axis_shift: 0, short_axis_shift: 0 });
 export const DEFAULT_WORKSPACE_PADDING = 0.5;
 export const DEFAULT_FACE_CORNERS = Object.freeze([[-1, -1], [1, -1], [1, 1], [-1, 1]]);
+export const PAINT_LAYER_KEY = "__uc_paint__";
+
+export function normalizePaintLayer(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const asset = source.asset && typeof source.asset === "object"
+    ? {
+        filename: typeof source.asset.filename === "string" ? source.asset.filename : "",
+        subfolder: typeof source.asset.subfolder === "string" ? source.asset.subfolder : "clipspace",
+        type: source.asset.type === "input" ? "input" : "input",
+      }
+    : null;
+  const width = Math.max(0, Math.round(finite(source.width, 0)));
+  const height = Math.max(0, Math.round(finite(source.height, 0)));
+  const revision = Math.max(0, Math.round(finite(source.revision, 0)));
+  return {
+    included: source.included !== false,
+    asset_id: typeof source.asset_id === "string" ? source.asset_id : "",
+    owner_node_id: source.owner_node_id == null ? "" : String(source.owner_node_id),
+    revision,
+    width,
+    height,
+    ...(asset?.filename ? { asset } : {}),
+  };
+}
 
 const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 export const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
@@ -205,9 +229,17 @@ export function parsePlacementData(value) {
       workspace_padding: normalizeWorkspacePadding(data.workspace_padding),
       layer_order,
       layers,
+      ...(data.paint_layer && typeof data.paint_layer === "object"
+        ? { paint_layer: normalizePaintLayer(data.paint_layer) }
+        : {}),
     };
   } catch {
-    return { version: 2, workspace_padding: DEFAULT_WORKSPACE_PADDING, layer_order: [], layers: {} };
+    return {
+      version: 2,
+      workspace_padding: DEFAULT_WORKSPACE_PADDING,
+      layer_order: [],
+      layers: {},
+    };
   }
 }
 
@@ -216,6 +248,7 @@ export function serializePlacementData(data) {
   for (const key of Object.keys(data.layers || {}).sort(layerKeyCompare)) {
     layers[key] = normalizePlacement(data.layers[key], data.version ?? 2, key.includes("_face_"));
   }
+  const paintLayer = normalizePaintLayer(data.paint_layer);
   return JSON.stringify({
     version: data.version ?? 2,
     workspace_padding: normalizeWorkspacePadding(data.workspace_padding),
@@ -223,6 +256,7 @@ export function serializePlacementData(data) {
       ? [...new Set(data.layer_order.filter((key) => typeof key === "string"))]
       : [],
     layers,
+    ...(paintLayer.asset || paintLayer.asset_id ? { paint_layer: paintLayer } : {}),
   });
 }
 

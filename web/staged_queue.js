@@ -31,3 +31,16 @@ export function buildStagingPrompt(prompt, targetNodeId) {
     output: buildOutputClosure(prompt.output, targetNodeId, { execution_mode: "run_staging" }),
   };
 }
+
+export function updatePromptNodeInputs(prompt, updates) {
+  if (!prompt?.output || !updates?.length) return prompt;
+  const output = { ...prompt.output };
+  let changed = false;
+  for (const { nodeId, inputs } of updates) {
+    const id = String(nodeId);
+    if (!output[id]) continue;
+    output[id] = { ...output[id], inputs: { ...(output[id].inputs || {}), ...inputs } };
+    changed = true;
+  }
+  return changed ? { ...prompt, output } : prompt;
+}

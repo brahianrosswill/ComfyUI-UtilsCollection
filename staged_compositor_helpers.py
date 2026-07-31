@@ -1,20 +1,25 @@
 from collections import OrderedDict
 from collections.abc import MutableMapping
 import logging
+import os
 
+import folder_paths
+import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from comfy_api.latest import io
 
 from .composite_helpers import (
     _DEFAULT_LAYER_PLACEMENT,
     _DEFAULT_LAYER_PLACEMENT_V2,
-    _expand_mask,
+    _PAINT_LAYER_KEY,
     _feather_mask,
     _ordered_layer_keys,
     _ordered_single_foregrounds,
     _parse_layer_payload,
     _parse_layer_placements,
+    _parse_paint_layer,
     _placement_offsets,
     _refine_foreground_mask,
     _resize_composite_image,
@@ -25,6 +30,64 @@ from .composite_helpers import (
 
 
 _DEFAULT_CORNERS = ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
+
+
+def resize_paint_rgba(rgba, width, height):
+    """Resize straight RGBA through premultiplied alpha to avoid color fringes."""
+    if rgba.ndim != 4 or rgba.shape[0] != 1 or rgba.shape[-1] != 4:
+        raise ValueError("The staged paint asset must contain one RGBA image.")
+    if rgba.shape[1:3] == (height, width):
+        return rgba
+    alpha = rgba[..., 3:4].clamp(0.0, 1.0)
+    premultiplied = torch.cat((rgba[..., :3].clamp(0.0, 1.0) * alpha, alpha), dim=-1)
+    resized = F.interpolate(
+        premultiplied.movedim(-1, 1),
+        size=(int(height), int(width)),
+        mode="bilinear",
+        align_corners=False,
+    ).movedim(1, -1)
+    resized_alpha = resized[..., 3:4].clamp(0.0, 1.0)
+    resized_rgb = torch.where(
+        resized_alpha > 1e-8,
+        resized[..., :3] / resized_alpha.clamp_min(1e-8),
+        torch.zeros_like(resized[..., :3]),
+    ).clamp(0.0, 1.0)
+    return torch.cat((resized_rgb, resized_alpha), dim=-1)
+
+
+def load_staged_paint_rgba(paint, width, height, device, dtype):
+    asset = paint["asset"]
+    relative = os.path.join(asset["subfolder"], asset["filename"]).replace("\\", "/")
+    annotated = f"{relative} [input]"
+    if not folder_paths.exists_annotated_filepath(annotated):
+        raise ValueError("The staged paint PNG is missing from ComfyUI input storage.")
+    path = folder_paths.get_annotated_filepath(annotated)
+    try:
+        with Image.open(path) as image:
+            if image.format != "PNG" or int(getattr(image, "n_frames", 1)) != 1:
+                raise ValueError("The staged paint asset must be one RGBA PNG image.")
+            if image.mode != "RGBA":
+                raise ValueError(
+                    "The staged paint asset must preserve an RGBA channel."
+                )
+            pixels = np.asarray(image, dtype=np.float32).copy() / 255.0
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError("The staged paint PNG could not be decoded.") from error
+    rgba = torch.from_numpy(pixels).unsqueeze(0).to(device=device, dtype=dtype)
+    return resize_paint_rgba(rgba, width, height)
+
+
+def paint_alpha_bounds(alpha):
+    points = torch.nonzero(alpha > 0, as_tuple=False)
+    if points.numel() == 0:
+        return {"x": 0, "y": 0, "width": 0, "height": 0}
+    top = int(points[:, 0].min())
+    bottom = int(points[:, 0].max()) + 1
+    left = int(points[:, 1].min())
+    right = int(points[:, 1].max()) + 1
+    return {"x": left, "y": top, "width": right - left, "height": bottom - top}
 
 
 def _stored_tensor(tensor):
@@ -411,7 +474,14 @@ def _composite_staged_foregrounds(
         raise ValueError("Staged foreground data contains no layers.")
     placements = _parse_layer_placements(placement_data)
     placement_version, _, _, workspace_padding = _parse_layer_payload(placement_data)
+    paint = _parse_paint_layer(placement_data)
     layers_by_socket = {layer["socket"]: layer for layer in layers}
+    if paint is not None:
+        layers_by_socket[_PAINT_LAYER_KEY] = {
+            "socket": _PAINT_LAYER_KEY,
+            "is_paint": True,
+            "paint": paint,
+        }
     layers = [
         layers_by_socket[key]
         for key in _ordered_layer_keys(placement_data, layers_by_socket)
@@ -425,6 +495,28 @@ def _composite_staged_foregrounds(
 
     for layer in layers:
         key = layer["socket"]
+        if layer.get("is_paint"):
+            paint_rgba = load_staged_paint_rgba(
+                layer["paint"],
+                background_width,
+                background_height,
+                scene.device,
+                scene.dtype,
+            )
+            paint_alpha = paint_rgba[0, ..., 3]
+            included = layer["paint"]["included"]
+            layer_mask = paint_alpha if included else torch.zeros_like(paint_alpha)
+            layer_box = paint_alpha_bounds(layer_mask)
+            if included:
+                scene[0] = scene[0] * (1.0 - paint_alpha.unsqueeze(-1)) + paint_rgba[
+                    0, ..., :3
+                ] * paint_alpha.unsqueeze(-1)
+                combined_mask[0] = combined_mask[0] + paint_alpha * (
+                    1.0 - combined_mask[0]
+                )
+            layer_boxes.append(layer_box)
+            layer_masks.append(layer_mask)
+            continue
         crop = layer["image"]
         crop_mask = layer["mask"]
         preview_crop = crop

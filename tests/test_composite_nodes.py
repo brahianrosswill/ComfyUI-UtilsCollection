@@ -6,6 +6,7 @@ import types
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 
 CUSTOM_NODE_ROOT = pathlib.Path(__file__).parents[1]
@@ -31,6 +32,45 @@ try:
     from utils_collection_composite_test.helper_functions import resize_nchw
 finally:
     cli_args.cpu = prior_cpu
+
+
+def _paint_test_stage():
+    return {
+        "version": 1,
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.tensor([[[[1.0, 0.0, 0.0]]]]).expand(1, 4, 4, 3),
+                "mask": torch.ones(1, 4, 4),
+                "uses_embedded_alpha": True,
+            }
+        ],
+    }
+
+
+def _paint_placement(order, included=True):
+    return json.dumps(
+        {
+            "version": 3,
+            "workspace_padding": 0,
+            "layer_order": order,
+            "layers": {
+                "foreground_0": {
+                    "scale": 1,
+                    "center_x": 0.5,
+                    "center_y": 0.5,
+                }
+            },
+            "paint_layer": {
+                "included": included,
+                "asset": {
+                    "filename": "paint.png",
+                    "subfolder": "clipspace",
+                    "type": "input",
+                },
+            },
+        }
+    )
 
 
 def test_resize_mask_preserves_asymmetric_orientation():
@@ -862,6 +902,112 @@ def test_staged_layered_composite_rejects_missing_stage():
         )
 
 
+def test_paint_resize_uses_premultiplied_alpha_without_dark_fringe():
+    rgba = torch.tensor([[[[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 0.0]]]])
+    resized = staged_compositor_helpers.resize_paint_rgba(rgba, 3, 1)
+
+    assert resized.shape == (1, 1, 3, 4)
+    assert 0 < resized[0, 0, 1, 3] < 1
+    assert torch.allclose(resized[0, 0, 1, :3], torch.tensor([1.0, 0.0, 0.0]))
+
+
+def test_paint_loader_requires_a_single_rgba_png(tmp_path, monkeypatch):
+    path = tmp_path / "paint.png"
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(path)
+    monkeypatch.setattr(
+        staged_compositor_helpers.folder_paths,
+        "exists_annotated_filepath",
+        lambda annotated: annotated == "clipspace/paint.png [input]",
+    )
+    monkeypatch.setattr(
+        staged_compositor_helpers.folder_paths,
+        "get_annotated_filepath",
+        lambda annotated: str(path),
+    )
+    paint = {
+        "asset": {"filename": "paint.png", "subfolder": "clipspace", "type": "input"}
+    }
+
+    with pytest.raises(ValueError, match="preserve an RGBA channel"):
+        staged_compositor_helpers.load_staged_paint_rgba(
+            paint, 2, 2, torch.device("cpu"), torch.float32
+        )
+
+
+@pytest.mark.parametrize(
+    ("order", "expected_pixel"),
+    [
+        (["__uc_paint__", "foreground_0"], [1.0, 0.0, 0.0]),
+        (["foreground_0", "__uc_paint__"], [0.0, 1.0, 0.0]),
+    ],
+)
+def test_paint_composites_at_its_exact_layer_position(
+    monkeypatch, order, expected_pixel
+):
+    rgba = torch.zeros(1, 4, 4, 4)
+    rgba[0, 1, 1] = torch.tensor([0.0, 1.0, 0.0, 1.0])
+    monkeypatch.setattr(
+        staged_compositor_helpers,
+        "load_staged_paint_rgba",
+        lambda *args, **kwargs: rgba,
+    )
+
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 4, 4, 3),
+        _paint_test_stage(),
+        _paint_placement(order),
+        0,
+    )
+    image, combined, boxes, masks = output.result
+
+    assert torch.allclose(image[0, 1, 1], torch.tensor(expected_pixel))
+    assert combined[0, 1, 1] == 1
+    assert masks.shape == (2, 4, 4)
+    paint_index = order.index("__uc_paint__")
+    assert masks[paint_index, 1, 1] == 1
+    assert boxes[0][paint_index] == {"x": 1, "y": 1, "width": 1, "height": 1}
+
+
+def test_excluded_paint_keeps_ordered_empty_outputs_without_affecting_rgb(monkeypatch):
+    rgba = torch.ones(1, 4, 4, 4)
+    monkeypatch.setattr(
+        staged_compositor_helpers,
+        "load_staged_paint_rgba",
+        lambda *args, **kwargs: rgba,
+    )
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 4, 4, 3),
+        _paint_test_stage(),
+        _paint_placement(["foreground_0", "__uc_paint__"], included=False),
+        0,
+    )
+    image, _, boxes, masks = output.result
+
+    assert torch.allclose(image, torch.tensor([1.0, 0.0, 0.0]).expand_as(image))
+    assert masks[1].sum() == 0
+    assert boxes[0][1] == {"x": 0, "y": 0, "width": 0, "height": 0}
+
+
+def test_transparent_paint_is_an_rgb_and_mask_noop(monkeypatch):
+    monkeypatch.setattr(
+        staged_compositor_helpers,
+        "load_staged_paint_rgba",
+        lambda *args, **kwargs: torch.zeros(1, 4, 4, 4),
+    )
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 4, 4, 3),
+        _paint_test_stage(),
+        _paint_placement(["foreground_0", "__uc_paint__"]),
+        0,
+    )
+    image, combined, boxes, masks = output.result
+
+    assert torch.allclose(image, torch.tensor([1.0, 0.0, 0.0]).expand_as(image))
+    assert torch.all(combined == 1)
+    assert masks[1].sum() == 0
+    assert boxes[0][1] == {"x": 0, "y": 0, "width": 0, "height": 0}
+
+
 def test_staged_compositor_publishes_transparent_cutout_previews(monkeypatch):
     saved = []
 
@@ -1101,7 +1247,6 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
 def test_internal_background_removal_loader_selects_exact_files_and_caches(
     monkeypatch, tmp_path
 ):
-    import folder_paths
     from comfy import bg_removal_model
 
     loaded = []

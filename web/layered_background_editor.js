@@ -11,6 +11,7 @@ import {
   layerKeyCompare,
   moveRect,
   normalizePlacement,
+  PAINT_LAYER_KEY,
   normalizeWorkspacePadding,
   parsePlacementData,
   placementToRect,
@@ -21,10 +22,25 @@ import {
   stepPlacementValue,
 } from "./placement_geometry.js";
 import {
+  DEFAULT_BRUSH_SETTINGS,
+  normalizeBrushSettings,
+  PaintLayerCanvas,
+} from "./paint_brush.js";
+import { PaintColorPicker, rgbToHex } from "./paint_color_picker.js";
+import { uploadPaintCanvas } from "./paint_persistence.js";
+import {
+  BACKGROUND_PREVIEW_ALPHA,
+  editorWidgetHeight,
+  growNodeSize,
+  naturalEditorWidth,
+  previewHeight,
+  visibleLayerListHeight,
+} from "./staged_editor_layout.js";
+import {
   buildLayerContextActions,
   LayerContextMenu,
 } from "./layer_context_menu.js";
-import { buildStagingPrompt } from "./staged_queue.js";
+import { buildStagingPrompt, updatePromptNodeInputs } from "./staged_queue.js";
 import {
   backgroundModelAppearance,
   normalizeBackgroundModel,
@@ -44,9 +60,17 @@ const COMPOSITE_RESIZE_METHODS = new Set(["auto", "nearest-exact", "bilinear", "
 
 const originalApiQueuePrompt = api.queuePrompt;
 api.queuePrompt = async function(index, prompt, ...args) {
+  const relevantEditors = prompt?.output
+    ? [...editors].filter((editor) => prompt.output[String(editor.node.id)])
+    : [...editors];
+  await Promise.all(relevantEditors.map((editor) => editor.flushPaint()));
+  const currentPrompt = updatePromptNodeInputs(prompt, relevantEditors.map((editor) => ({
+    nodeId: editor.node.id,
+    inputs: { placement_data: editor.placementWidget.value },
+  })));
   const queuedPrompt = activeStagingQueue
-    ? buildStagingPrompt(prompt, activeStagingQueue.nodeId)
-    : prompt;
+    ? buildStagingPrompt(currentPrompt, activeStagingQueue.nodeId)
+    : currentPrompt;
   return originalApiQueuePrompt.call(this, index, queuedPrompt, ...args);
 };
 
@@ -110,6 +134,22 @@ class LayeredPlacementEditor {
     this.pendingPlacement = null;
     this.gesture = null;
     this.keyTransaction = false;
+    this.paintLayer = this.isStagedComposite() ? new PaintLayerCanvas() : null;
+    this.paintMode = false;
+    this.paintEyedropper = false;
+    this.paintDirty = false;
+    this.paintChangeGeneration = 0;
+    this.paintSaveTimer = 0;
+    this.paintSavePromise = null;
+    this.paintAssetSignature = null;
+    this.paintAssetGeneration = 0;
+    this.paintPointerId = null;
+    this.paintCursor = null;
+    this.layoutFrame = 0;
+    this.layoutMinHeight = 0;
+    this.layoutSignature = "";
+    this.paintSettings = this.loadPaintSettings();
+    this.sampleCanvas = document.createElement("canvas");
     this.layerBuffer = document.createElement("canvas");
     this.layerOutside = document.createElement("canvas");
     this.layerScratch = document.createElement("canvas");
@@ -138,8 +178,9 @@ class LayeredPlacementEditor {
     });
     this.stage = element("div", {
       position: "relative",
-      minHeight: "260px",
-      flex: "1 0 260px",
+      minHeight: "0",
+      flex: "0 0 auto",
+      aspectRatio: "16 / 9",
       overflow: "hidden",
       border: "1px solid rgba(255,255,255,.18)",
       borderRadius: "5px",
@@ -261,7 +302,6 @@ class LayeredPlacementEditor {
     this.layerList = element("div", {
       display: "flex",
       flex: "0 1 auto",
-      maxHeight: "150px",
       flexDirection: "column",
       gap: "2px",
       overflowY: "auto",
@@ -273,7 +313,10 @@ class LayeredPlacementEditor {
     });
     this.layerListGroup.append(layerCaption, this.layerList);
     this.rowControls = new Map();
-    this.root.append(this.stage, this.layerListGroup);
+    this.paintToolbar = this.paintLayer ? this.createPaintToolbar() : null;
+    this.root.append(this.stage);
+    if (this.paintToolbar) this.root.append(this.paintToolbar);
+    this.root.append(this.layerListGroup);
 
     this.paddingSlider.addEventListener("pointerdown", () => this.beginPaddingEdit());
     this.paddingSlider.addEventListener("input", () => this.updatePadding(this.paddingSlider.value));
@@ -297,9 +340,95 @@ class LayeredPlacementEditor {
     this.canvas.addEventListener("keydown", (event) => this.keyDown(event));
     this.canvas.addEventListener("keyup", () => this.finishKeyTransaction());
     this.canvas.addEventListener("blur", () => this.finishKeyTransaction());
-    this.resizeObserver = new ResizeObserver(() => this.requestDraw());
+    this.resizeObserver = new ResizeObserver(() => {
+      this.requestDraw();
+      this.scheduleLayout();
+    });
     this.resizeObserver.observe(this.stage);
+    if (this.paintToolbar) this.resizeObserver.observe(this.paintToolbar);
+    this.resizeObserver.observe(this.layerList);
     this.syncModelButton();
+  }
+
+  loadPaintSettings() {
+    try {
+      return normalizeBrushSettings(JSON.parse(localStorage.getItem("uc_staged_paint_brush_settings") || "{}"));
+    } catch {
+      return { ...DEFAULT_BRUSH_SETTINGS };
+    }
+  }
+
+  savePaintSettings() {
+    try { localStorage.setItem("uc_staged_paint_brush_settings", JSON.stringify(this.paintSettings)); } catch {}
+  }
+
+  createPaintToolbar() {
+    const root = element("div", {
+      display: "flex", flexDirection: "row", flexWrap: "nowrap", alignItems: "center", gap: "5px", padding: "5px",
+      border: "1px solid rgba(255,255,255,.16)", borderRadius: "4px", background: "rgba(0,0,0,.18)",
+    });
+    const action = (text, title, callback) => {
+      const button = element("button", { height: "28px", padding: "2px 7px", color: "inherit", cursor: "pointer", background: "rgba(0,0,0,.25)", border: "1px solid rgba(255,255,255,.25)", borderRadius: "4px" });
+      button.type = "button"; button.textContent = text; button.title = title;
+      button.addEventListener("click", (event) => { event.stopPropagation(); callback(); });
+      return button;
+    };
+    this.paintModeButton = action("Paint", "Toggle exclusive paint interaction", () => this.togglePaintMode());
+    this.paintShapeButton = action(this.paintSettings.shape === "circle" ? "Circle" : "Square", "Toggle circle or square brush", () => {
+      this.paintSettings.shape = this.paintSettings.shape === "circle" ? "square" : "circle";
+      this.paintShapeButton.textContent = this.paintSettings.shape === "circle" ? "Circle" : "Square";
+      this.savePaintSettings();
+    });
+    this.paintEraseButton = action("Eraser", "Erase only the RGBA paint layer", () => {
+      this.paintSettings.erasing = !this.paintSettings.erasing;
+      this.syncPaintControls(); this.savePaintSettings();
+    });
+    this.paintUndoButton = action("Undo", "Undo the previous paint operation", () => this.paintHistory(-1));
+    this.paintRedoButton = action("Redo", "Redo the next paint operation", () => this.paintHistory(1));
+    this.paintClearButton = action("Clear", "Clear the RGBA paint layer", () => {
+      if (this.paintLayer.clear()) this.paintChanged();
+    });
+    this.paintColorPicker = new PaintColorPicker({
+      color: this.paintSettings.color,
+      avoidElement: this.root,
+      onChange: (color) => { this.paintSettings.color = color; this.savePaintSettings(); },
+      onEyedropper: () => { this.paintEyedropper = true; if (!this.paintMode) this.togglePaintMode(true); this.syncPaintControls(); },
+    });
+    const numeric = (label, field, minimum, maximum, step) => {
+      const wrapper = element("label", { display: "inline-flex", alignItems: "center", gap: "3px", minWidth: "0", opacity: ".9" });
+      const caption = document.createElement("span"); caption.textContent = label;
+      const input = element("input", { width: "46px", minWidth: "0" }); input.type = "number";
+      input.min = String(minimum); input.max = String(maximum); input.step = String(step); input.value = String(this.paintSettings[field]);
+      input.addEventListener("change", () => {
+        this.paintSettings = normalizeBrushSettings({ ...this.paintSettings, [field]: Number(input.value) });
+        input.value = String(this.paintSettings[field]); this.savePaintSettings();
+      });
+      wrapper.append(caption, input); return { wrapper, input };
+    };
+    this.paintSizeControl = numeric("Size", "size", 1, 250, 1);
+    this.paintOpacityControl = numeric("Opacity", "opacity", 0, 1, 0.01);
+    this.paintHardnessControl = numeric("Hard", "hardness", 0, 1, 0.01);
+    this.paintSaveStatus = element("span", { minWidth: "44px", opacity: ".7" });
+    root.append(
+      this.paintModeButton, this.paintColorPicker.root, this.paintShapeButton,
+      this.paintSizeControl.wrapper, this.paintOpacityControl.wrapper, this.paintHardnessControl.wrapper,
+      this.paintEraseButton, this.paintUndoButton, this.paintRedoButton,
+      this.paintClearButton, this.paintSaveStatus,
+    );
+    this.syncPaintControls();
+    return root;
+  }
+
+  syncPaintControls() {
+    if (!this.paintLayer) return;
+    this.paintModeButton?.setAttribute("aria-pressed", String(this.paintMode));
+    if (this.paintModeButton) this.paintModeButton.style.background = this.paintMode ? "rgba(64,180,255,.30)" : "rgba(0,0,0,.25)";
+    this.paintEraseButton?.setAttribute("aria-pressed", String(this.paintSettings.erasing));
+    if (this.paintEraseButton) this.paintEraseButton.style.background = this.paintSettings.erasing ? "rgba(255,165,64,.30)" : "rgba(0,0,0,.25)";
+    if (this.paintUndoButton) this.paintUndoButton.disabled = !this.paintLayer.history.canUndo;
+    if (this.paintRedoButton) this.paintRedoButton.disabled = !this.paintLayer.history.canRedo;
+    if (this.paintSaveStatus) this.paintSaveStatus.textContent = this.paintDirty ? "Unsaved" : this.paintSavePromise ? "Saving…" : "Saved";
+    this.canvas.style.cursor = this.paintEyedropper ? "crosshair" : this.paintMode ? "none" : "default";
   }
 
   installWidget() {
@@ -312,22 +441,84 @@ class LayeredPlacementEditor {
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => 358 + Math.min(Math.max(this.connectedLayers().length - 1, 0), 2.5) * 52,
+      getMinHeight: () => this.layoutMinHeight,
     });
+    this.editorWidget = widget;
     widget.serialize = false;
-    this.ensureSize();
+    this.scheduleLayout();
   }
 
-  ensureSize() {
-    requestAnimationFrame(() => {
-      if (this.disposed) return;
-      const computed = this.node.computeSize?.() || this.node.size;
-      this.node.setSize?.([
-        Math.max(440, this.node.size?.[0] || 0),
-        Math.max(computed?.[1] || 0, this.node.size?.[1] || 0),
-      ]);
-      this.node.graph?.setDirtyCanvas?.(true, true);
+  scheduleLayout() {
+    if (this.layoutFrame || this.disposed) return;
+    this.layoutFrame = requestAnimationFrame(() => {
+      this.layoutFrame = 0;
+      this.updateLayout();
     });
+  }
+
+  stylePixels(target, names) {
+    const style = getComputedStyle(target);
+    return names.reduce((total, name) => total + (Number.parseFloat(style[name]) || 0), 0);
+  }
+
+  updateLayerListHeight() {
+    const rows = [...this.layerList.children];
+    const style = getComputedStyle(this.layerList);
+    const gap = Number.parseFloat(style.rowGap || style.gap) || 0;
+    const chrome = this.stylePixels(this.layerList, ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"]);
+    this.layerList.style.maxHeight = `${visibleLayerListHeight(rows.map((row) => row.offsetHeight), gap, chrome)}px`;
+  }
+
+  stageOverlayWidths() {
+    const inset = (target, property) => target ? (Number.parseFloat(getComputedStyle(target)[property]) || 0) : 0;
+    const gap = Number.parseFloat(getComputedStyle(this.root).gap) || 0;
+    const stageChrome = this.stylePixels(this.stage, ["borderLeftWidth", "borderRightWidth"]);
+    const top = (this.modelButton?.offsetWidth || 0) + (this.stagingButton?.offsetWidth || 0)
+      + inset(this.modelButton, "left") + inset(this.stagingButton, "right") + gap + stageChrome;
+    const bottom = (this.status?.offsetWidth || 0) + (this.paddingOverlay?.scrollWidth || 0)
+      + inset(this.status, "left") + inset(this.paddingOverlay, "right") + gap + stageChrome;
+    return [top, bottom];
+  }
+
+  updateLayout() {
+    if (this.disposed || !this.root.isConnected) return;
+    this.updateLayerListHeight();
+    const rootStyle = getComputedStyle(this.root);
+    const rootHorizontalChrome = this.stylePixels(this.root, ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"]);
+    const widgetMargins = (this.editorWidget?.margin || 0) * 2;
+    const computed = this.node.computeSize?.() || this.node.size || [0, 0];
+    const requiredWidth = naturalEditorWidth({
+      coreWidth: computed[0],
+      toolbarWidth: this.paintToolbar?.scrollWidth || 0,
+      rowWidths: [...this.layerList.children].map((row) => row.scrollWidth),
+      overlayWidths: this.stageOverlayWidths(),
+      chromeWidth: rootHorizontalChrome + widgetMargins,
+    });
+    const nodeWidth = Math.max(requiredWidth, this.node.size?.[0] || 0);
+    const stageWidth = Math.max(0, nodeWidth - rootHorizontalChrome - widgetMargins);
+    const dimensions = this.dimensions();
+    const stageHeight = previewHeight(stageWidth, dimensions?.width, dimensions?.height);
+    this.stage.style.height = `${stageHeight}px`;
+    this.stage.style.aspectRatio = dimensions ? `${dimensions.width} / ${dimensions.height}` : "16 / 9";
+
+    const rootVerticalChrome = this.stylePixels(this.root, ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"]);
+    const gap = Number.parseFloat(rootStyle.rowGap || rootStyle.gap) || 0;
+    const sectionCount = 2 + (this.paintToolbar ? 1 : 0);
+    const minimumHeight = editorWidgetHeight({
+      stageHeight,
+      toolbarHeight: this.paintToolbar?.offsetHeight || 0,
+      layerGroupHeight: this.layerListGroup.offsetHeight,
+      chromeHeight: rootVerticalChrome,
+      gaps: Math.max(0, sectionCount - 1) * gap,
+    });
+    this.layoutMinHeight = minimumHeight;
+    const requiredNode = this.node.computeSize?.() || [requiredWidth, minimumHeight];
+    const next = growNodeSize(this.node.size, [requiredWidth, requiredNode[1]]);
+    const signature = `${next[0]}:${next[1]}:${minimumHeight}:${stageHeight}`;
+    if (signature === this.layoutSignature) return;
+    this.layoutSignature = signature;
+    if (next[0] !== this.node.size?.[0] || next[1] !== this.node.size?.[1]) this.node.setSize?.(next);
+    this.node.graph?.setDirtyCanvas?.(true, true);
   }
 
   wrapNodeLifecycle() {
@@ -359,6 +550,134 @@ class LayeredPlacementEditor {
       .map((layer) => layer.socket);
     if (direct.length) return this.orderLayers([...direct, ...detectedFaces]);
     return this.orderLayers((this.metadata?.layers || []).map((layer) => layer.socket));
+  }
+
+  compositionLayers() {
+    const foregrounds = this.connectedLayers();
+    if (!this.paintLayer) return foregrounds;
+    const available = [...foregrounds, PAINT_LAYER_KEY];
+    const availableSet = new Set(available);
+    const requested = (this.data.layer_order || []).filter((key) => availableSet.has(key));
+    for (const key of foregrounds) if (!requested.includes(key)) requested.push(key);
+    if (!requested.includes(PAINT_LAYER_KEY)) requested.push(PAINT_LAYER_KEY);
+    return requested;
+  }
+
+  persistPlacement() {
+    this.placementWidget.value = serializePlacementData(this.data);
+    this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
+    this.node.graph?.setDirtyCanvas?.(true, true);
+  }
+
+  ensurePaintOrdered() {
+    if (!this.paintLayer || this.data.layer_order.includes(PAINT_LAYER_KEY)) return;
+    this.data.layer_order = this.compositionLayers();
+    this.persistPlacement();
+  }
+
+  togglePaintMode(force) {
+    if (!this.paintLayer) return;
+    const enabling = force === true || (force !== false && !this.paintMode);
+    if (enabling) {
+      const dimensions = this.dimensions();
+      if (!dimensions) return;
+      this.syncPaintCanvas();
+      this.ensurePaintOrdered();
+      this.paintMode = true;
+      this.selected = PAINT_LAYER_KEY;
+      this.rotateLayer = null;
+      this.warpLayer = null;
+    } else {
+      if (this.paintPointerId != null) {
+        const pointerId = this.paintPointerId;
+        const changed = this.paintLayer.end(false);
+        if (this.canvas.hasPointerCapture?.(pointerId)) this.canvas.releasePointerCapture(pointerId);
+        this.paintPointerId = null;
+        if (changed) this.paintChanged();
+      }
+      this.paintMode = false;
+      this.paintEyedropper = false;
+      void this.flushPaint().catch(() => {});
+    }
+    this.layerListSignature = null;
+    this.syncLayerList(this.compositionLayers());
+    this.syncPaintControls();
+    this.requestDraw();
+  }
+
+  paintHistory(direction) {
+    const changed = direction < 0 ? this.paintLayer.undo() : this.paintLayer.redo();
+    if (changed) this.paintChanged();
+  }
+
+  paintChanged() {
+    this.ensurePaintOrdered();
+    this.paintDirty = true;
+    this.paintChangeGeneration++;
+    if (this.paintSaveTimer) clearTimeout(this.paintSaveTimer);
+    this.paintSaveTimer = window.setTimeout(() => {
+      this.paintSaveTimer = 0;
+      void this.flushPaint().catch(() => {});
+    }, 450);
+    this.syncPaintControls();
+    this.requestDraw();
+  }
+
+  async flushPaint() {
+    if (this.paintLayer && this.paintPointerId != null) {
+      const pointerId = this.paintPointerId;
+      const changed = this.paintLayer.end(false);
+      if (this.canvas.hasPointerCapture?.(pointerId)) this.canvas.releasePointerCapture(pointerId);
+      this.paintPointerId = null;
+      if (changed) this.paintChanged();
+    }
+    if (!this.paintLayer || !this.paintDirty) return this.paintSavePromise;
+    if (this.paintSaveTimer) { clearTimeout(this.paintSaveTimer); this.paintSaveTimer = 0; }
+    if (this.paintSavePromise) await this.paintSavePromise;
+    if (!this.paintDirty) return;
+    this.paintSaveStatus.textContent = "Saving…";
+    const savingGeneration = this.paintChangeGeneration;
+    this.paintSavePromise = uploadPaintCanvas(
+      api, this.paintLayer.canvas, this.data.paint_layer, this.node.id,
+    ).then((paint) => {
+      this.data.paint_layer = paint;
+      this.paintAssetSignature = JSON.stringify(paint.asset);
+      if (savingGeneration === this.paintChangeGeneration) this.paintDirty = false;
+      this.persistPlacement();
+      this.paintSaveStatus.textContent = "Saved";
+    }).catch((error) => {
+      this.paintDirty = true;
+      this.paintSaveStatus.textContent = "Save failed";
+      this.status.textContent = error?.message || String(error);
+      this.status.hidden = false;
+      throw error;
+    }).finally(() => {
+      this.paintSavePromise = null;
+      this.syncPaintControls();
+    });
+    return this.paintSavePromise;
+  }
+
+  syncPaintCanvas() {
+    if (!this.paintLayer) return;
+    const dimensions = this.dimensions();
+    if (!dimensions) return;
+    const asset = this.data.paint_layer?.asset;
+    const signature = asset?.filename ? JSON.stringify(asset) : null;
+    if (signature && signature !== this.paintAssetSignature) {
+      this.paintAssetSignature = signature;
+      const generation = ++this.paintAssetGeneration;
+      const url = descriptorUrl(asset);
+      this.loadImage(url, (image) => {
+        if (generation !== this.paintAssetGeneration) return;
+        this.paintLayer.load(image, dimensions.width, dimensions.height);
+        this.syncPaintControls();
+        this.requestDraw();
+      }, () => generation === this.paintAssetGeneration);
+      return;
+    }
+    const resized = this.paintLayer.resize(dimensions.width, dimensions.height);
+    if (resized && signature) this.paintChanged();
   }
 
   orderLayers(keys) {
@@ -404,12 +723,13 @@ class LayeredPlacementEditor {
 
   refreshSources(force = false) {
     if (this.disposed) return;
-    const layers = this.connectedLayers();
-    if (!this.selected || !layers.includes(this.selected)) this.selected = layers[0] || null;
+    const foregroundLayers = this.connectedLayers();
+    const layers = this.compositionLayers();
+    if (!this.selected || !layers.includes(this.selected)) this.selected = foregroundLayers[0] || (this.paintLayer ? PAINT_LAYER_KEY : null);
     this.syncLayerList(layers);
     if (this.lastLayerCount !== layers.length) {
       this.lastLayerCount = layers.length;
-      this.ensureSize();
+      this.scheduleLayout();
     }
     const signature = this.semanticSignature();
     if (this.metadataSignature && signature !== this.metadataSignature && !this.isStagedComposite()) {
@@ -419,7 +739,8 @@ class LayeredPlacementEditor {
       this.metadataGeneration++;
     }
     this.resolveBackground(force);
-    this.resolvePreliminaryLayers(layers, force);
+    this.resolvePreliminaryLayers(foregroundLayers, force);
+    this.syncPaintCanvas();
     this.syncNumericControls();
     this.requestDraw();
   }
@@ -504,52 +825,58 @@ class LayeredPlacementEditor {
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
       });
-      name.textContent = key.replace(/^foreground_/, "").replace("_face_", "_f_");
+      name.textContent = key === PAINT_LAYER_KEY ? "Paint" : key.replace(/^foreground_/, "").replace("_face_", "_f_");
       name.title = key;
       const position = element("span", { flex: "0 0 auto", opacity: ".65", fontSize: "11px" });
       position.textContent = index === 0 ? "back" : index === layers.length - 1 ? "front" : String(index + 1);
       const controls = element("div", {
         display: "flex",
-        flex: "1 1 auto",
-        minWidth: "0",
+        flex: "0 0 auto",
         flexWrap: "nowrap",
         gap: "3px",
         alignItems: "center",
-        overflowX: "auto",
-        overflowY: "hidden",
+        overflow: "visible",
       });
       const numericInputs = {};
-      for (const [field, label, tooltip] of [
-        ["scale", "Scale", "Foreground size relative to the background"],
-        ["center_x", "X", "Horizontal center divided by background width"],
-        ["center_y", "Y", "Vertical center divided by background height"],
-      ]) {
-        const numeric = this.createLayerNumericControl(key, field, label, tooltip);
-        numericInputs[field] = numeric.input;
-        controls.append(numeric.root);
+      const transformButtons = [];
+      if (key === PAINT_LAYER_KEY) {
+        const paint = this.createLayerAction("Paint", "Toggle exclusive paint interaction", () => this.togglePaintMode());
+        const include = this.createLayerAction("Incl", "Include or exclude the paint layer", () => this.togglePaintIncluded());
+        controls.append(paint, include);
+        this.rowControls.set(key, { inputs: numericInputs, include, paint, row });
+      } else {
+        for (const [field, label, tooltip] of [
+          ["scale", "Scale", "Foreground size relative to the background"],
+          ["center_x", "X", "Horizontal center divided by background width"],
+          ["center_y", "Y", "Vertical center divided by background height"],
+        ]) {
+          const numeric = this.createLayerNumericControl(key, field, label, tooltip);
+          numericInputs[field] = numeric.input;
+          transformButtons.push(numeric.decrement, numeric.increment);
+          controls.append(numeric.root);
+        }
+        const flip = this.createLayerAction("Flip H", "Mirror this foreground horizontally", () => this.toggleHorizontalFlip(key));
+        const flipVertical = this.createLayerAction("Flip V", "Mirror this foreground vertically", () => this.toggleVerticalFlip(key));
+        const reset = this.createLayerAction("Reset", "Reset this foreground placement", () => this.resetLayer(key));
+        transformButtons.push(flip, flipVertical, reset);
+        controls.append(flip, flipVertical, reset);
+        const rotation = this.createLayerNumericControl(key, "rotation", "Rot°", "Layer rotation in degrees");
+        rotation.decrement.title = "Rotate left one degree";
+        rotation.increment.title = "Rotate right one degree";
+        rotation.decrement.addEventListener("click", (event) => {
+          event.stopImmediatePropagation(); this.stepLayerRotation(key, -1);
+        }, true);
+        rotation.increment.addEventListener("click", (event) => {
+          event.stopImmediatePropagation(); this.stepLayerRotation(key, 1);
+        }, true);
+        numericInputs.rotation = rotation.input;
+        transformButtons.push(rotation.decrement, rotation.increment);
+        const warp = this.createLayerAction("Warp", "Toggle four-corner warp editing", () => this.toggleWarp(key));
+        transformButtons.push(warp);
+        const include = this.createLayerAction("Incl", "Include or exclude this layer", () => this.toggleLayerIncluded(key));
+        controls.append(rotation.root, warp, include);
+        this.rowControls.set(key, { inputs: numericInputs, transformButtons, flip, flipVertical, reset, include, warp, row });
       }
-      const flip = this.createLayerAction("Flip H", "Mirror this foreground horizontally", () => this.toggleHorizontalFlip(key));
-      const flipVertical = this.createLayerAction("Flip V", "Mirror this foreground vertically", () => this.toggleVerticalFlip(key));
-      const reset = this.createLayerAction("Reset", "Reset this foreground placement", () => this.resetLayer(key));
-      controls.append(flip, flipVertical, reset);
-      const rotation = this.createLayerNumericControl(key, "rotation", "Rot°", "Layer rotation in degrees");
-      rotation.decrement.title = "Rotate left one degree";
-      rotation.increment.title = "Rotate right one degree";
-      rotation.decrement.addEventListener("click", (event) => {
-        event.stopImmediatePropagation(); this.stepLayerRotation(key, -1);
-      }, true);
-      rotation.increment.addEventListener("click", (event) => {
-        event.stopImmediatePropagation(); this.stepLayerRotation(key, 1);
-      }, true);
-      numericInputs.rotation = rotation.input;
-      const warp = this.createLayerAction(
-        "Warp",
-        "Toggle four-corner warp editing",
-        () => this.toggleWarp(key),
-      );
-      const include = this.createLayerAction("Incl", "Include or exclude this layer", () => this.toggleLayerIncluded(key));
-      controls.append(rotation.root, warp, include);
-      this.rowControls.set(key, { inputs: numericInputs, flip, flipVertical, reset, include, warp, row });
       row.append(grip, reorderButtons, name, position, controls);
       row.addEventListener("click", () => this.selectLayer(key));
       grip.addEventListener("dragstart", (event) => {
@@ -581,6 +908,7 @@ class LayeredPlacementEditor {
       return row;
     }));
     this.syncNumericControls();
+    this.scheduleLayout();
   }
 
   syncModelButton() {
@@ -733,16 +1061,19 @@ class LayeredPlacementEditor {
     if (image) {
       this.backgroundGeneration++;
       this.backgroundImage = image;
+      this.scheduleLayout();
       this.requestDraw();
     } else if (source) {
       const generation = ++this.backgroundGeneration;
       this.loadImage(source, (loaded) => {
         this.backgroundImage = loaded;
+        this.scheduleLayout();
         this.requestDraw();
       }, () => generation === this.backgroundGeneration);
     } else {
       this.backgroundGeneration++;
       this.backgroundImage = null;
+      this.scheduleLayout();
     }
   }
 
@@ -864,6 +1195,7 @@ class LayeredPlacementEditor {
     }
     this.backgroundSource = null;
     this.resolveBackground(true);
+    this.scheduleLayout();
     this.requestDraw();
   }
 
@@ -922,6 +1254,7 @@ class LayeredPlacementEditor {
     let right = dimensions.width + basePaddingX;
     let bottom = dimensions.height + basePaddingY;
     for (const key of layers) {
+      if (key === PAINT_LAYER_KEY) continue;
       const rect = this.rectFor(key, dimensions);
       left = Math.min(left, rect.x);
       top = Math.min(top, rect.y);
@@ -966,7 +1299,8 @@ class LayeredPlacementEditor {
     context.fillStyle = "#17191d";
     context.fillRect(0, 0, width, height);
     const dimensions = this.dimensions();
-    const layers = this.connectedLayers();
+    const foregroundLayers = this.connectedLayers();
+    const layers = this.compositionLayers();
     if (!dimensions || !this.backgroundImage) {
       this.view = null;
       this.status.textContent = this.inputOrigin("background")
@@ -975,25 +1309,27 @@ class LayeredPlacementEditor {
       this.status.hidden = false;
       return;
     }
-    const visibleLayers = layers.filter(
-      (key) => this.layerPlacement(key).included !== false,
-    );
+    const visibleLayers = layers.filter((key) => key === PAINT_LAYER_KEY
+      ? this.data.paint_layer?.included !== false
+      : this.layerPlacement(key).included !== false);
     this.view = this.gesture?.view
       || this.viewFor(width, height, dimensions, visibleLayers);
-    context.globalAlpha = 0.72;
+    context.globalAlpha = BACKGROUND_PREVIEW_ALPHA;
     context.drawImage(this.backgroundImage, this.view.x, this.view.y, this.view.width, this.view.height);
     context.globalAlpha = 1;
     this.drawLayers(context, visibleLayers, dimensions, width, height, dpr);
+    this.updateSampleCanvas(visibleLayers, dimensions, width, height, dpr);
     context.lineWidth = 2;
     context.strokeStyle = "rgba(255,255,255,.65)";
     context.strokeRect(this.view.x, this.view.y, this.view.width, this.view.height);
     if (
-      this.selected
+      this.selected && this.selected !== PAINT_LAYER_KEY && !this.paintMode
       && this.layerPlacement(this.selected).included !== false
     ) {
       this.drawHandles(context, this.selected, dimensions);
     }
-    const pending = layers.filter((key) => !this.layerMetadata(key)).length;
+    if (this.paintMode && this.paintCursor) this.drawPaintCursor(context);
+    const pending = foregroundLayers.filter((key) => !this.layerMetadata(key)).length;
     if (this.isStagedComposite() && this.modelSelectionStale) {
       this.status.textContent = "Removal model changed • use Run Staging to refresh previews";
     } else if (this.isStagedComposite() && !layers.length) {
@@ -1012,7 +1348,41 @@ class LayeredPlacementEditor {
   }
 
   rectFor(key, dimensions) {
+    if (key === PAINT_LAYER_KEY) {
+      return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+    }
     return placementToRect(dimensions.width, dimensions.height, this.layerAspect(key), this.layerPlacement(key));
+  }
+
+  updateSampleCanvas(layers, dimensions, width, height, dpr) {
+    const pixelWidth = Math.round(width * dpr), pixelHeight = Math.round(height * dpr);
+    if (this.sampleCanvas.width !== pixelWidth || this.sampleCanvas.height !== pixelHeight) {
+      this.sampleCanvas.width = pixelWidth;
+      this.sampleCanvas.height = pixelHeight;
+    }
+    const context = this.sampleCanvas.getContext("2d", { willReadFrequently: true });
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, width, height);
+    context.drawImage(this.backgroundImage, this.view.x, this.view.y, this.view.width, this.view.height);
+    this.drawLayers(context, layers, dimensions, width, height, dpr, false);
+  }
+
+  drawPaintCursor(context) {
+    const radius = this.paintSettings.size * this.view.scale;
+    context.save();
+    context.beginPath();
+    if (this.paintSettings.shape === "square") {
+      context.rect(this.paintCursor.x - radius, this.paintCursor.y - radius, radius * 2, radius * 2);
+    } else {
+      context.arc(this.paintCursor.x, this.paintCursor.y, radius, 0, Math.PI * 2);
+    }
+    context.lineWidth = 1;
+    context.strokeStyle = "rgba(0,0,0,.9)";
+    context.stroke();
+    context.setLineDash([3, 3]);
+    context.strokeStyle = "rgba(255,255,255,.95)";
+    context.stroke();
+    context.restore();
   }
 
   toCanvasRect(rect) {
@@ -1024,7 +1394,7 @@ class LayeredPlacementEditor {
     };
   }
 
-  drawLayers(context, layers, dimensions, width, height, dpr) {
+  drawLayers(context, layers, dimensions, width, height, dpr, showOverlays = true) {
     const pixelWidth = Math.round(width * dpr), pixelHeight = Math.round(height * dpr);
     for (const canvas of [this.layerBuffer, this.layerOutside, this.layerScratch, this.layerCoverage]) {
       if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
@@ -1070,12 +1440,18 @@ class LayeredPlacementEditor {
       context.restore();
       coverage.globalCompositeOperation = "source-over";
       coverage.drawImage(this.layerBuffer, 0, 0);
-      this.drawLayer(context, key, dimensions, "overlay");
+      if (showOverlays) this.drawLayer(context, key, dimensions, "overlay");
     }
   }
 
   drawLayer(context, key, dimensions, mode = "all") {
     const rect = this.toCanvasRect(this.rectFor(key, dimensions));
+    if (key === PAINT_LAYER_KEY) {
+      if (mode !== "overlay" && this.data.paint_layer?.included !== false) {
+        this.paintLayer.draw(context, rect.x, rect.y, rect.width, rect.height);
+      }
+      return;
+    }
     const preview = this.cutouts.get(key) || this.preliminaryLayers.get(key);
     const placement = this.layerPlacement(key);
     const rotation = Number(placement.rotation || 0) * Math.PI / 180;
@@ -1186,12 +1562,13 @@ class LayeredPlacementEditor {
     event.preventDefault();
     event.stopPropagation();
     this.contextMenu.close();
+    if (this.paintMode) return;
     const dimensions = this.dimensions();
     if (!this.view || !dimensions) return;
     const key = this.layerAtCanvasPoint(this.canvasPoint(event), dimensions);
     if (!key) return;
     this.selectLayer(key);
-    const layers = this.connectedLayers();
+    const layers = this.compositionLayers();
     const index = layers.indexOf(key);
     const actions = buildLayerContextActions({
       index,
@@ -1248,6 +1625,35 @@ class LayeredPlacementEditor {
 
   pointerDown(event) {
     const dimensions = this.dimensions();
+    if (this.paintMode) {
+      if (!this.view || !dimensions || event.button !== 0) return;
+      event.preventDefault();
+      this.canvas.focus();
+      const canvasPoint = this.canvasPoint(event);
+      const point = this.backgroundPoint(canvasPoint);
+      const inside = point.x >= 0 && point.x <= dimensions.width
+        && point.y >= 0 && point.y <= dimensions.height;
+      if (!inside) return;
+      if (this.paintEyedropper) {
+        const dpr = window.devicePixelRatio || 1;
+        const sampleX = Math.max(0, Math.min(this.sampleCanvas.width - 1, Math.floor(canvasPoint.x * dpr)));
+        const sampleY = Math.max(0, Math.min(this.sampleCanvas.height - 1, Math.floor(canvasPoint.y * dpr)));
+        const sample = this.sampleCanvas.getContext("2d", { willReadFrequently: true })
+          .getImageData(sampleX, sampleY, 1, 1).data;
+        this.paintSettings.color = rgbToHex(sample[0], sample[1], sample[2]);
+        this.paintColorPicker.setColor(this.paintSettings.color, true);
+        this.paintEyedropper = false;
+        this.savePaintSettings();
+        this.syncPaintControls();
+        return;
+      }
+      if (this.paintLayer.begin(point, this.paintSettings)) {
+        this.paintPointerId = event.pointerId;
+        this.canvas.setPointerCapture(event.pointerId);
+        this.requestDraw();
+      }
+      return;
+    }
     const layers = this.connectedLayers().filter(
       (key) => this.layerPlacement(key).included !== false,
     );
@@ -1310,6 +1716,18 @@ class LayeredPlacementEditor {
   }
 
   pointerMove(event) {
+    if (this.paintMode) {
+      if (!this.view) return;
+      const cursorPoint = this.canvasPoint(event);
+      this.paintCursor = cursorPoint;
+      if (this.paintPointerId === event.pointerId) {
+        event.preventDefault();
+        const events = event.getCoalescedEvents?.() || [event];
+        this.paintLayer.move(events.map((sample) => this.backgroundPoint(this.canvasPoint(sample))));
+      }
+      this.requestDraw();
+      return;
+    }
     if (!this.gesture || !this.view) return;
     event.preventDefault();
     const dimensions = this.dimensions();
@@ -1388,6 +1806,16 @@ class LayeredPlacementEditor {
   }
 
   pointerEnd(event, cancelled) {
+    if (this.paintPointerId != null && event.pointerId === this.paintPointerId) {
+      const changed = this.paintLayer.end(cancelled);
+      if (this.canvas.hasPointerCapture?.(this.paintPointerId)) {
+        this.canvas.releasePointerCapture(this.paintPointerId);
+      }
+      this.paintPointerId = null;
+      if (changed) this.paintChanged();
+      else this.requestDraw();
+      return;
+    }
     if (!this.gesture) return;
     if (cancelled || (this.gesture.action === "draw" && !this.gesture.changed)) {
       this.pendingPlacement = null;
@@ -1447,10 +1875,11 @@ class LayeredPlacementEditor {
   }
 
   selectLayer(key) {
-    if (!this.connectedLayers().includes(key)) return;
+    if (!this.compositionLayers().includes(key)) return;
+    if (this.paintMode && key !== PAINT_LAYER_KEY) return;
     this.selected = key;
     this.layerListSignature = null;
-    this.syncLayerList(this.connectedLayers());
+    this.syncLayerList(this.compositionLayers());
     this.syncNumericControls();
     this.requestDraw();
   }
@@ -1458,6 +1887,14 @@ class LayeredPlacementEditor {
   syncNumericControls() {
     const dimensions = this.dimensions();
     for (const [key, controls] of this.rowControls.entries()) {
+      if (key === PAINT_LAYER_KEY) {
+        const included = this.data.paint_layer?.included !== false;
+        controls.include.textContent = included ? "Excl" : "Incl";
+        controls.paint.setAttribute("aria-pressed", String(this.paintMode));
+        controls.paint.style.background = this.paintMode ? "rgba(64,180,255,.30)" : "rgba(0,0,0,.25)";
+        controls.row.style.opacity = included ? "1" : ".48";
+        continue;
+      }
       const placement = dimensions
         ? rectToPlacement(
             dimensions.width, dimensions.height, this.rectFor(key, dimensions),
@@ -1485,6 +1922,8 @@ class LayeredPlacementEditor {
         controls.warp.setAttribute("aria-pressed", String(this.warpLayer === key));
         controls.warp.style.background = this.warpLayer === key ? "rgba(64,180,255,.30)" : "rgba(0,0,0,.25)";
       }
+      for (const input of Object.values(controls.inputs)) input.disabled = this.paintMode;
+      for (const control of controls.transformButtons || []) control.disabled = this.paintMode;
     }
     const padding = normalizeWorkspacePadding(
       this.data.workspace_padding ?? DEFAULT_WORKSPACE_PADDING,
@@ -1494,7 +1933,7 @@ class LayeredPlacementEditor {
   }
 
   dropLayer(dragged, target, insertAfter) {
-    const layers = this.connectedLayers();
+    const layers = this.compositionLayers();
     const draggedIndex = layers.indexOf(dragged);
     if (draggedIndex < 0) return;
     layers.splice(draggedIndex, 1);
@@ -1508,7 +1947,7 @@ class LayeredPlacementEditor {
     this.placementWidget.callback?.(this.placementWidget.value, app.canvas, this.node);
     this.node.graph?.setDirtyCanvas?.(true, true);
     this.node.graph?.afterChange?.();
-    this.selected = dragged;
+    this.selected = this.paintMode ? PAINT_LAYER_KEY : dragged;
     this.layerListSignature = null;
     this.syncLayerList(layers);
     this.syncNumericControls();
@@ -1517,7 +1956,7 @@ class LayeredPlacementEditor {
   }
 
   moveLayerBy(key, delta) {
-    const layers = this.connectedLayers();
+    const layers = this.compositionLayers();
     const index = layers.indexOf(key);
     const targetIndex = index + delta;
     if (index < 0 || targetIndex < 0 || targetIndex >= layers.length) return;
@@ -1525,7 +1964,7 @@ class LayeredPlacementEditor {
   }
 
   moveLayerToEdge(key, front) {
-    const layers = this.connectedLayers();
+    const layers = this.compositionLayers();
     const index = layers.indexOf(key);
     if (index < 0) return;
     const targetIndex = front ? layers.length - 1 : 0;
@@ -1592,6 +2031,7 @@ class LayeredPlacementEditor {
   }
 
   numericChanged(key, field, value) {
+    if (this.paintMode) return;
     const dimensions = this.dimensions();
     if (!dimensions) return;
     const normalizedValue = Number(value);
@@ -1613,10 +2053,11 @@ class LayeredPlacementEditor {
     this.flushPlacement();
     this.node.graph?.afterChange?.();
     this.layerListSignature = null;
-    this.syncLayerList(this.connectedLayers());
+    this.syncLayerList(this.compositionLayers());
   }
 
   stepLayerValue(key, field, delta) {
+    if (this.paintMode) return;
     const dimensions = this.dimensions();
     if (!dimensions) return;
     const placement = rectToPlacement(
@@ -1626,6 +2067,11 @@ class LayeredPlacementEditor {
   }
 
   resetLayer(key) {
+    if (key === PAINT_LAYER_KEY) {
+      if (this.paintLayer.clear()) this.paintChanged();
+      return;
+    }
+    if (this.paintMode) return;
     this.node.graph?.beforeChange?.();
     this.selected = key;
     this.queuePlacement(key, {
@@ -1638,7 +2084,7 @@ class LayeredPlacementEditor {
     this.flushPlacement();
     this.node.graph?.afterChange?.();
     this.layerListSignature = null;
-    this.syncLayerList(this.connectedLayers());
+    this.syncLayerList(this.compositionLayers());
   }
 
   resetSelected() {
@@ -1654,7 +2100,7 @@ class LayeredPlacementEditor {
   }
 
   toggleFlip(key, field) {
-    if (!key) return;
+    if (!key || this.paintMode) return;
     const placement = this.layerPlacement(key);
     this.node.graph?.beforeChange?.();
     this.selected = key;
@@ -1665,17 +2111,18 @@ class LayeredPlacementEditor {
     this.flushPlacement();
     this.node.graph?.afterChange?.();
     this.layerListSignature = null;
-    this.syncLayerList(this.connectedLayers());
+    this.syncLayerList(this.compositionLayers());
   }
 
   updateLayerTransform(key, changes) {
+    if (this.paintMode) return;
     this.node.graph?.beforeChange?.();
     this.selected = key;
     this.queuePlacement(key, { ...this.layerPlacement(key), ...changes });
     this.flushPlacement();
     this.node.graph?.afterChange?.();
     this.layerListSignature = null;
-    this.syncLayerList(this.connectedLayers());
+    this.syncLayerList(this.compositionLayers());
   }
 
   stepLayerRotation(key, delta) {
@@ -1684,6 +2131,7 @@ class LayeredPlacementEditor {
   }
 
   toggleWarp(key) {
+    if (this.paintMode) return;
     const enabling = this.warpLayer !== key;
     if (enabling && this.layerPlacement(key).included === false) return;
     if (enabling && this.data.version !== 3) {
@@ -1695,17 +2143,18 @@ class LayeredPlacementEditor {
     this.warpLayer = enabling ? key : null;
     if (enabling) this.rotateLayer = null;
     this.layerListSignature = null;
-    this.syncLayerList(this.connectedLayers());
+    this.syncLayerList(this.compositionLayers());
     this.requestDraw();
   }
 
   toggleRotate(key) {
+    if (this.paintMode) return;
     const enabling = this.rotateLayer !== key;
     if (enabling && this.layerPlacement(key).included === false) return;
     this.rotateLayer = enabling ? key : null;
     if (enabling) this.warpLayer = null;
     this.layerListSignature = null;
-    this.syncLayerList(this.connectedLayers());
+    this.syncLayerList(this.compositionLayers());
     this.requestDraw();
   }
 
@@ -1717,6 +2166,20 @@ class LayeredPlacementEditor {
       if (this.rotateLayer === key) this.rotateLayer = null;
     }
     this.updateLayerTransform(key, { included: !excluding });
+  }
+
+  togglePaintIncluded() {
+    this.ensurePaintOrdered();
+    this.node.graph?.beforeChange?.();
+    this.data.paint_layer = {
+      ...this.data.paint_layer,
+      included: this.data.paint_layer?.included === false,
+    };
+    this.persistPlacement();
+    this.node.graph?.afterChange?.();
+    this.layerListSignature = null;
+    this.syncLayerList(this.compositionLayers());
+    this.requestDraw();
   }
 
   async runStaging() {
@@ -1740,6 +2203,24 @@ class LayeredPlacementEditor {
 
   keyDown(event) {
     if (!this.selected || !this.view) return;
+    if (this.paintMode) {
+      const command = event.ctrlKey || event.metaKey;
+      if (command && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        this.paintHistory(event.shiftKey ? 1 : -1);
+      } else if (command && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        this.paintHistory(1);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        if (this.paintPointerId != null) {
+          this.pointerEnd({ pointerId: this.paintPointerId }, true);
+        } else {
+          this.togglePaintMode(false);
+        }
+      }
+      return;
+    }
     if (event.key === "Escape" && this.gesture) {
       event.preventDefault();
       this.pointerEnd({ pointerId: event.pointerId }, true);
@@ -1790,8 +2271,12 @@ class LayeredPlacementEditor {
     this.disposed = true;
     this.endPaddingEdit();
     clearInterval(this.pollTimer);
+    if (this.paintSaveTimer) clearTimeout(this.paintSaveTimer);
+    if (this.paintPointerId != null) this.paintLayer.end(true);
     this.resizeObserver?.disconnect();
+    this.paintColorPicker?.dispose();
     this.contextMenu.dispose();
+    if (this.layoutFrame) cancelAnimationFrame(this.layoutFrame);
     if (this.drawFrame) cancelAnimationFrame(this.drawFrame);
     if (this.commitFrame) cancelAnimationFrame(this.commitFrame);
     editors.delete(this);
@@ -1821,7 +2306,7 @@ app.registerExtension({
         editor.node.graph?.setDirtyCanvas?.(true, true);
         editor.refreshSources(true);
       }
-      editor.ensureSize();
+      editor.scheduleLayout();
     }
   },
   onNodeOutputsUpdated(outputs) {
