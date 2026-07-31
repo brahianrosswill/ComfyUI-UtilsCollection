@@ -10,12 +10,15 @@ import {
   frontmostLayerAtPoint,
   layerKeyCompare,
   moveRect,
+  moveResolvedPlacement,
   normalizePlacement,
   PAINT_LAYER_KEY,
   normalizeWorkspacePadding,
   parsePlacementData,
   placementToRect,
   rectToPlacement,
+  resolveLayerGeometry,
+  resolvedWorkspaceBounds,
   resizeRectFromDelta,
   rotationFromPointer,
   serializePlacementData,
@@ -1247,20 +1250,14 @@ class LayeredPlacementEditor {
 
   viewFor(width, height, dimensions, layers) {
     const paddingLevel = normalizeWorkspacePadding(this.data.workspace_padding);
-    const basePaddingX = dimensions.width * 0.25 * paddingLevel;
-    const basePaddingY = dimensions.height * 0.25 * paddingLevel;
-    let left = -basePaddingX;
-    let top = -basePaddingY;
-    let right = dimensions.width + basePaddingX;
-    let bottom = dimensions.height + basePaddingY;
-    for (const key of layers) {
-      if (key === PAINT_LAYER_KEY) continue;
-      const rect = this.rectFor(key, dimensions);
-      left = Math.min(left, rect.x);
-      top = Math.min(top, rect.y);
-      right = Math.max(right, rect.x + rect.width);
-      bottom = Math.max(bottom, rect.y + rect.height);
-    }
+    const bounds = resolvedWorkspaceBounds(
+      dimensions.width,
+      dimensions.height,
+      paddingLevel,
+      layers.filter((key) => key !== PAINT_LAYER_KEY)
+        .map((key) => this.resolvedGeometry(key, dimensions).frame),
+    );
+    let { left, top, right, bottom } = bounds;
     const outerPadding = Math.max(right - left, bottom - top) * 0.04 * paddingLevel;
     left -= outerPadding;
     top -= outerPadding;
@@ -1352,6 +1349,30 @@ class LayeredPlacementEditor {
       return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
     }
     return placementToRect(dimensions.width, dimensions.height, this.layerAspect(key), this.layerPlacement(key));
+  }
+
+  layerSourceSize(key) {
+    const metadata = this.layerMetadata(key);
+    if (metadata?.crop_width > 0 && metadata?.crop_height > 0) {
+      return { width: metadata.crop_width, height: metadata.crop_height };
+    }
+    const preview = this.cutouts.get(key) || this.preliminaryLayers.get(key);
+    return {
+      width: preview?.naturalWidth || preview?.width || 1,
+      height: preview?.naturalHeight || preview?.height || 1,
+    };
+  }
+
+  resolvedGeometry(key, dimensions, placement = this.layerPlacement(key)) {
+    const source = this.layerSourceSize(key);
+    return resolveLayerGeometry({
+      backgroundWidth: dimensions.width,
+      backgroundHeight: dimensions.height,
+      sourceWidth: source.width,
+      sourceHeight: source.height,
+      placement,
+      workspacePadding: this.data.workspace_padding,
+    });
   }
 
   updateSampleCanvas(layers, dimensions, width, height, dpr) {
@@ -1454,17 +1475,18 @@ class LayeredPlacementEditor {
     }
     const preview = this.cutouts.get(key) || this.preliminaryLayers.get(key);
     const placement = this.layerPlacement(key);
-    const rotation = Number(placement.rotation || 0) * Math.PI / 180;
+    const geometry = this.resolvedGeometry(key, dimensions, placement);
+    const destinationPoints = geometry.points.map((point) => [
+      this.view.x + point.x * this.view.scale,
+      this.view.y + point.y * this.view.scale,
+    ]);
+    const destinationFrame = this.toCanvasRect(geometry.frame);
     const defaultCorners = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
     const warped = Array.isArray(placement.corners) && placement.corners.some(
       (point, index) => point.some((value, axis) => value !== defaultCorners[index][axis]),
     );
-    const centerX = rect.x + rect.width / 2;
-    const centerY = rect.y + rect.height / 2;
+    const transformed = warped || Number(placement.rotation || 0) !== 0;
     context.save();
-    context.translate(centerX, centerY);
-    context.rotate(rotation);
-    context.translate(-centerX, -centerY);
     if (mode !== "overlay" && preview && placement.included !== false) {
       const desiredFlip = placement.flip_horizontal === true;
       const desiredFlipVertical = placement.flip_vertical === true;
@@ -1472,28 +1494,34 @@ class LayeredPlacementEditor {
       const previewFlipVertical = this.layerMetadata(key)?.flip_vertical === true;
       const flipHorizontal = desiredFlip !== previewFlip;
       const flipVertical = desiredFlipVertical !== previewFlipVertical;
-      if (warped) {
-        drawProjectiveImage(context, preview, rect, placement.corners, flipHorizontal, flipVertical);
+      if (transformed) {
+        drawProjectiveImage(context, preview, destinationPoints, flipHorizontal, flipVertical);
       } else if (flipHorizontal || flipVertical) {
         context.save();
         context.translate(
-          rect.x + (flipHorizontal ? rect.width : 0),
-          rect.y + (flipVertical ? rect.height : 0),
+          destinationFrame.x + (flipHorizontal ? destinationFrame.width : 0),
+          destinationFrame.y + (flipVertical ? destinationFrame.height : 0),
         );
         context.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
-        context.drawImage(preview, 0, 0, rect.width, rect.height);
+        context.drawImage(preview, 0, 0, destinationFrame.width, destinationFrame.height);
         context.restore();
       } else {
-        context.drawImage(preview, rect.x, rect.y, rect.width, rect.height);
+        context.drawImage(
+          preview, destinationFrame.x, destinationFrame.y,
+          destinationFrame.width, destinationFrame.height,
+        );
       }
     }
     if (mode === "content") {
       context.restore();
       return;
     }
-    const outline = warped
-      ? placement.corners.map(([x, y]) => [centerX + x * rect.width / 2, centerY + y * rect.height / 2])
-      : [[rect.x, rect.y], [rect.x + rect.width, rect.y], [rect.x + rect.width, rect.y + rect.height], [rect.x, rect.y + rect.height]];
+    const outline = transformed ? destinationPoints : [
+      [destinationFrame.x, destinationFrame.y],
+      [destinationFrame.x + destinationFrame.width, destinationFrame.y],
+      [destinationFrame.x + destinationFrame.width, destinationFrame.y + destinationFrame.height],
+      [destinationFrame.x, destinationFrame.y + destinationFrame.height],
+    ];
     context.beginPath();
     context.moveTo(...outline[0]);
     for (const point of outline.slice(1)) context.lineTo(...point);
@@ -1513,36 +1541,25 @@ class LayeredPlacementEditor {
   }
 
   handlePoints(key, dimensions) {
-    const rect = this.toCanvasRect(this.rectFor(key, dimensions));
-    const left = rect.x;
-    const right = rect.x + rect.width;
-    const top = rect.y;
-    const bottom = rect.y + rect.height;
-    const points = { nw: { x: left, y: top }, ne: { x: right, y: top }, sw: { x: left, y: bottom }, se: { x: right, y: bottom } };
-    const angle = Number(this.layerPlacement(key).rotation || 0) * Math.PI / 180;
-    if (!angle) return points;
-    const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
-    for (const point of Object.values(points)) {
-      const x = point.x - cx, y = point.y - cy;
-      point.x = cx + x * Math.cos(angle) - y * Math.sin(angle);
-      point.y = cy + x * Math.sin(angle) + y * Math.cos(angle);
-    }
-    return points;
+    const [nw, ne, se, sw] = this.layerQuadPoints(key, dimensions);
+    return { nw, ne, sw, se };
   }
 
   layerQuadPoints(key, dimensions) {
-    const rect = this.toCanvasRect(this.rectFor(key, dimensions));
-    const placement = this.layerPlacement(key);
-    const corners = Array.isArray(placement.corners)
-      ? placement.corners
-      : DEFAULT_FACE_CORNERS;
-    const angle = Number(placement.rotation || 0) * Math.PI / 180;
-    const cosine = Math.cos(angle), sine = Math.sin(angle);
-    const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
-    return corners.map(([nx, ny]) => {
-      const x = nx * rect.width / 2, y = ny * rect.height / 2;
-      return { x: cx + x * cosine - y * sine, y: cy + x * sine + y * cosine };
-    });
+    const geometry = this.resolvedGeometry(key, dimensions);
+    if (geometry.transformed.identity) {
+      const frame = this.toCanvasRect(geometry.frame);
+      return [
+        { x: frame.x, y: frame.y },
+        { x: frame.x + frame.width, y: frame.y },
+        { x: frame.x + frame.width, y: frame.y + frame.height },
+        { x: frame.x, y: frame.y + frame.height },
+      ];
+    }
+    return geometry.points.map((point) => ({
+      x: this.view.x + point.x * this.view.scale,
+      y: this.view.y + point.y * this.view.scale,
+    }));
   }
 
   faceQuadPoints(key, dimensions) {
@@ -1683,13 +1700,10 @@ class LayeredPlacementEditor {
       }
     }
     if (!action) {
-      for (const key of [...layers].reverse()) {
-        const rect = this.rectFor(key, dimensions);
-        if (backgroundPoint.x >= rect.x && backgroundPoint.x <= rect.x + rect.width && backgroundPoint.y >= rect.y && backgroundPoint.y <= rect.y + rect.height) {
-          this.selectLayer(key);
-          action = this.warpLayer === key ? "warp_deform" : "move";
-          break;
-        }
+      const key = this.layerAtCanvasPoint(canvasPoint, dimensions);
+      if (key) {
+        this.selectLayer(key);
+        action = this.warpLayer === key ? "warp_deform" : "move";
       }
     }
     if (!action) {
@@ -1706,6 +1720,7 @@ class LayeredPlacementEditor {
       startCanvas: canvasPoint,
       startPoint: backgroundPoint,
       startRect: this.rectFor(this.selected, dimensions),
+      startGeometry: this.resolvedGeometry(this.selected, dimensions),
       originalValue: this.placementWidget.value,
       pointerId: event.pointerId,
       changed: false,
@@ -1738,7 +1753,7 @@ class LayeredPlacementEditor {
     let rect;
     if (this.gesture.action === "rotate") {
       const start = this.gesture.startPlacement;
-      const canvasRect = this.toCanvasRect(this.gesture.startRect);
+      const canvasRect = this.toCanvasRect(this.gesture.startGeometry.frame);
       const center = {
         x: canvasRect.x + canvasRect.width / 2,
         y: canvasRect.y + canvasRect.height / 2,
@@ -1754,43 +1769,49 @@ class LayeredPlacementEditor {
       return;
     } else if (this.gesture.action === "warp_corner" || this.gesture.action === "warp_deform") {
       const start = this.gesture.startPlacement;
-      const canvasRect = this.toCanvasRect(this.gesture.startRect);
-      const cx = canvasRect.x + canvasRect.width / 2;
-      const cy = canvasRect.y + canvasRect.height / 2;
+      const geometry = this.gesture.startGeometry;
+      const localPoint = point;
       const angle = -Number(start.rotation || 0) * Math.PI / 180;
       const cosine = Math.cos(angle), sine = Math.sin(angle);
-      const localX = ((canvasPoint.x - cx) * cosine - (canvasPoint.y - cy) * sine) * 2 / canvasRect.width;
-      const localY = ((canvasPoint.x - cx) * sine + (canvasPoint.y - cy) * cosine) * 2 / canvasRect.height;
+      const rotatedX = localPoint.x - geometry.offset.x + geometry.transformed.minimum.x;
+      const rotatedY = localPoint.y - geometry.offset.y + geometry.transformed.minimum.y;
+      const sourceX = rotatedX * cosine - rotatedY * sine;
+      const sourceY = rotatedX * sine + rotatedY * cosine;
+      const halfWidth = Math.max(geometry.source.width - 1, 1) / 2;
+      const halfHeight = Math.max(geometry.source.height - 1, 1) / 2;
+      const localX = sourceX / halfWidth;
+      const localY = sourceY / halfHeight;
       let corners;
       if (this.gesture.action === "warp_corner") {
         corners = dragQuadCorner(start.corners, this.gesture.handle, localX, localY);
       } else {
-        const canvasDeltaX = deltaX * this.gesture.view.scale;
-        const canvasDeltaY = deltaY * this.gesture.view.scale;
-        const dx = (canvasDeltaX * cosine - canvasDeltaY * sine) * 2 / canvasRect.width;
-        const dy = (canvasDeltaX * sine + canvasDeltaY * cosine) * 2 / canvasRect.height;
+        const dx = (deltaX * cosine - deltaY * sine) / halfWidth;
+        const dy = (deltaX * sine + deltaY * cosine) / halfHeight;
         corners = deformQuadCentroidLocked(start.corners, [localX - dx, localY - dy], dx, dy);
       }
       this.gesture.changed = true;
       this.queuePlacement(this.gesture.key, { ...start, corners });
       return;
     } else if (this.gesture.action === "move") {
-      rect = moveRect(
-        dimensions.width, dimensions.height, this.gesture.startRect, deltaX, deltaY,
-        this.data.workspace_padding,
-      );
+      this.gesture.changed = true;
+      this.queuePlacement(this.gesture.key, moveResolvedPlacement(
+        dimensions.width, dimensions.height, this.gesture.startGeometry,
+        this.gesture.startPlacement, deltaX, deltaY, this.data.workspace_padding,
+      ));
+      return;
     } else if (this.gesture.action === "resize") {
       const shortest = Math.min(dimensions.width, dimensions.height);
+      const angle = -Number(this.gesture.startPlacement.rotation || 0) * Math.PI / 180;
+      const cosine = Math.cos(angle), sine = Math.sin(angle);
       rect = resizeRectFromDelta(
         this.gesture.startRect,
         this.gesture.handle,
-        deltaX,
-        deltaY,
+        deltaX * cosine - deltaY * sine,
+        deltaX * sine + deltaY * cosine,
         this.layerAspect(this.gesture.key),
         shortest * 0.05,
         shortest * 10,
       );
-      rect = moveRect(dimensions.width, dimensions.height, rect, 0, 0, this.data.workspace_padding);
     } else {
       rect = drawRect(this.gesture.startPoint, point, this.layerAspect(this.gesture.key));
       if (Math.hypot(canvasPoint.x - this.gesture.startCanvas.x, canvasPoint.y - this.gesture.startCanvas.y) < 6) return;
@@ -2243,19 +2264,10 @@ class LayeredPlacementEditor {
     const dimensions = this.dimensions();
     const amount = event.shiftKey ? 10 : 1;
     const [dx, dy] = deltas[event.key];
-    const rect = moveRect(
-      dimensions.width,
-      dimensions.height,
-      this.rectFor(this.selected, dimensions),
-      dx * amount,
-      dy * amount,
-      this.data.workspace_padding,
-    );
-    this.queuePlacement(this.selected, rectToPlacement(
-      dimensions.width,
-      dimensions.height,
-      rect,
-      this.layerPlacement(this.selected),
+    const geometry = this.resolvedGeometry(this.selected, dimensions);
+    this.queuePlacement(this.selected, moveResolvedPlacement(
+      dimensions.width, dimensions.height, geometry, this.layerPlacement(this.selected),
+      dx * amount, dy * amount, this.data.workspace_padding,
     ));
   }
 

@@ -66,3 +66,12 @@ def test_composite_guide_documents_staged_modes_and_face_defaults():
     assert "`run_staged`" in face
     assert "`detection_threshold=0.55`" in face
     assert "`maximum_faces=16`" in face
+
+
+def test_composite_guide_documents_resolved_transform_preview_geometry():
+    placement = UC_CompositeNodesGuide.execute("placement_editor").args[0]
+
+    assert "expanded transformed raster" in placement
+    assert "same off-canvas limits" in placement
+    assert "crop metadata" in placement
+    assert "three complete rows" in placement

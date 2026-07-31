@@ -1355,8 +1355,9 @@ class UC_CompositeNodesGuide(io.ComfyNode):
                 "- Reset restores that layer's placement defaults.\n"
                 "- The grip and stacked triangle buttons reorder layers from back to front.\n"
                 "- Right-clicking the preview opens the layer context menu.\n"
-                "- Workspace Padding changes the visible and permitted off-canvas placement area.\n"
-                "- The layer list displays at most three and one-half rows before scrolling."
+                "- Workspace Padding applies to each layer's expanded transformed raster, so the preview and final composite use the same off-canvas limits after rotation or warp.\n"
+                "- Staged crop dimensions provide exact transform geometry. Before a fresh staging pass, an available source preview is used provisionally and is replaced automatically when crop metadata arrives.\n"
+                "- The layer list displays three complete rows before scrolling."
             ),
             "paint_layer": (
                 "## Native RGBA paint layer\n\n"

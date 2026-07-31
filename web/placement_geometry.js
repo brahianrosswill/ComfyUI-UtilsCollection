@@ -320,6 +320,139 @@ export function rectToPlacement(backgroundWidth, backgroundHeight, rect, prior =
   return placement;
 }
 
+export function pythonRound(value) {
+  const numeric = finite(value, 0);
+  const lower = Math.floor(numeric);
+  const fraction = numeric - lower;
+  if (fraction < 0.5) return lower;
+  if (fraction > 0.5) return lower + 1;
+  return lower % 2 === 0 ? lower : lower + 1;
+}
+
+export function backendPlacedSize(backgroundWidth, backgroundHeight, sourceWidth, sourceHeight, scale) {
+  const width = Math.max(1, pythonRound(sourceWidth));
+  const height = Math.max(1, pythonRound(sourceHeight));
+  const targetLongest = Math.max(1, pythonRound(
+    Math.min(backgroundWidth, backgroundHeight) * Math.max(0, finite(scale, DEFAULT_PLACEMENT.scale)),
+  ));
+  const factor = targetLongest / Math.max(width, height);
+  return {
+    width: Math.max(1, pythonRound(width * factor)),
+    height: Math.max(1, pythonRound(height * factor)),
+  };
+}
+
+const identityCorners = (corners) => normalizeQuad(corners).every(
+  (point, index) => point[0] === DEFAULT_FACE_CORNERS[index][0]
+    && point[1] === DEFAULT_FACE_CORNERS[index][1],
+);
+
+export function transformedPixelGeometry(width, height, corners, rotation = 0) {
+  const normalizedCorners = normalizeQuad(corners);
+  const normalizedRotation = normalizeRotation(rotation);
+  if (normalizedRotation === 0 && identityCorners(normalizedCorners)) {
+    return {
+      identity: true,
+      width,
+      height,
+      minimum: {
+        x: -Math.max(width - 1, 1) / 2,
+        y: -Math.max(height - 1, 1) / 2,
+      },
+      points: [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]],
+    };
+  }
+  const halfWidth = Math.max(width - 1, 1) / 2;
+  const halfHeight = Math.max(height - 1, 1) / 2;
+  const angle = normalizedRotation * Math.PI / 180;
+  const cosine = Math.cos(angle), sine = Math.sin(angle);
+  const rotated = normalizedCorners.map(([x, y]) => {
+    const px = x * halfWidth, py = y * halfHeight;
+    return [px * cosine - py * sine, px * sine + py * cosine];
+  });
+  const minimumX = Math.min(...rotated.map((point) => point[0]));
+  const minimumY = Math.min(...rotated.map((point) => point[1]));
+  const maximumX = Math.max(...rotated.map((point) => point[0]));
+  const maximumY = Math.max(...rotated.map((point) => point[1]));
+  return {
+    identity: false,
+    width: Math.max(1, Math.ceil(maximumX - minimumX - 1e-6) + 1),
+    height: Math.max(1, Math.ceil(maximumY - minimumY - 1e-6) + 1),
+    minimum: { x: minimumX, y: minimumY },
+    points: rotated.map(([x, y]) => [x - minimumX, y - minimumY]),
+  };
+}
+
+export function backendPlacementOffset(
+  backgroundWidth, backgroundHeight, placedWidth, placedHeight, placement, workspacePadding = 0,
+) {
+  let x = pythonRound(finite(placement?.center_x, 0.5) * backgroundWidth - placedWidth / 2);
+  let y = pythonRound(finite(placement?.center_y, 0.5) * backgroundHeight - placedHeight / 2);
+  const padding = normalizeWorkspacePadding(workspacePadding);
+  const paddingX = backgroundWidth * 0.25 * padding;
+  const paddingY = backgroundHeight * 0.25 * padding;
+  const xLimits = [-paddingX, backgroundWidth + paddingX - placedWidth, 0, backgroundWidth - placedWidth];
+  const yLimits = [-paddingY, backgroundHeight + paddingY - placedHeight, 0, backgroundHeight - placedHeight];
+  x = pythonRound(clamp(x, Math.min(...xLimits), Math.max(...xLimits)));
+  y = pythonRound(clamp(y, Math.min(...yLimits), Math.max(...yLimits)));
+  return { x, y };
+}
+
+export function resolveLayerGeometry({
+  backgroundWidth,
+  backgroundHeight,
+  sourceWidth,
+  sourceHeight,
+  placement,
+  workspacePadding = 0,
+}) {
+  const normalized = normalizePlacement(placement, 3);
+  const source = backendPlacedSize(
+    backgroundWidth, backgroundHeight, sourceWidth, sourceHeight, normalized.scale,
+  );
+  const transformed = transformedPixelGeometry(
+    source.width, source.height, normalized.corners, normalized.rotation,
+  );
+  const offset = backendPlacementOffset(
+    backgroundWidth, backgroundHeight, transformed.width, transformed.height,
+    normalized, workspacePadding,
+  );
+  const left = Math.max(0, offset.x), top = Math.max(0, offset.y);
+  const right = Math.min(backgroundWidth, offset.x + transformed.width);
+  const bottom = Math.min(backgroundHeight, offset.y + transformed.height);
+  const visible = right > left && bottom > top ? {
+    destination: { x: left, y: top, width: right - left, height: bottom - top },
+    source: { x: left - offset.x, y: top - offset.y, width: right - left, height: bottom - top },
+  } : null;
+  return {
+    source,
+    transformed,
+    offset,
+    frame: { x: offset.x, y: offset.y, width: transformed.width, height: transformed.height },
+    points: transformed.points.map(([x, y]) => ({ x: offset.x + x, y: offset.y + y })),
+    visible,
+  };
+}
+
+export function resolvedWorkspaceBounds(backgroundWidth, backgroundHeight, workspacePadding, frames = []) {
+  const padding = normalizeWorkspacePadding(workspacePadding);
+  const paddingX = backgroundWidth * 0.25 * padding;
+  const paddingY = backgroundHeight * 0.25 * padding;
+  const bounds = {
+    left: -paddingX,
+    top: -paddingY,
+    right: backgroundWidth + paddingX,
+    bottom: backgroundHeight + paddingY,
+  };
+  for (const frame of frames) {
+    bounds.left = Math.min(bounds.left, frame.x);
+    bounds.top = Math.min(bounds.top, frame.y);
+    bounds.right = Math.max(bounds.right, frame.x + frame.width);
+    bounds.bottom = Math.max(bounds.bottom, frame.y + frame.height);
+  }
+  return bounds;
+}
+
 export function moveRect(backgroundWidth, backgroundHeight, rect, deltaX, deltaY, workspacePadding = 0) {
   const padding = normalizeWorkspacePadding(workspacePadding);
   const paddingX = backgroundWidth * 0.25 * padding;
@@ -332,6 +465,19 @@ export function moveRect(backgroundWidth, backgroundHeight, rect, deltaX, deltaY
     ...rect,
     x: clamp(rect.x + deltaX, Math.min(...xLimits), Math.max(...xLimits)) || 0,
     y: clamp(rect.y + deltaY, Math.min(...yLimits), Math.max(...yLimits)) || 0,
+  };
+}
+
+export function moveResolvedPlacement(
+  backgroundWidth, backgroundHeight, geometry, placement, deltaX, deltaY, workspacePadding = 0,
+) {
+  const frame = moveRect(
+    backgroundWidth, backgroundHeight, geometry.frame, deltaX, deltaY, workspacePadding,
+  );
+  return {
+    ...placement,
+    center_x: (frame.x + frame.width / 2) / backgroundWidth,
+    center_y: (frame.y + frame.height / 2) / backgroundHeight,
   };
 }
 

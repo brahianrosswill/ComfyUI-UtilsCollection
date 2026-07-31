@@ -166,13 +166,8 @@ def is_identity_projective_transform(corners, rotation):
     )
 
 
-def projective_warp(image, mask, corners, rotation=0.0):
-    """Warp BHWC RGB and BHW alpha in pixel space through one inverse homography."""
-    if is_identity_projective_transform(corners, rotation):
-        return image, mask
-
-    device, dtype = image.device, image.dtype
-    height, width = image.shape[1:3]
+def projective_geometry(width, height, corners, rotation, *, device, dtype):
+    """Resolve the expanded pixel-space destination used by projective_warp."""
     half_width = max(width - 1, 1) / 2
     half_height = max(height - 1, 1) / 2
     destination = torch.tensor(corners, device=device, dtype=dtype)
@@ -187,9 +182,30 @@ def projective_warp(image, mask, corners, rotation=0.0):
     destination = destination @ matrix.T
     minimum = destination.amin(dim=0)
     maximum = destination.amax(dim=0)
-    output_width = max(1, int(torch.ceil(maximum[0] - minimum[0] - 1e-6).item()) + 1)
-    output_height = max(1, int(torch.ceil(maximum[1] - minimum[1] - 1e-6).item()) + 1)
-    destination = destination - minimum
+    output_width = max(
+        1, int(torch.ceil(maximum[0] - minimum[0] - 1e-6).item()) + 1
+    )
+    output_height = max(
+        1, int(torch.ceil(maximum[1] - minimum[1] - 1e-6).item()) + 1
+    )
+    return destination - minimum, output_width, output_height
+
+
+def projective_warp(image, mask, corners, rotation=0.0):
+    """Warp BHWC RGB and BHW alpha in pixel space through one inverse homography."""
+    if is_identity_projective_transform(corners, rotation):
+        return image, mask
+
+    device, dtype = image.device, image.dtype
+    height, width = image.shape[1:3]
+    destination, output_width, output_height = projective_geometry(
+        width,
+        height,
+        corners,
+        rotation,
+        device=device,
+        dtype=dtype,
+    )
     source = destination.new_tensor(
         (
             (0.0, 0.0),

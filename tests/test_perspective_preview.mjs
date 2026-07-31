@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { drawProjectiveImage } from "../web/perspective_preview.js";
+import { drawProjectiveImage, projectiveCellError } from "../web/perspective_preview.js";
 
 test("projective preview draws a finite clipped mesh", () => {
   const transforms = [];
@@ -20,10 +20,16 @@ test("projective preview draws a finite clipped mesh", () => {
   drawProjectiveImage(
     context,
     { naturalWidth: 100, naturalHeight: 80 },
-    { x: 10, y: 20, width: 200, height: 160 },
-    [[-1, -1], [0.7, -0.8], [0.8, 0.6], [-0.9, 1]],
+    [[10, 20], [180, 36], [190, 148], [20, 180]],
   );
-  assert.equal(draws, 128);
+  assert.ok(draws >= 2 && draws <= 2048);
   assert.equal(transforms.length, draws);
   assert.ok(transforms.flat().every(Number.isFinite));
+});
+
+test("adaptive projective preview subdivides only beyond its error tolerance", () => {
+  const affine = [[0, 0], [100, 0], [100, 100], [0, 100]];
+  const perspective = [[0, 0], [100, 10], [80, 100], [20, 80]];
+  assert.ok(projectiveCellError(affine, 0, 0, 1, 1) < 1e-9);
+  assert.ok(projectiveCellError(perspective, 0, 0, 1, 1) > 0.5);
 });

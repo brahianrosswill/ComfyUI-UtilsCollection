@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 import {
   DEFAULT_PLACEMENT,
   drawRect,
   moveRect,
+  moveResolvedPlacement,
   parsePlacementData,
   placementToRect,
   projectQuadPoint,
@@ -18,7 +20,21 @@ import {
   isValidQuad,
   normalizeRotation,
   PAINT_LAYER_KEY,
+  pythonRound,
+  resolveLayerGeometry,
+  resolvedWorkspaceBounds,
 } from "../web/placement_geometry.js";
+
+const transformFixtures = JSON.parse(fs.readFileSync(
+  new URL("./fixtures/staged_transform_geometry.json", import.meta.url), "utf8",
+));
+
+test("frontend rounding matches Python ties-to-even placement rounding", () => {
+  assert.deepEqual(
+    [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5].map(pythonRound),
+    [-2, -2, 0, 0, 2, 2],
+  );
+});
 
 test("paint placement metadata round trips without changing paint-free workflows", () => {
   const legacy = parsePlacementData('{"version":2,"layer_order":["foreground_0"],"layers":{}}');
@@ -40,6 +56,67 @@ test("paint placement metadata round trips without changing paint-free workflows
   assert.equal(parsed.paint_layer.asset.filename, "paint.png");
   assert.equal(parsed.paint_layer.included, false);
   assert.deepEqual(JSON.parse(serializePlacementData(parsed)).layer_order, ["foreground_0", PAINT_LAYER_KEY]);
+});
+
+test("resolved transform geometry matches backend pixel-space fixtures", () => {
+  for (const fixture of transformFixtures) {
+    const geometry = resolveLayerGeometry({
+      backgroundWidth: fixture.background[0],
+      backgroundHeight: fixture.background[1],
+      sourceWidth: fixture.source[0],
+      sourceHeight: fixture.source[1],
+      placement: {
+        scale: fixture.scale,
+        center_x: fixture.center[0],
+        center_y: fixture.center[1],
+        rotation: fixture.rotation,
+        corners: fixture.corners,
+      },
+      workspacePadding: fixture.padding,
+    });
+    assert.deepEqual([geometry.source.width, geometry.source.height], fixture.expected.source, fixture.name);
+    assert.deepEqual([geometry.transformed.width, geometry.transformed.height], fixture.expected.output, fixture.name);
+    assert.deepEqual([geometry.offset.x, geometry.offset.y], fixture.expected.offset, fixture.name);
+    const visible = geometry.visible;
+    assert.deepEqual([
+      visible.destination.y,
+      visible.destination.y + visible.destination.height,
+      visible.destination.x,
+      visible.destination.x + visible.destination.width,
+      visible.source.y,
+      visible.source.y + visible.source.height,
+      visible.source.x,
+      visible.source.x + visible.source.width,
+    ], fixture.expected.visible, fixture.name);
+    geometry.transformed.points.forEach((point, index) => {
+      close(point[0], fixture.expected.points[index][0], 1e-9);
+      close(point[1], fixture.expected.points[index][1], 1e-9);
+    });
+  }
+});
+
+test("moving a transformed layer clamps its expanded backend frame", () => {
+  const placement = {
+    scale: 0.5, center_x: 0.5, center_y: 0.5, rotation: 37,
+    corners: [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+  };
+  const input = {
+    backgroundWidth: 1000, backgroundHeight: 800,
+    sourceWidth: 400, sourceHeight: 200, placement, workspacePadding: 0.5,
+  };
+  const geometry = resolveLayerGeometry(input);
+  const moved = moveResolvedPlacement(1000, 800, geometry, placement, 0, 1000, 0.5);
+  const resolved = resolveLayerGeometry({ ...input, placement: moved });
+  assert.equal(resolved.frame.y, 499);
+  assert.equal(resolved.frame.height, 401);
+  assert.equal(resolved.frame.y + resolved.frame.height, 900);
+});
+
+test("workspace framing includes resolved transformed extents", () => {
+  const bounds = resolvedWorkspaceBounds(100, 80, 0.5, [
+    { x: -30, y: 10, width: 40, height: 100 },
+  ]);
+  assert.deepEqual(bounds, { left: -30, top: -10, right: 112.5, bottom: 110 });
 });
 
 test("corner rotation follows pointer angle without snapping", () => {

@@ -1668,6 +1668,75 @@ def test_projective_warp_applies_identical_support_to_rgb_and_alpha():
     assert torch.allclose(warped_image[..., 0], warped_mask, atol=1e-6)
 
 
+def test_projective_geometry_matches_frontend_parity_fixtures():
+    fixtures = json.loads(
+        (CUSTOM_NODE_ROOT / "tests/fixtures/staged_transform_geometry.json").read_text()
+    )
+    for fixture in fixtures:
+        background_width, background_height = fixture["background"]
+        source_width, source_height = fixture["source"]
+        target_longest = max(
+            1, round(min(background_width, background_height) * fixture["scale"])
+        )
+        factor = target_longest / max(source_width, source_height)
+        placed_width = max(1, round(source_width * factor))
+        placed_height = max(1, round(source_height * factor))
+        if staged_compositor_helpers.is_identity_projective_transform(
+            fixture["corners"], fixture["rotation"]
+        ):
+            points = torch.tensor(
+                [
+                    [0.0, 0.0],
+                    [placed_width - 1.0, 0.0],
+                    [placed_width - 1.0, placed_height - 1.0],
+                    [0.0, placed_height - 1.0],
+                ],
+                dtype=torch.float64,
+            )
+            output_width, output_height = placed_width, placed_height
+        else:
+            points, output_width, output_height = (
+                staged_compositor_helpers.projective_geometry(
+                    placed_width,
+                    placed_height,
+                    fixture["corners"],
+                    fixture["rotation"],
+                    device=torch.device("cpu"),
+                    dtype=torch.float64,
+                )
+            )
+        offset = composite_helpers._placement_offsets(
+            background_width,
+            background_height,
+            output_width,
+            output_height,
+            {
+                "_version": 3,
+                "center_x": fixture["center"][0],
+                "center_y": fixture["center"][1],
+            },
+            fixture["padding"],
+        )
+        assert [placed_width, placed_height] == fixture["expected"]["source"]
+        assert [output_width, output_height] == fixture["expected"]["output"]
+        assert list(offset) == fixture["expected"]["offset"]
+        assert list(
+            composite_helpers._visible_placement_slices(
+                background_width,
+                background_height,
+                output_width,
+                output_height,
+                *offset,
+            )
+        ) == fixture["expected"]["visible"]
+        assert torch.allclose(
+            points,
+            torch.tensor(fixture["expected"]["points"], dtype=torch.float64),
+            atol=1e-9,
+            rtol=0,
+        )
+
+
 def test_projective_warp_rotates_non_square_layer_without_distortion():
     image = torch.zeros(1, 3, 7, 3)
     mask = torch.zeros(1, 3, 7)
