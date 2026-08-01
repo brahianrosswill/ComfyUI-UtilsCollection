@@ -57,6 +57,7 @@ const NODE_TYPES = new Set([
   "UC_LayeredBackgroundComposite",
   "UC_StagedLayeredBackgroundComposite",
   "UC_StagedMediaPipeFaceBackgroundComposite",
+  "UC_StagedIndividualComposites",
 ]);
 const PAINT_EDITOR_ENABLED = false;
 const editors = new Set();
@@ -764,7 +765,11 @@ class LayeredPlacementEditor {
   }
 
   isStagedComposite() {
-    return ["UC_StagedLayeredBackgroundComposite", "UC_StagedMediaPipeFaceBackgroundComposite"]
+    return [
+      "UC_StagedLayeredBackgroundComposite",
+      "UC_StagedMediaPipeFaceBackgroundComposite",
+      "UC_StagedIndividualComposites",
+    ]
       .includes(this.node.comfyClass || this.node.type);
   }
 

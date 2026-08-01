@@ -94,6 +94,35 @@ def resolve_background_removal_model(model=None):
     return model if model is not None else _load_internal_background_removal_model("birefnet")
 
 
+def background_removal_with_alpha(image, model):
+    """Return source-resolution straight RGBA and its exact alpha mask."""
+    if not torch.is_tensor(image) or image.ndim != 4:
+        raise ValueError("Background Removal (Preserve Alpha) requires a batched IMAGE.")
+    if image.shape[-1] < 3:
+        raise ValueError("Input images must have at least three channels.")
+    rgb = image[..., :3]
+    if image.shape[-1] >= 4:
+        alpha = image[..., 3].to(rgb).clamp(0.0, 1.0)
+    else:
+        raw_mask = model.encode_image(rgb)
+        if not torch.is_tensor(raw_mask):
+            raise ValueError("Background removal returned an invalid mask.")
+        if raw_mask.ndim == 4 and raw_mask.shape[1] == 1:
+            raw_mask = raw_mask[:, 0]
+        elif raw_mask.ndim == 4 and raw_mask.shape[-1] == 1:
+            raw_mask = raw_mask[..., 0]
+        if raw_mask.ndim != 3 or raw_mask.shape[0] != rgb.shape[0]:
+            raise ValueError(
+                "Background removal must return one [batch, height, width] mask per image."
+            )
+        if raw_mask.shape[-2:] != rgb.shape[1:3]:
+            raw_mask = _resize_mask(
+                raw_mask, rgb.shape[2], rgb.shape[1], "bilinear"
+            )
+        alpha = raw_mask.to(rgb).clamp(0.0, 1.0)
+    return torch.cat((rgb, alpha.unsqueeze(-1)), dim=-1), alpha
+
+
 def _resize_image(image, width, height, method, crop="disabled"):
     return resize_nchw(image.movedim(-1, 1), width, height, method, crop).movedim(1, -1)
 

@@ -32,6 +32,7 @@ from .composite_helpers import (
     _resize_mask,
     _save_editor_preview,
     _visible_placement_slices,
+    background_removal_with_alpha,
 )
 from .background_replace_helpers import (
     _expanded_box,
@@ -45,6 +46,7 @@ from .background_replace_helpers import (
 from .staged_compositor_helpers import (
     RetainedStageCache,
     _apply_staged_layer_options,
+    _composite_staged_individual_foregrounds,
     _composite_staged_foregrounds,
     _preview_staged_foregrounds,
     _stage_layered_foregrounds,
@@ -303,6 +305,77 @@ class UC_ResizeMask(io.ComfyNode):
             height = max(1, round(original_height * ratio))
         mask = _resize_mask(mask, width, height, upscale_method, crop)
         return io.NodeOutput(mask, mask.shape[2], mask.shape[1])
+
+
+class UC_BackgroundRemovalPreserveAlpha(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_BackgroundRemovalPreserveAlpha",
+            display_name="Background Removal (Preserve Alpha)",
+            category="utils/image",
+            description=(
+                "Removes backgrounds while retaining the source resolution and soft alpha. "
+                "RGBA inputs preserve their existing alpha without running a model."
+            ),
+            inputs=[
+                io.BackgroundRemoval.Input(
+                    "background_removal_model",
+                    display_name="background_removal_model_opt",
+                    optional=True,
+                    lazy=True,
+                    tooltip=(
+                        "Optional Core background-removal model. When connected it overrides "
+                        "the internal BiRefNet/Lucida selector."
+                    ),
+                ),
+                io.Image.Input("image"),
+                io.Combo.Input(
+                    "background_removal_model_name",
+                    options=["birefnet", "lucida"],
+                    default="birefnet",
+                    tooltip=(
+                        "Internal model used when background_removal_model_opt is disconnected."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Image.Output("image", display_name="RGBA Image"),
+                io.Mask.Output("mask", display_name="Alpha Mask"),
+            ],
+        )
+
+    @classmethod
+    def check_lazy_status(cls, image, background_removal_model=_MISSING, **kwargs):
+        if torch.is_tensor(image) and image.ndim == 4 and image.shape[-1] >= 4:
+            return []
+        if (
+            isinstance(background_removal_model, tuple)
+            and len(background_removal_model) == 2
+            and background_removal_model[0] is None
+            and background_removal_model[1]
+        ):
+            return [background_removal_model[1]]
+        return []
+
+    @classmethod
+    def execute(
+        cls,
+        image,
+        background_removal_model_name="birefnet",
+        background_removal_model=None,
+    ):
+        if not torch.is_tensor(image) or image.ndim != 4:
+            raise ValueError("Background Removal (Preserve Alpha) requires a batched IMAGE.")
+        if image.shape[-1] < 4:
+            background_removal_model = background_removal_model or (
+                _load_internal_background_removal_model(
+                    background_removal_model_name
+                )
+            )
+        return io.NodeOutput(
+            *background_removal_with_alpha(image, background_removal_model)
+        )
 
 
 class UC_UnifiedBackgroundReplace(io.ComfyNode):
@@ -823,7 +896,12 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
                     face_options["face_feather_radius"],
                 )
                 return _preview_staged_foregrounds(
-                    background, preview_stage, background_options["feather_radius"]
+                    background,
+                    preview_stage,
+                    background_options["feather_radius"],
+                    placement_data,
+                    background_options["image_resize_method"],
+                    background_options["mask_resize_method"],
                 )
             stage_mode = "full_run"
         else:
@@ -1019,6 +1097,9 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                     background,
                     preview_stage,
                     background_options["feather_radius"],
+                    placement_data,
+                    background_options["image_resize_method"],
+                    background_options["mask_resize_method"],
                 )
             stage_mode = "full_run"
         staged = _apply_staged_layer_options(
@@ -1028,6 +1109,157 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             0,
         )
         return _composite_staged_foregrounds(
+            background,
+            staged,
+            placement_data,
+            background_options["feather_radius"],
+            stage_mode=stage_mode,
+            image_resize_method=background_options["image_resize_method"],
+            mask_resize_method=background_options["mask_resize_method"],
+        )
+
+
+class UC_StagedIndividualComposites(io.ComfyNode):
+    _staged_by_node = RetainedStageCache(max_entries=8)
+
+    @classmethod
+    def define_schema(cls):
+        foreground_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input("foreground", lazy=True),
+            prefix="foreground_",
+            min=1,
+            max=50,
+        )
+        return io.Schema(
+            node_id="UC_StagedIndividualComposites",
+            display_name="Staged Individual Composites",
+            category="utils/image",
+            description=(
+                "Stages placements interactively and returns one full background composite per included foreground."
+            ),
+            inputs=[
+                io.BackgroundRemoval.Input(
+                    "background_removal_model",
+                    display_name="background_removal_model_opt",
+                    optional=True,
+                    lazy=True,
+                ),
+                io.Image.Input("background"),
+                StagedBackgroundOptionsType.Input(
+                    "background_options",
+                    display_name="Background Options",
+                    optional=True,
+                    tooltip="foreground_blend is ignored because each result contains one foreground.",
+                ),
+                io.Combo.Input(
+                    "execution_mode",
+                    options=["run_staging", "run_staged", "full_run"],
+                    default="full_run",
+                ),
+                io.String.Input(
+                    "placement_data",
+                    default='{"version":2,"workspace_padding":0.5,"layers":{}}',
+                    advanced=True,
+                ),
+                io.Combo.Input(
+                    "background_removal_model_name",
+                    options=["birefnet", "lucida"],
+                    default="birefnet",
+                ),
+                io.Autogrow.Input("foreground_images", template=foreground_template),
+            ],
+            outputs=[
+                io.Image.Output(
+                    "individual_composites", display_name="Individual Composites"
+                ),
+                io.Mask.Output("masks", display_name="Individual Masks"),
+                io.BoundingBox.Output("bounding_boxes", display_name="Boxes"),
+            ],
+            hidden=[io.Hidden.unique_id],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def check_lazy_status(
+        cls,
+        execution_mode,
+        background_removal_model=_MISSING,
+        foreground_images=None,
+        **kwargs,
+    ):
+        return UC_StagedLayeredBackgroundComposite.check_lazy_status(
+            execution_mode,
+            background_removal_model,
+            foreground_images,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        background,
+        foreground_images,
+        execution_mode,
+        placement_data,
+        background_removal_model_name="birefnet",
+        background_removal_model=None,
+        background_options=None,
+    ):
+        node_id = str(cls.hidden.unique_id or "")
+        background_options = UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS | (
+            background_options or {}
+        )
+        if isinstance(execution_mode, bool):
+            execution_mode = "run_staged" if execution_mode else "run_staging"
+        if execution_mode not in ("run_staging", "run_staged", "full_run"):
+            raise ValueError(
+                f"Unsupported staged compositor execution mode: {execution_mode!r}."
+            )
+        if execution_mode == "run_staged":
+            if node_id not in cls._staged_by_node:
+                raise ValueError(
+                    "No retained foreground stage is available for this compositor. Run staging first."
+                )
+            staged = cls._staged_by_node[node_id]
+            stage_mode = "retained"
+        else:
+            if background_removal_model is None:
+                background_removal_model = _load_internal_background_removal_model(
+                    background_removal_model_name
+                )
+                effective_model_name = str(
+                    background_removal_model_name or "birefnet"
+                ).lower()
+            else:
+                effective_model_name = "external"
+            staged = _stage_layered_foregrounds(
+                background_removal_model,
+                foreground_images,
+                background_options["mask_threshold"],
+                background_options["border_cleanup_width"],
+                background_options["artifact_cleanup_radius"],
+                background_options["gap_fill_radius"],
+                background_options["mask_resize_method"],
+                placement_data,
+            )
+            staged["background_removal_model_name"] = effective_model_name
+            cls._staged_by_node[node_id] = staged
+            if execution_mode == "run_staging":
+                preview = _preview_staged_foregrounds(
+                    background,
+                    staged,
+                    background_options["feather_radius"],
+                    placement_data,
+                    background_options["image_resize_method"],
+                    background_options["mask_resize_method"],
+                )
+                return io.NodeOutput(
+                    preview.result[0],
+                    preview.result[3],
+                    preview.result[2],
+                    ui=preview.ui,
+                )
+            stage_mode = "full_run"
+        return _composite_staged_individual_foregrounds(
             background,
             staged,
             placement_data,

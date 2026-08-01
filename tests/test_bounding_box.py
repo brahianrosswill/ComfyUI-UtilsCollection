@@ -15,6 +15,7 @@ sys.modules.setdefault(PACKAGE_NAME, package)
 from utils_collection_bbox_test.utils_nodes import (
     UC_AdjustBoundingBox,
     UC_ExtractBoundingBox,
+    UC_ExtractImage,
     UC_ExtractMask,
     UC_Ideogram4BoundingBoxCrop,
 )
@@ -74,6 +75,32 @@ def test_extract_mask_selects_batch_index():
 def test_extract_mask_rejects_out_of_range_index():
     with pytest.raises(ValueError, match=r"Index 2 is out of range.*1 mask"):
         UC_ExtractMask.execute(torch.zeros(1, 3, 4), 2)
+
+
+def test_extract_image_selects_batch_index_and_preserves_alpha():
+    first = torch.zeros(1, 3, 4, 4)
+    second = torch.zeros(1, 7, 5, 4)
+    second[..., :3] = 0.25
+    second[..., 3] = 0.75
+    images = [first, second]
+
+    extracted = UC_ExtractImage.execute(images, [1]).args[0]
+
+    assert extracted.shape == (1, 7, 5, 4)
+    assert torch.allclose(extracted, second)
+
+
+def test_extract_image_consumes_native_image_list_as_one_input():
+    schema = UC_ExtractImage.define_schema()
+
+    assert schema.is_input_list is True
+    assert schema.inputs[0].io_type == "IMAGE"
+    assert schema.outputs[0].io_type == "IMAGE"
+
+
+def test_extract_image_rejects_out_of_range_index():
+    with pytest.raises(ValueError, match=r"Index 2 is out of range.*1 image"):
+        UC_ExtractImage.execute([torch.zeros(1, 3, 4, 4)], [2])
 
 
 def test_ideogram_bbox_crop_outputs_crop_and_normalized_string():

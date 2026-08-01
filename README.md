@@ -81,10 +81,13 @@ the base-resolution conditioning fusion.
 - `UC_CropByMask`
 - `UC_ImageCropMerge`
 - `UC_ExtractMask`
+- `UC_ExtractImage`
 - `UC_ImageAndMaskResize`
 - `UC_ResizeMask`
+- `UC_BackgroundRemovalPreserveAlpha`
 - `UC_UnifiedBackgroundReplace`
 - `UC_StagedLayeredBackgroundComposite`
+- `UC_StagedIndividualComposites`
 - `UC_StagedLayeredBackgroundCompositeOptions`
 - `UC_StagedMediaPipeFaceBackgroundComposite`
 - `UC_StagedMediaPipeFaceOptions`
@@ -100,7 +103,7 @@ the base-resolution conditioning fusion.
 
 `UC_StagedLayeredBackgroundComposite` builds a scene from a background and ordered foreground sockets. Use `run_staging` to retain cutouts and populate the placement editor. Use `run_staged` to composite retained cutouts without loading models or evaluating foreground branches. Use `full_run` to restage and composite in one queue. `foreground_0` is the backmost layer. Retained cutouts are held in server memory and must be recreated after restarting ComfyUI.
 
-`UC_StagedMediaPipeFaceBackgroundComposite` detects faces in each foreground and adds them as independently placeable layers. The background and face options nodes contain removal, extraction, feathering, and blend settings. Both staged compositor nodes output the image, combined mask, layer masks, and bounding boxes in back-to-front order.
+`UC_StagedMediaPipeFaceBackgroundComposite` detects faces in each foreground and adds them as independently placeable layers. The background and face options nodes contain removal, extraction, feathering, and blend settings. `UC_StagedIndividualComposites` provides the same ordinary foreground staging editor but returns one full-background image, placement mask, and box per included foreground without stacking them. `UC_BackgroundRemovalPreserveAlpha` directly returns source-resolution RGBA images and their soft alpha masks; existing RGBA inputs keep their supplied alpha without model execution.
 
 ### Staged compositor example
 

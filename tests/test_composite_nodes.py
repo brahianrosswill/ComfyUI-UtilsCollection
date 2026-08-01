@@ -1111,8 +1111,16 @@ def test_staged_compositor_uses_connected_background_options(monkeypatch):
 
     sentinel = object()
 
-    def capture_preview(background, preview_stage, feather):
-        captured["preview"] = (preview_stage, feather)
+    def capture_preview(
+        background, preview_stage, feather, placement, image_resize, mask_resize
+    ):
+        captured["preview"] = (
+            preview_stage,
+            feather,
+            placement,
+            image_resize,
+            mask_resize,
+        )
         return sentinel
 
     monkeypatch.setattr(
@@ -1153,8 +1161,11 @@ def test_staged_compositor_uses_connected_background_options(monkeypatch):
 
     assert result is sentinel
     assert captured["stage"][:5] == (0.75, 3, 4, 5, "bilinear")
-    preview_stage, feather = captured["preview"]
+    preview_stage, feather, placement, image_resize, mask_resize = captured["preview"]
     assert feather == 6
+    assert placement == '{"version":2,"layers":{}}'
+    assert image_resize == "auto"
+    assert mask_resize == "bilinear"
     assert preview_stage["layers"][0]["blend_factor"] == 0.5
 
 
@@ -1819,6 +1830,9 @@ def test_staged_rotation_uses_expanded_bounds_and_preserves_center():
         0,
     )
     _, mask, bounding_boxes, layer_masks = output.result
+    individual = staged_compositor_helpers._composite_staged_individual_foregrounds(
+        torch.zeros(1, 20, 20, 3), staged, placement, 0
+    )
     points = torch.nonzero(mask[0] > 0.99)
 
     assert points[:, 0].min() == 6
@@ -1827,6 +1841,7 @@ def test_staged_rotation_uses_expanded_bounds_and_preserves_center():
     assert points[:, 1].max() == 10
     assert bounding_boxes == [[{"x": 8, "y": 6, "width": 3, "height": 7}]]
     assert torch.allclose(layer_masks, mask)
+    assert individual.result[0].shape == (1, 20, 20, 3)
 
 
 def test_staged_layer_geometry_outputs_follow_back_to_front_order():
@@ -1866,6 +1881,9 @@ def test_staged_layer_geometry_outputs_follow_back_to_front_order():
         0,
     )
     _, _, bounding_boxes, layer_masks = output.result
+    individual = staged_compositor_helpers._composite_staged_individual_foregrounds(
+        torch.zeros(1, 10, 20, 3), staged, placement, 0
+    )
 
     assert bounding_boxes == [
         [
@@ -1876,6 +1894,11 @@ def test_staged_layer_geometry_outputs_follow_back_to_front_order():
     assert layer_masks.shape == (2, 10, 20)
     assert layer_masks[0, 4:6, 15:17].all()
     assert layer_masks[1, 4:6, 3:5].all()
+    assert individual.result[0].shape == (2, 10, 20, 3)
+    assert individual.result[0][0, 4:6, 15:17].eq(1).all()
+    assert torch.count_nonzero(individual.result[0][0, 4:6, 3:5]) == 0
+    assert individual.result[0][1, 4:6, 3:5].eq(1).all()
+    assert torch.count_nonzero(individual.result[0][1, 4:6, 15:17]) == 0
 
 
 def test_version_three_warp_applies_to_ordinary_foreground():
@@ -2395,6 +2418,138 @@ def test_staged_preview_reuses_files_until_feather_changes(monkeypatch):
 def test_staged_face_compositor_display_name_includes_staged():
     schema = composite_nodes.UC_StagedMediaPipeFaceBackgroundComposite.define_schema()
     assert schema.display_name == "Staged Face Background Composite"
+
+
+def test_purpose_specific_background_node_schemas():
+    alpha_schema = composite_nodes.UC_BackgroundRemovalPreserveAlpha.define_schema()
+    individual_schema = composite_nodes.UC_StagedIndividualComposites.define_schema()
+
+    assert alpha_schema.display_name == "Background Removal (Preserve Alpha)"
+    assert individual_schema.display_name == "Staged Individual Composites"
+    assert [output.io_type for output in alpha_schema.outputs] == ["IMAGE", "MASK"]
+    assert [output.io_type for output in individual_schema.outputs] == [
+        "IMAGE",
+        "MASK",
+        "BOUNDING_BOX",
+    ]
+    assert individual_schema.is_output_node is True
+
+
+def test_background_removal_preserve_alpha_uses_soft_model_mask():
+    image = torch.rand(2, 6, 8, 3)
+    mask = torch.linspace(0, 1, 24).reshape(2, 3, 4)
+    rgba, alpha = composite_helpers.background_removal_with_alpha(
+        image, _QueuedBackgroundModel([mask])
+    )
+
+    assert rgba.shape == (2, 6, 8, 4)
+    assert alpha.shape == (2, 6, 8)
+    assert torch.equal(rgba[..., :3], image)
+    assert torch.equal(rgba[..., 3], alpha)
+    assert torch.any((alpha > 0) & (alpha < 1))
+
+
+def test_background_removal_preserve_alpha_bypasses_model_for_rgba():
+    image = torch.rand(2, 5, 7, 4)
+
+    rgba, alpha = composite_helpers.background_removal_with_alpha(image, None)
+
+    assert torch.equal(rgba, image)
+    assert torch.equal(alpha, image[..., 3])
+
+
+def test_existing_staged_nodes_keep_original_four_outputs():
+    assert len(composite_nodes.UC_StagedLayeredBackgroundComposite.define_schema().outputs) == 4
+    assert len(composite_nodes.UC_StagedMediaPipeFaceBackgroundComposite.define_schema().outputs) == 4
+
+
+def test_staged_mask_output_is_preallocated_without_stack(monkeypatch):
+    monkeypatch.setattr(
+        staged_compositor_helpers.torch,
+        "stack",
+        lambda *args, **kwargs: pytest.fail("layer masks must not be stacked"),
+    )
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
+
+    output = staged_compositor_helpers._composite_staged_foregrounds(
+        torch.zeros(1, 8, 8, 3), _paint_test_stage(), '{"version":3,"layers":{}}', 0
+    )
+
+    assert output.result[3].shape == (1, 8, 8)
+
+
+def test_individual_renderer_does_not_enter_accumulated_renderer(monkeypatch):
+    monkeypatch.setattr(
+        staged_compositor_helpers,
+        "_composite_staged_foregrounds",
+        lambda *args, **kwargs: pytest.fail("accumulated renderer was called"),
+    )
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
+
+    output = staged_compositor_helpers._composite_staged_individual_foregrounds(
+        torch.zeros(1, 8, 8, 3), _paint_test_stage(), '{"version":3,"layers":{}}', 0
+    )
+
+    assert output.result[0].shape == (1, 8, 8, 3)
+    assert output.result[1].shape == (1, 8, 8)
+    assert len(output.result[2][0]) == 1
+
+
+def test_background_removal_node_bypasses_internal_model_for_rgba(monkeypatch):
+    monkeypatch.setattr(
+        composite_nodes,
+        "_load_internal_background_removal_model",
+        lambda *args: pytest.fail("RGBA input must not load a removal model"),
+    )
+    image = torch.rand(2, 4, 5, 4)
+
+    output = composite_nodes.UC_BackgroundRemovalPreserveAlpha.execute(image)
+
+    assert torch.equal(output.result[0], image)
+    assert torch.equal(output.result[1], image[..., 3])
+
+
+def test_staged_individual_node_owns_staging_and_outputs_aligned_results(monkeypatch):
+    node = composite_nodes.UC_StagedIndividualComposites
+    node._staged_by_node.clear()
+    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="individual"))
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
+    model = _QueuedBackgroundModel(
+        [torch.ones(1, 2, 2), torch.ones(1, 2, 2)]
+    )
+
+    output = node.execute(
+        background=torch.zeros(1, 10, 10, 3),
+        foreground_images={
+            "foreground_0": torch.ones(1, 2, 2, 3),
+            "foreground_1": torch.full((1, 2, 2, 3), 0.5),
+        },
+        execution_mode="full_run",
+        placement_data=json.dumps(
+            {
+                "version": 3,
+                "layer_order": ["foreground_1", "foreground_0"],
+                "layers": {},
+            }
+        ),
+        background_removal_model=model,
+        background_options={
+            "border_cleanup_width": 0,
+            "artifact_cleanup_radius": 0,
+            "gap_fill_radius": 0,
+        },
+    )
+
+    assert output.result[0].shape == (2, 10, 10, 3)
+    assert output.result[1].shape == (2, 10, 10)
+    assert len(output.result[2][0]) == 2
+    assert "individual" in node._staged_by_node
 
 
 def test_face_run_staged_loads_no_models(monkeypatch):

@@ -697,6 +697,48 @@ class UC_ExtractMask(io.ComfyNode):
         return io.NodeOutput(masks[index:index + 1])
 
 
+class UC_ExtractImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_ExtractImage",
+            display_name="Extract Image",
+            category="utils/image",
+            inputs=[
+                io.Image.Input(
+                    "images",
+                    tooltip="Image list ordered by compositor layer order.",
+                ),
+                io.Int.Input(
+                    "index",
+                    default=0,
+                    min=0,
+                    max=sys.maxsize,
+                    tooltip="Index of the image to extract.",
+                ),
+            ],
+            outputs=[io.Image.Output("image")],
+            is_input_list=True,
+        )
+
+    @classmethod
+    def execute(cls, images, index):
+        collection = images
+        if not isinstance(collection, list):
+            raise ValueError("Extract Image requires an image list.")
+        index = index[0] if isinstance(index, list) and index else index
+        if index < 0 or index >= len(collection):
+            raise ValueError(
+                f"Index {index} is out of range. Found {len(collection)} image(s)."
+            )
+        image = collection[index]
+        if not torch.is_tensor(image) or image.ndim != 4 or image.shape[0] != 1:
+            raise ValueError(
+                "Image list contains an invalid image; expected [1, height, width, channels]."
+            )
+        return io.NodeOutput(image)
+
+
 class UC_Ideogram4BoundingBoxCrop(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -1257,9 +1299,11 @@ class UC_CompositeNodesGuide(io.ComfyNode):
                         "node_catalog",
                         "model_inputs",
                         "mask_cleanup_and_resize",
+                        "background_removal_alpha",
                         "unified_background_replace",
                         "layered_composite",
                         "staged_workflow",
+                        "staged_individual_workflow",
                         "staged_face_workflow",
                         "placement_editor",
                         "paint_layer",
@@ -1277,10 +1321,12 @@ class UC_CompositeNodesGuide(io.ComfyNode):
         topics = {
             "node_catalog": (
                 "## Background and face composite nodes\n\n"
+                "- `UC_BackgroundRemovalPreserveAlpha`: returns source-resolution RGBA images and their exact alpha masks in one node.\n"
                 "- `UC_UnifiedBackgroundReplace`: produces one independently composited result per flattened foreground image over one background.\n"
                 "- `UC_LayeredBackgroundComposite`: removes and places multiple foreground layers in one scene during every execution.\n"
                 "- `UC_StagedLayeredBackgroundCompositeOptions`: supplies cleanup, resize, feather, and foreground-blend settings to staged compositors.\n"
                 "- `UC_StagedLayeredBackgroundComposite`: retains cutouts between staging and final compositing executions.\n"
+                "- `UC_StagedIndividualComposites`: provides its own staging editor and returns one background-plus-one-foreground result per included layer.\n"
                 "- `UC_StagedMediaPipeFaceOptions`: supplies detection, extraction, face feather, initial scale, and face-blend settings.\n"
                 "- `UC_StagedMediaPipeFaceBackgroundComposite`: stages ordinary foreground layers and independently placeable detected face layers.\n"
                 "- `UC_MediaPipeFaceCompositeOptions`: supplies options for direct source-to-target face compositing.\n"
@@ -1304,6 +1350,10 @@ class UC_CompositeNodesGuide(io.ComfyNode):
                 "- `gap_fill_radius`: morphological closing radius. Default `2`; `0` disables it.\n"
                 "- `feather_radius`: inward mask-edge softness. Staged default `2`; `0` keeps the resized edge unchanged.\n\n"
                 "Resize methods are `auto`, `nearest-exact`, `bilinear`, `area`, `bicubic`, and `lanczos`. For images, `auto` uses FP32 area reduction when shrinking and bicubic when enlarging. For masks, `auto` uses area when shrinking and bilinear when enlarging. `nearest-exact` produces a hard resized edge."
+            ),
+            "background_removal_alpha": (
+                "## Background Removal (Preserve Alpha)\n\n"
+                "Accepts an IMAGE batch and returns source-resolution RGBA images plus the exact alpha MASK batch. RGB inputs use the connected Core background-removal model or selected internal BiRefNet/Lucida model. The soft model mask is preserved and resized when necessary. RGBA inputs bypass model execution and preserve their supplied alpha. Original RGB values remain stored beneath transparent pixels."
             ),
             "unified_background_replace": (
                 "## Unified Background Replace\n\n"
@@ -1331,6 +1381,10 @@ class UC_CompositeNodesGuide(io.ComfyNode):
                 "- `full_run`: refresh the retained cutouts from current inputs and composite them in the same execution.\n\n"
                 "Run Staging queues this output node and its upstream closure. A retained stage belongs to the node instance. `run_staged` reports an error if that instance has no retained stage.\n\n"
                 "`Staged Composite Options` is optional. When disconnected, its defaults are used. `foreground_blend=1.0` keeps the layer fully foreground. `0.0` applies the implemented 50/50 normal blend only where an accumulated foreground or face mask already exists; background-only areas remain fully foreground."
+            ),
+            "staged_individual_workflow": (
+                "## Staged Individual Composites\n\n"
+                "A complete staged editor with its own retained cutouts and placement state. Each included foreground produces one full-background IMAGE, matching placement MASK, and bounding box; foregrounds are never stacked. `run_staging`, `run_staged`, and `full_run` behave like the ordinary staged compositor. `foreground_blend` is unused because every result contains one foreground."
             ),
             "staged_face_workflow": (
                 "## Staged Face Background Composite\n\n"

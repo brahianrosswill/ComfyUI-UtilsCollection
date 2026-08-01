@@ -25,9 +25,11 @@ EXPECTED_TOPICS = [
     "node_catalog",
     "model_inputs",
     "mask_cleanup_and_resize",
+    "background_removal_alpha",
     "unified_background_replace",
     "layered_composite",
     "staged_workflow",
+    "staged_individual_workflow",
     "staged_face_workflow",
     "placement_editor",
     "paint_layer",
@@ -60,12 +62,22 @@ def test_composite_guide_documents_optional_model_contract():
 
 def test_composite_guide_documents_staged_modes_and_face_defaults():
     staged = UC_CompositeNodesGuide.execute("staged_workflow").args[0]
+    individual = UC_CompositeNodesGuide.execute("staged_individual_workflow").args[0]
     face = UC_CompositeNodesGuide.execute("staged_face_workflow").args[0]
 
     assert all(mode in staged for mode in ("`run_staging`", "`run_staged`", "`full_run`"))
     assert "`run_staged`" in face
     assert "`detection_threshold=0.55`" in face
     assert "`maximum_faces=16`" in face
+    assert "never stacked" in individual
+
+
+def test_composite_guide_documents_alpha_preserving_removal():
+    markdown = UC_CompositeNodesGuide.execute("background_removal_alpha").args[0]
+
+    assert "source-resolution RGBA" in markdown
+    assert "soft model mask" in markdown
+    assert "bypass model execution" in markdown
 
 
 def test_composite_guide_documents_resolved_transform_preview_geometry():

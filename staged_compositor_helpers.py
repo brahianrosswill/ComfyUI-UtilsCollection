@@ -231,16 +231,33 @@ def projective_warp(image, mask, corners, rotation=0.0):
     inverse = torch.linalg.inv(torch.cat((solved, solved.new_ones(1))).reshape(3, 3))
     ys = torch.arange(output_height, device=device, dtype=dtype)
     xs = torch.arange(output_width, device=device, dtype=dtype)
-    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
-    homogeneous = torch.stack((xx, yy, torch.ones_like(xx)), dim=-1)
-    mapped = homogeneous @ inverse.T
-    mapped = mapped[..., :2] / mapped[..., 2:].clamp(min=1e-8)
-    grid = torch.stack(
+    x_coordinates = xs.unsqueeze(0)
+    y_coordinates = ys.unsqueeze(1)
+    denominator = (
+        inverse[2, 0] * x_coordinates
+        + inverse[2, 1] * y_coordinates
+        + inverse[2, 2]
+    ).clamp(min=1e-8)
+    grid = image.new_empty((output_height, output_width, 2))
+    grid[..., 0] = (
         (
-            mapped[..., 0] * (2.0 / max(width - 1, 1)) - 1.0,
-            mapped[..., 1] * (2.0 / max(height - 1, 1)) - 1.0,
-        ),
-        dim=-1,
+            inverse[0, 0] * x_coordinates
+            + inverse[0, 1] * y_coordinates
+            + inverse[0, 2]
+        )
+        / denominator
+        * (2.0 / max(width - 1, 1))
+        - 1.0
+    )
+    grid[..., 1] = (
+        (
+            inverse[1, 0] * x_coordinates
+            + inverse[1, 1] * y_coordinates
+            + inverse[1, 2]
+        )
+        / denominator
+        * (2.0 / max(height - 1, 1))
+        - 1.0
     )
     rgba = torch.cat((image.movedim(-1, 1), mask.unsqueeze(1)), dim=1)
     warped = F.grid_sample(
@@ -383,7 +400,14 @@ def _apply_staged_layer_options(
     }
 
 
-def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
+def _preview_staged_foregrounds(
+    background,
+    staged_foregrounds,
+    feather_radius,
+    placement_data='{"version":2,"workspace_padding":0.5,"layers":{}}',
+    image_resize_method="auto",
+    mask_resize_method="auto",
+):
     if (
         not torch.is_tensor(background)
         or background.ndim != 4
@@ -464,6 +488,143 @@ def _preview_staged_foregrounds(background, staged_foregrounds, feather_radius):
     )
 
 
+def _ordered_staged_layers(staged_foregrounds, placement_data):
+    layers = staged_foregrounds.get("layers")
+    if not isinstance(layers, list) or not layers:
+        raise ValueError("Staged foreground data contains no layers.")
+    placements = _parse_layer_placements(placement_data)
+    placement_version, _, _, workspace_padding = _parse_layer_payload(placement_data)
+    paint = _parse_paint_layer(placement_data) if _PAINT_LAYER_ENABLED else None
+    layers_by_socket = {layer["socket"]: layer for layer in layers}
+    if paint is not None:
+        layers_by_socket[_PAINT_LAYER_KEY] = {
+            "socket": _PAINT_LAYER_KEY,
+            "is_paint": True,
+            "paint": paint,
+        }
+    ordered = [
+        layers_by_socket[key]
+        for key in _ordered_layer_keys(placement_data, layers_by_socket)
+    ]
+    return ordered, placements, placement_version, workspace_padding
+
+
+def _prepare_staged_layer(
+    layer,
+    placements,
+    placement_version,
+    workspace_padding,
+    background_width,
+    background_height,
+    feather_radius,
+    image_resize_method,
+    mask_resize_method,
+    reference,
+):
+    """Prepare one ordinary staged layer for accumulated or solo rendering."""
+    key = layer["socket"]
+    crop = layer["image"]
+    crop_mask = layer["mask"]
+    preview_crop = crop
+    preview_mask = crop_mask
+    crop_height, crop_width = crop.shape[1:3]
+    placement = placements.get(
+        key,
+        {
+            **(
+                _DEFAULT_LAYER_PLACEMENT_V2
+                if placement_version >= 2
+                else _DEFAULT_LAYER_PLACEMENT
+            ),
+            "_version": placement_version,
+        },
+    )
+    if key not in placements and layer.get("default_scale") is not None:
+        placement["scale"] = float(layer["default_scale"])
+    excluded = not placement.get("included", True)
+    staged_flip = bool(layer.get("flip_horizontal", False))
+    if staged_flip != bool(placement.get("flip_horizontal", False)):
+        crop = torch.flip(crop, dims=(2,))
+        crop_mask = torch.flip(crop_mask, dims=(2,))
+    staged_flip_vertical = bool(layer.get("flip_vertical", False))
+    if staged_flip_vertical != bool(placement.get("flip_vertical", False)):
+        crop = torch.flip(crop, dims=(1,))
+        crop_mask = torch.flip(crop_mask, dims=(1,))
+    target_longest = max(
+        1, round(min(background_height, background_width) * placement["scale"])
+    )
+    scale = target_longest / max(crop_height, crop_width)
+    placed_height = max(1, round(crop_height * scale))
+    placed_width = max(1, round(crop_width * scale))
+    resized_foreground = _resize_composite_image(
+        crop, placed_width, placed_height, image_resize_method
+    ).to(reference)
+    resized_mask = _resize_composite_mask(
+        crop_mask, placed_width, placed_height, mask_resize_method
+    ).to(reference)
+    if placement_version == 3:
+        resized_foreground, resized_mask = projective_warp(
+            resized_foreground,
+            resized_mask,
+            placement.get("corners", [[-1, -1], [1, -1], [1, 1], [-1, 1]]),
+            placement.get("rotation", 0.0),
+        )
+        placed_height, placed_width = resized_foreground.shape[1:3]
+    resized_mask = resized_mask[0]
+    layer_feather = int(layer.get("feather_radius", feather_radius))
+    placed_feather = (
+        max(1, round(layer_feather * scale))
+        if layer.get("is_face") and layer_feather
+        else layer_feather
+    )
+    alpha = (
+        resized_mask
+        if (layer.get("uses_embedded_alpha", False) and not layer.get("is_face"))
+        or not placed_feather
+        else _feather_mask(resized_mask, -placed_feather)
+    )
+    offset_x, offset_y = _placement_offsets(
+        background_width,
+        background_height,
+        placed_width,
+        placed_height,
+        placement,
+        workspace_padding if placement_version >= 2 else 0.0,
+    )
+    slices = (
+        None
+        if excluded
+        else _visible_placement_slices(
+            background_width,
+            background_height,
+            placed_width,
+            placed_height,
+            offset_x,
+            offset_y,
+        )
+    )
+    return {
+        "socket": key,
+        "image": resized_foreground,
+        "alpha": alpha,
+        "slices": slices,
+        "crop_width": crop_width,
+        "crop_height": crop_height,
+        "preview_crop": preview_crop,
+        "preview_mask": preview_mask,
+        "preview_feather": layer_feather,
+        "preview_applies_feather": bool(
+            layer_feather
+            and (layer.get("is_face") or not layer.get("uses_embedded_alpha", False))
+        ),
+        "flip_horizontal": staged_flip,
+        "flip_vertical": staged_flip_vertical,
+        "is_face": bool(layer.get("is_face", False)),
+        "included": not excluded,
+        "blend_factor": float(layer.get("blend_factor", 1.0)),
+    }
+
+
 def _composite_staged_foregrounds(
     background,
     staged_foregrounds,
@@ -488,32 +649,19 @@ def _composite_staged_foregrounds(
         or staged_foregrounds.get("version") != 1
     ):
         raise ValueError("Staged foreground data is missing or incompatible.")
-    layers = staged_foregrounds.get("layers")
-    if not isinstance(layers, list) or not layers:
-        raise ValueError("Staged foreground data contains no layers.")
-    placements = _parse_layer_placements(placement_data)
-    placement_version, _, _, workspace_padding = _parse_layer_payload(placement_data)
-    paint = _parse_paint_layer(placement_data) if _PAINT_LAYER_ENABLED else None
-    layers_by_socket = {layer["socket"]: layer for layer in layers}
-    if paint is not None:
-        layers_by_socket[_PAINT_LAYER_KEY] = {
-            "socket": _PAINT_LAYER_KEY,
-            "is_paint": True,
-            "paint": paint,
-        }
-    layers = [
-        layers_by_socket[key]
-        for key in _ordered_layer_keys(placement_data, layers_by_socket)
-    ]
+    layers, placements, placement_version, workspace_padding = (
+        _ordered_staged_layers(staged_foregrounds, placement_data)
+    )
     scene = background[..., :3].clone()
     background_height, background_width = scene.shape[1:3]
     combined_mask = scene.new_zeros((1, background_height, background_width))
-    layer_masks = []
+    layer_masks = scene.new_zeros(
+        (len(layers), background_height, background_width)
+    )
     layer_boxes = []
     editor_layers = []
 
-    for layer in layers:
-        key = layer["socket"]
+    for layer_index, layer in enumerate(layers):
         if layer.get("is_paint"):
             paint_rgba = load_staged_paint_rgba(
                 layer["paint"],
@@ -534,91 +682,21 @@ def _composite_staged_foregrounds(
                     1.0 - combined_mask[0]
                 )
             layer_boxes.append(layer_box)
-            layer_masks.append(layer_mask)
+            layer_masks[layer_index].copy_(layer_mask)
             continue
-        crop = layer["image"]
-        crop_mask = layer["mask"]
-        preview_crop = crop
-        preview_mask = crop_mask
-        crop_height, crop_width = crop.shape[1:3]
-        placement = placements.get(
-            key,
-            {
-                **(
-                    _DEFAULT_LAYER_PLACEMENT_V2
-                    if placement_version >= 2
-                    else _DEFAULT_LAYER_PLACEMENT
-                ),
-                "_version": placement_version,
-            },
-        )
-        if key not in placements and layer.get("default_scale") is not None:
-            placement["scale"] = float(layer["default_scale"])
-        excluded = not placement.get("included", True)
-        staged_flip = bool(layer.get("flip_horizontal", False))
-        desired_flip = bool(placement.get("flip_horizontal", False))
-        if staged_flip != desired_flip:
-            crop = torch.flip(crop, dims=(2,))
-            crop_mask = torch.flip(crop_mask, dims=(2,))
-        staged_flip_vertical = bool(layer.get("flip_vertical", False))
-        desired_flip_vertical = bool(placement.get("flip_vertical", False))
-        if staged_flip_vertical != desired_flip_vertical:
-            crop = torch.flip(crop, dims=(1,))
-            crop_mask = torch.flip(crop_mask, dims=(1,))
-        target_longest = max(
-            1, round(min(background_height, background_width) * placement["scale"])
-        )
-        scale = target_longest / max(crop_height, crop_width)
-        placed_height = max(1, round(crop_height * scale))
-        placed_width = max(1, round(crop_width * scale))
-        resized_foreground = _resize_composite_image(
-            crop, placed_width, placed_height, image_resize_method
-        ).to(scene)
-        resized_mask = _resize_composite_mask(
-            crop_mask, placed_width, placed_height, mask_resize_method
-        ).to(scene)
-        if placement_version == 3:
-            resized_foreground, resized_mask = projective_warp(
-                resized_foreground,
-                resized_mask,
-                placement.get("corners", [[-1, -1], [1, -1], [1, 1], [-1, 1]]),
-                placement.get("rotation", 0.0),
-            )
-            placed_height, placed_width = resized_foreground.shape[1:3]
-        resized_mask = resized_mask[0]
-        layer_feather = int(layer.get("feather_radius", feather_radius))
-        placed_feather = (
-            max(1, round(layer_feather * scale))
-            if layer.get("is_face") and layer_feather
-            else layer_feather
-        )
-        alpha = (
-            resized_mask
-            if (layer.get("uses_embedded_alpha", False) and not layer.get("is_face"))
-            or not placed_feather
-            else _feather_mask(resized_mask, -placed_feather)
-        )
-        offset_x, offset_y = _placement_offsets(
+        prepared = _prepare_staged_layer(
+            layer,
+            placements,
+            placement_version,
+            workspace_padding,
             background_width,
             background_height,
-            placed_width,
-            placed_height,
-            placement,
-            workspace_padding if placement_version >= 2 else 0.0,
+            feather_radius,
+            image_resize_method,
+            mask_resize_method,
+            scene,
         )
-        slices = (
-            None
-            if excluded
-            else _visible_placement_slices(
-                background_width,
-                background_height,
-                placed_width,
-                placed_height,
-                offset_x,
-                offset_y,
-            )
-        )
-        layer_mask = scene.new_zeros((background_height, background_width))
+        slices = prepared["slices"]
         layer_box = {"x": 0, "y": 0, "width": 0, "height": 0}
         if slices is not None:
             (
@@ -631,8 +709,11 @@ def _composite_staged_foregrounds(
                 source_left,
                 source_right,
             ) = slices
-            base_alpha = alpha[source_top:source_bottom, source_left:source_right]
-            layer_mask[
+            base_alpha = prepared["alpha"][
+                source_top:source_bottom, source_left:source_right
+            ]
+            layer_masks[
+                layer_index,
                 destination_top:destination_bottom,
                 destination_left:destination_right,
             ] = base_alpha
@@ -647,9 +728,9 @@ def _composite_staged_foregrounds(
                 destination_top:destination_bottom,
                 destination_left:destination_right,
             ]
-            blend_factor = float(layer.get("blend_factor", 1.0))
+            blend_factor = prepared["blend_factor"]
             placed_alpha = base_alpha * (1.0 - mask_region * (1.0 - blend_factor))
-            placed_foreground = resized_foreground[
+            placed_foreground = prepared["image"][
                 0, source_top:source_bottom, source_left:source_right
             ]
             region = scene[
@@ -670,29 +751,7 @@ def _composite_staged_foregrounds(
                 destination_left:destination_right,
             ] = mask_region + base_alpha * (1.0 - mask_region)
         layer_boxes.append(layer_box)
-        layer_masks.append(layer_mask)
-        editor_layers.append(
-            {
-                "socket": key,
-                "crop_width": crop_width,
-                "crop_height": crop_height,
-                "preview_crop": preview_crop,
-                "preview_mask": preview_mask,
-                "preview_feather": layer_feather,
-                "preview_applies_feather": bool(
-                    layer_feather
-                    and (
-                        layer.get("is_face")
-                        or not layer.get("uses_embedded_alpha", False)
-                    )
-                ),
-                "flip_horizontal": staged_flip,
-                "flip_vertical": staged_flip_vertical,
-                "is_face": bool(layer.get("is_face", False)),
-                "included": not excluded,
-                "blend_factor": float(layer.get("blend_factor", 1.0)),
-            }
-        )
+        editor_layers.append(prepared)
 
     editor_metadata = {
         "version": 1,
@@ -748,15 +807,139 @@ def _composite_staged_foregrounds(
                 exc_info=True,
             )
         editor_metadata["layers"].append(entry)
-    ordered_masks = (
-        torch.stack(layer_masks)
-        if layer_masks
-        else scene.new_zeros((0, background_height, background_width))
-    )
     return io.NodeOutput(
         scene,
         combined_mask,
         [layer_boxes] if layer_boxes else [],
-        ordered_masks,
+        layer_masks,
         ui={"uc_layered_scene_editor": [editor_metadata]},
+    )
+
+
+def _composite_staged_individual_foregrounds(
+    background,
+    staged_foregrounds,
+    placement_data,
+    feather_radius,
+    stage_mode=None,
+    image_resize_method="auto",
+    mask_resize_method="auto",
+):
+    if (
+        not torch.is_tensor(background)
+        or background.ndim != 4
+        or background.shape[0] != 1
+    ):
+        raise ValueError(
+            "Staged Individual Composites requires exactly one background image."
+        )
+    if background.shape[-1] < 3:
+        raise ValueError("Background image must have at least three channels.")
+    if (
+        not isinstance(staged_foregrounds, dict)
+        or staged_foregrounds.get("version") != 1
+    ):
+        raise ValueError("Staged foreground data is missing or incompatible.")
+    layers, placements, placement_version, workspace_padding = (
+        _ordered_staged_layers(staged_foregrounds, placement_data)
+    )
+    background_rgb = background[..., :3]
+    background_height, background_width = background_rgb.shape[1:3]
+    included_layers = []
+    for layer in layers:
+        if layer.get("is_paint"):
+            included = layer["paint"]["included"]
+        else:
+            included = placements.get(layer["socket"], {}).get("included", True)
+        if included:
+            included_layers.append(layer)
+    composites = background_rgb.new_empty(
+        (len(included_layers), background_height, background_width, 3)
+    )
+    masks = background_rgb.new_zeros(
+        (len(included_layers), background_height, background_width)
+    )
+    boxes = []
+    for layer_index, layer in enumerate(included_layers):
+        individual = background_rgb.clone()
+        layer_box = {"x": 0, "y": 0, "width": 0, "height": 0}
+        if layer.get("is_paint"):
+            paint_rgba = load_staged_paint_rgba(
+                layer["paint"],
+                background_width,
+                background_height,
+                individual.device,
+                individual.dtype,
+            )
+            if layer["paint"]["included"]:
+                alpha = paint_rgba[..., 3:4]
+                individual.mul_(1.0 - alpha).add_(paint_rgba[..., :3] * alpha)
+                masks[layer_index].copy_(paint_rgba[0, ..., 3])
+                layer_box = paint_alpha_bounds(paint_rgba[0, ..., 3])
+        else:
+            prepared = _prepare_staged_layer(
+                layer,
+                placements,
+                placement_version,
+                workspace_padding,
+                background_width,
+                background_height,
+                feather_radius,
+                image_resize_method,
+                mask_resize_method,
+                background_rgb,
+            )
+            slices = prepared["slices"]
+            if slices is not None:
+                (
+                    destination_top,
+                    destination_bottom,
+                    destination_left,
+                    destination_right,
+                    source_top,
+                    source_bottom,
+                    source_left,
+                    source_right,
+                ) = slices
+                alpha = prepared["alpha"][
+                    source_top:source_bottom, source_left:source_right
+                ].unsqueeze(-1)
+                foreground = prepared["image"][
+                    0, source_top:source_bottom, source_left:source_right
+                ]
+                masks[
+                    layer_index,
+                    destination_top:destination_bottom,
+                    destination_left:destination_right,
+                ] = alpha[..., 0]
+                layer_box = {
+                    "x": destination_left,
+                    "y": destination_top,
+                    "width": destination_right - destination_left,
+                    "height": destination_bottom - destination_top,
+                }
+                region = individual[
+                    0,
+                    destination_top:destination_bottom,
+                    destination_left:destination_right,
+                ]
+                region.mul_(1.0 - alpha).add_(foreground * alpha)
+        composites[layer_index].copy_(individual[0])
+        boxes.append(layer_box)
+    preview = _preview_staged_foregrounds(
+        background,
+        staged_foregrounds,
+        feather_radius,
+        placement_data,
+        image_resize_method,
+        mask_resize_method,
+    )
+    metadata = preview.ui["uc_layered_scene_editor"][0]
+    if stage_mode:
+        metadata["stage_mode"] = stage_mode
+    return io.NodeOutput(
+        composites,
+        masks,
+        [boxes] if boxes else [],
+        ui={"uc_layered_scene_editor": [metadata]},
     )
