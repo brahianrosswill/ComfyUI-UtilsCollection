@@ -35,3 +35,18 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
 - Before adding behavior to a node module that already contains standalone
   helpers, refactor the affected helper logic into the appropriate helper
   module rather than increasing the node module's standalone-function count.
+
+### Test selection
+
+- Use `tests/run_tests.py` as the repository-owned test selector.
+- During iteration, run an exact test or one explicit `--group`; do not run the
+  complete suite after every edit.
+- Before handoff, run `tests/run_tests.py --changed` once for the accumulated
+  worktree changes.
+- Use `tests/run_tests.py --final` only as the deliberate broader gate. Do not
+  repeat it when no relevant files changed after a successful run.
+- An unmapped production source file is an error. Add or correct its entry in
+  `tests/test_groups.toml` instead of silently skipping coverage.
+- Local untracked artifacts are intentionally excluded. Stage a new production
+  source file before relying on `--changed`, or run its intended `--group`
+  explicitly while creating it.

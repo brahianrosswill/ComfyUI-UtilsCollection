@@ -1,0 +1,141 @@
+[groups.encoder]
+paths = ["encoder_helpers.py", "encoder_nodes.py", "vlm_nodes.py", "vlm_presets.py"]
+python_tests = [
+  "tests/test_advanced_visual_consensus.py",
+  "tests/test_encoder_correctness.py",
+  "tests/test_visual_fusion.py",
+  "tests/test_vlm_presets.py",
+]
+frontend_tests = []
+
+[groups.textgen]
+paths = ["textgen_nodes.py", "text_nodes.py", "encoder_helpers.py"]
+python_tests = ["tests/test_textgen_formula.py"]
+frontend_tests = []
+
+[groups.composite]
+paths = [
+  "background_replace_helpers.py",
+  "composite_helpers.py",
+  "composite_nodes.py",
+  "staged_compositor_helpers.py",
+  "staged_face_helpers.py",
+]
+python_tests = ["tests/test_composite_nodes.py", "tests/test_composite_guide.py"]
+frontend_tests = []
+
+[groups.tiling]
+paths = ["tile_helpers.py", "image_nodes.py"]
+python_tests = [
+  "tests/test_high_resolution_tiling.py",
+  "tests/test_high_resolution_tiling_guide.py",
+]
+frontend_tests = []
+
+[groups.image_utilities]
+paths = ["image_nodes.py", "color_name_data.py", "color_palette_helpers.py"]
+python_tests = ["tests/test_bounding_box.py", "tests/test_prevalent_colors.py"]
+frontend_tests = []
+
+[groups.shared_helpers]
+paths = ["helper_functions.py"]
+python_tests = [
+  "tests/test_bounding_box.py",
+  "tests/test_composite_nodes.py",
+  "tests/test_encoder_correctness.py",
+  "tests/test_parameter_nodes.py",
+  "tests/test_prevalent_colors.py",
+  "tests/test_textgen_formula.py",
+]
+frontend_tests = []
+
+[groups.schedulers]
+paths = ["scheduler_helpers.py", "scheduler_nodes.py"]
+python_tests = ["tests/test_scheduler_migration.py"]
+frontend_tests = []
+
+[groups.logic_math]
+paths = ["logic_math_nodes.py"]
+python_tests = ["tests/test_logic_math_nodes.py"]
+frontend_tests = []
+
+[groups.parameters]
+paths = ["parameter_nodes.py"]
+python_tests = ["tests/test_parameter_nodes.py", "tests/test_primitive_nodes.py"]
+frontend_tests = []
+
+[groups.presets]
+paths = ["preset_nodes.py", "presets_collection.py"]
+python_tests = ["tests/test_preset_parentheses.py", "tests/test_vlm_presets.py"]
+frontend_tests = []
+
+[groups.guides_and_markdown]
+paths = ["utils_nodes.py"]
+python_tests = [
+  "tests/test_composite_guide.py",
+  "tests/test_encoder_guide.py",
+  "tests/test_high_resolution_tiling_guide.py",
+  "tests/test_markdown_preview.py",
+]
+frontend_tests = []
+
+[groups.registration]
+paths = [
+  "__init__.py",
+  "legacy_nodes.py",
+  "loader_nodes.py",
+  "model_assets.py",
+  "node_metadata.py",
+  "node_replacements.py",
+]
+python_tests = [
+  "tests/test_node_metadata.py",
+  "tests/test_node_module_structure.py",
+]
+frontend_tests = []
+
+[groups.staged_frontend]
+paths = [
+  "web/layer_context_menu.js",
+  "web/layered_background_editor.js",
+  "web/perspective_preview.js",
+  "web/placement_geometry.js",
+  "web/staged_editor_layout.js",
+  "web/staged_queue.js",
+]
+python_tests = ["tests/test_composite_nodes.py"]
+frontend_tests = [
+  "tests/test_layer_context_menu.mjs",
+  "tests/test_layered_placement.mjs",
+  "tests/test_perspective_preview.mjs",
+  "tests/test_staged_editor_layout.mjs",
+  "tests/test_staged_queue.mjs",
+]
+
+[groups.paint_frontend]
+paths = [
+  "web/paint_brush.js",
+  "web/paint_color_picker.js",
+  "web/paint_persistence.js",
+]
+python_tests = ["tests/test_composite_nodes.py"]
+frontend_tests = [
+  "tests/test_paint_brush.mjs",
+  "tests/test_paint_color_picker.mjs",
+  "tests/test_paint_persistence.mjs",
+]
+
+[groups.background_selector_frontend]
+paths = ["web/background_model_selection.js"]
+python_tests = []
+frontend_tests = ["tests/test_background_model_selection.mjs"]
+
+[groups.markdown_frontend]
+paths = ["web/markdown_preview.js"]
+python_tests = ["tests/test_markdown_preview.py"]
+frontend_tests = []
+
+[groups.test_selector]
+paths = ["tests/run_tests.py", "tests/test_groups.toml"]
+python_tests = ["tests/test_test_runner.py"]
+frontend_tests = []

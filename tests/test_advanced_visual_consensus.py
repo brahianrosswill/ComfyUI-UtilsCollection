@@ -24,6 +24,7 @@ try:
         UC_AdvancedConsensusConfiguration,
         UC_AdvancedVisConEncoder,
         UC_AdvancedVisualConfiguration,
+        UC_ConditioningConsensusBlend,
         UC_VisualConsensusConfiguration,
         VisualConsensusConfig,
     )
@@ -436,6 +437,42 @@ def test_original_resolution_accepts_one_exact_sample(monkeypatch):
     assert blended[0][0] == 1
 
 
+def _source_branch(source):
+    value = float(source.flatten()[0])
+    tensor = torch.tensor([[[-1.0], [value], [value], [value], [value], [-2.0]]])
+    pooled = torch.tensor([[value, value + 0.5]])
+    metadata = {"pooled_output": pooled, "shared": "metadata"}
+    return {
+        "conditioning": [[tensor, metadata]],
+        "tensor": tensor,
+        "metadata": metadata,
+        "pooled": pooled,
+        "tokens": {"qwen": [[(0, 1.0)]]},
+        "visual_range": (1, 5),
+        "grid": (2, 2),
+        "image": source,
+    }
+
+
+def _execute_source_distinct(monkeypatch, image_inputs, config):
+    monkeypatch.setattr(
+        encoder_helpers,
+        "_encode_visual_consensus_source",
+        lambda _clip, source, _resolution, _prompt, _path: _source_branch(source),
+    )
+    monkeypatch.setattr(
+        encoder_helpers.comfy.model_management,
+        "get_torch_device",
+        lambda: torch.device("cpu"),
+    )
+    monkeypatch.setattr(
+        encoder_helpers.comfy.model_management,
+        "intermediate_dtype",
+        lambda: torch.float32,
+    )
+    return _execute_mocked(image_inputs, config)
+
+
 def test_original_resolution_rejects_multiple_adjacent_samples(monkeypatch):
     _mock_execution_boundaries(monkeypatch)
     with pytest.raises(
@@ -472,3 +509,79 @@ def test_consensus_disabled_preserves_execution_lanes_as_batch(monkeypatch):
     assert blended == []
     assert output[0][0].shape[0] == 3
     assert output[0][0].flatten().tolist() == [1.0, 2.0, 3.0]
+
+
+def test_multiple_batches_contribute_every_source_to_each_spatial_lane(monkeypatch):
+    first = torch.tensor([[[[1.0]]], [[[2.0]]]])
+    second = torch.tensor([[[[10.0]]], [[[20.0]]]])
+    config = _execution_config(spatial=True, consensus=False)
+    config["visual"].update(
+        {
+            "visual_fusion_method": "spatial-checkerboard",
+            "visual_block_size": 1,
+            "dither_ratio": 0.5,
+            "seed": 0,
+            "dither_secondary_pattern": "checkerboard",
+            "dither_mask_cleanup": False,
+            "spatial_perturbation": 0.0,
+        }
+    )
+
+    output = _execute_source_distinct(
+        monkeypatch, {"image0": first, "image1": second}, config
+    )
+    visual = output[0][0][:, 1:5, 0]
+
+    assert visual.shape == (2, 4)
+    assert set(visual[0].tolist()) == {1.0, 10.0}
+    assert set(visual[1].tolist()) == {2.0, 20.0}
+    assert not set(visual[0].tolist()) & {2.0, 20.0}
+    assert not set(visual[1].tolist()) & {1.0, 10.0}
+
+
+def test_integrated_consensus_matches_standalone_complete_conditioning(monkeypatch):
+    first = torch.tensor([[[[1.0]]], [[[2.0]]]])
+    second = torch.tensor([[[[10.0]]], [[[20.0]]]])
+    config = _execution_config(spatial=True, consensus=True)
+    config["visual"].update(
+        {
+            "visual_fusion_method": "spatial-checkerboard",
+            "visual_block_size": 1,
+            "dither_ratio": 0.5,
+            "seed": 0,
+            "dither_secondary_pattern": "checkerboard",
+            "dither_mask_cleanup": False,
+            "spatial_perturbation": 0.0,
+        }
+    )
+    config["consensus"] = {
+        "blend_preset": "custom",
+        "blend_method": "linear",
+        "global_scale": 1.0,
+        "resolution_samples": 1,
+    }
+    completed = []
+    real_blend = encoder_helpers.blend_complete_conditionings
+
+    def record_and_blend(conditionings, blend_config):
+        completed.extend(conditionings)
+        return real_blend(conditionings, blend_config)
+
+    monkeypatch.setattr(
+        encoder_helpers, "blend_complete_conditionings", record_and_blend
+    )
+    integrated = _execute_source_distinct(
+        monkeypatch, {"image0": first, "image1": second}, config
+    )
+    standalone = UC_ConditioningConsensusBlend.execute(
+        {f"conditioning_{index}": value for index, value in enumerate(completed)},
+        config["consensus"],
+    ).result[0]
+
+    assert len(completed) == 2
+    assert torch.equal(integrated[0][0], standalone[0][0])
+    assert integrated[0][0].dtype == standalone[0][0].dtype == torch.float32
+    assert torch.equal(
+        integrated[0][1]["pooled_output"], standalone[0][1]["pooled_output"]
+    )
+    assert integrated[0][1]["shared"] == standalone[0][1]["shared"] == "metadata"

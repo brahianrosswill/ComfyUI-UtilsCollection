@@ -396,6 +396,51 @@ def test_advanced_visual_encoder_uses_one_base_resolution_pass_per_source(
     assert len(encoded_images) == 2
 
 
+def test_advanced_visual_encoder_spatial_output_contains_every_source(monkeypatch):
+    def encode(_clip, _prompt, images, **_kwargs):
+        value = float(images[0].flatten()[0])
+        tensor = torch.tensor(
+            [[[-1.0], [value], [value], [value], [value], [-2.0]]]
+        )
+        return [[tensor, {}]]
+
+    class Clip:
+        @staticmethod
+        def tokenize(*_args, **_kwargs):
+            return {"qwen": [[(0, 1.0)]]}
+
+    monkeypatch.setattr(encoder_nodes, "prepare_vlm_image", lambda image, _resolution: image)
+    monkeypatch.setattr(encoder_nodes, "encode_embedding_classical_scaled_bias", encode)
+    monkeypatch.setattr(
+        encoder_nodes, "find_visual_token_range", lambda *_args, **_kwargs: (1, 5)
+    )
+    monkeypatch.setattr(
+        encoder_nodes, "visual_fusion_grid", lambda *_args, **_kwargs: (2, 2)
+    )
+    monkeypatch.setattr(
+        encoder_nodes.comfy.model_management,
+        "get_torch_device",
+        lambda: torch.device("cpu"),
+    )
+
+    output = UC_AdvancedVisualConditioningEncode.execute(
+        Clip(),
+        prompt="",
+        system_prompt="",
+        vlm_resolution=384,
+        image_inputs={
+            "image_1": torch.ones(1, 2, 2, 3),
+            "image_2": torch.full((1, 2, 2, 3), 10.0),
+        },
+        visual_fusion_config={
+            **_config(method="spatial-checkerboard"),
+            "visual_block_size": 1,
+        },
+    ).result[0]
+
+    assert set(output[0][0][:, 1:5, 0].flatten().tolist()) == {1.0, 10.0}
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
 def test_cached_cuda_mask_matches_cpu_raw_fusion():
     config = _config(seed=47)

@@ -75,9 +75,60 @@ def test_textgen_formula_rejects_invalid_or_nonfinite_results(expression):
         textgen_nodes.evaluate_formula(expression, _images())
 
 
-def test_global_and_inline_formula_routes_use_the_shared_wrapper():
-    source = inspect.getsource(textgen_nodes.UC_TextGenerate.execute)
-    assert source.count("evaluate_formula(") == 2
+def test_global_and_inline_formula_routes_evaluate_their_image_expressions(monkeypatch):
+    class Clip:
+        tokenizer = types.SimpleNamespace(clip_name="qwen3vl_4b")
+
+        @staticmethod
+        def tokenize(_prompt, **_kwargs):
+            return {"qwen": [[(1, 1.0)]]}
+
+        @staticmethod
+        def generate(_tokens, **_kwargs):
+            return [7]
+
+        @staticmethod
+        def decode(_tokens, **_kwargs):
+            return "decoded"
+
+    calls = []
+    real_evaluate = textgen_nodes.evaluate_formula
+
+    def record(expression, images):
+        calls.append((expression, set(images)))
+        return real_evaluate(expression, images)
+
+    monkeypatch.setattr(textgen_nodes, "evaluate_formula", record)
+    images = {
+        "image_0": torch.full((1, 2, 2, 3), 0.2),
+        "image_1": torch.full((1, 2, 2, 3), 0.3),
+    }
+
+    global_result = textgen_nodes.UC_TextGenerate.execute(
+        Clip(),
+        "describe",
+        "",
+        "Original",
+        12,
+        {"sampling_mode": "off"},
+        formula="a + b",
+        image_inputs=images,
+    )
+    inline_result = textgen_nodes.UC_TextGenerate.execute(
+        Clip(),
+        "compare |a + b|",
+        "",
+        "Original",
+        12,
+        {"sampling_mode": "off"},
+        image_inputs=images,
+    )
+
+    assert global_result.args == inline_result.args == ("decoded", 0)
+    assert calls == [
+        ("a + b", {"image_input_1", "image_input_2", "a", "b"}),
+        ("a + b", {"image_input_1", "image_input_2", "a", "b"}),
+    ]
 
 
 def test_text_generate_schema_has_no_obsolete_blend_config():

@@ -119,9 +119,38 @@ def test_reference_latent_encoders_append_configurable_multiple():
         assert control.advanced
 
 
-def test_encoder_nodes_have_no_hardcoded_eight_pixel_vae_alignment():
-    source = (CUSTOM_NODE_ROOT / "encoder_nodes.py").read_text(encoding="utf-8")
-    assert "/ 8.0) * 8" not in source
+def test_advanced_visual_encoder_applies_non_default_vae_alignment(monkeypatch):
+    encoded_shapes = []
+
+    class VAE:
+        @staticmethod
+        def encode(image):
+            encoded_shapes.append(tuple(image.shape))
+            return torch.zeros(1, 4, 1, 1)
+
+    monkeypatch.setattr(
+        encoder_nodes, "prepare_vlm_image", lambda image, _resolution: image
+    )
+    monkeypatch.setattr(
+        encoder_nodes,
+        "encode_embedding_classical_scaled_bias",
+        lambda *_args, **_kwargs: [[torch.ones(1, 2, 3), {}]],
+    )
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        types.SimpleNamespace(),
+        prompt="",
+        system_prompt="",
+        vlm_resolution=384,
+        image_inputs={"image_1": torch.zeros(1, 101, 205, 3)},
+        visual_fusion_config={"visual_fusion_method": "off"},
+        vae_resolution="Original",
+        ref_latent_mode="single",
+        vae=VAE(),
+        vae_dimension_multiple=32,
+    )
+
+    assert encoded_shapes == [(1, 96, 192, 3)]
 
 
 def test_expression_grammar_and_nonfinite_rejection():
