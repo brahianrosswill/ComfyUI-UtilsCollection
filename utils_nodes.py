@@ -1348,6 +1348,7 @@ class UC_CompositeNodesGuide(io.ComfyNode):
                 "- `border_cleanup_width`: source-edge strip width where weak predictions are removed. Default `2`; `0` disables it.\n"
                 "- `artifact_cleanup_radius`: morphological opening radius. Default `2`; `0` disables it.\n"
                 "- `gap_fill_radius`: morphological closing radius. Default `2`; `0` disables it.\n"
+                "- `mask_processing_resolution`: longest edge used for removal-mask refinement, face detection, and editor cutout previews. `0` uses the removal model's declared native size (1024 for the installed BiRefNet and Lucida configurations). Original-resolution RGB is cropped only after mask bounds are mapped back.\n"
                 "- `feather_radius`: inward mask-edge softness. Staged default `2`; `0` keeps the resized edge unchanged.\n\n"
                 "Resize methods are `auto`, `nearest-exact`, `bilinear`, `area`, `bicubic`, and `lanczos`. For images, `auto` uses FP32 area reduction when shrinking and bicubic when enlarging. For masks, `auto` uses area when shrinking and bilinear when enlarging. `nearest-exact` produces a hard resized edge."
             ),

@@ -65,3 +65,12 @@ export function growNodeSize(current = [0, 0], required = [0, 0]) {
     Math.max(finite(current[1]), finite(required[1])),
   ];
 }
+
+export function wrapConnectionRefresh(node, refresh) {
+  const original = node.onConnectionsChange;
+  node.onConnectionsChange = (...args) => {
+    const result = original?.apply(node, args);
+    queueMicrotask(() => refresh(true));
+    return result;
+  };
+}

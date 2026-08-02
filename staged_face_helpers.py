@@ -6,8 +6,12 @@ import torch
 
 from .model_assets import require_huggingface_model
 from .background_replace_helpers import _expanded_box, _ordered_ring, _polygon_mask
-from .composite_helpers import _expand_mask, _ordered_single_foregrounds
-from .staged_compositor_helpers import _stage_layered_foregrounds
+from .composite_helpers import (
+    _expand_mask,
+    _ordered_single_foregrounds,
+    _resize_composite_mask,
+)
+from .staged_compositor_helpers import bounded_editor_preview, _stage_layered_foregrounds
 
 
 _FACE_MODEL_CACHE = {"path": None, "model": None}
@@ -176,18 +180,27 @@ def _stage_face_foregrounds(
         background_options["mask_resize_method"],
         placement_data,
         retain_full_alpha=True,
+        mask_processing_resolution=background_options[
+            "mask_processing_resolution"
+        ],
     )
     ordinary = {layer["socket"]: layer for layer in staged["layers"]}
     result, warning_count = [], 0
     ring = _ordered_ring(face_detection_model.connection_sets["face_oval"])
     foregrounds = _ordered_single_foregrounds(foreground_images)
     detection_inputs = []
+    detection_shapes = {}
+    processing_resolution = int(
+        staged.get("mask_processing_resolution", 0) or 0
+    )
     for key, original in foregrounds:
         rgb = original[..., :3]
+        detection_rgb = bounded_editor_preview(rgb, processing_resolution)
+        detection_shapes[key] = detection_rgb.shape[1:3]
         detection_inputs.append(
             (
                 key,
-                rgb.mul(255).add(0.5).clamp(0, 255).to(torch.uint8).cpu().numpy()[0],
+                detection_rgb.mul(255).add(0.5).clamp(0, 255).to(torch.uint8).cpu().numpy()[0],
             )
         )
     detected_by_socket, failed_sockets = detect_many_or_warn(
@@ -203,18 +216,46 @@ def _stage_face_foregrounds(
         rgb = original[..., :3]
         if key in failed_sockets:
             continue
-        full_alpha = full_alpha_by_socket[key]
+        alpha_info = full_alpha_by_socket[key]
+        full_alpha = alpha_info["mask"]
+        detection_height, detection_width = detection_shapes[key]
+        scale_x = rgb.shape[2] / detection_width
+        scale_y = rgb.shape[1] / detection_height
         faces = detected_by_socket[key]
         for face_index, face in enumerate(faces):
+            scaled_box = np.asarray(face["bbox_xyxy"], dtype=np.float32) * np.asarray(
+                [scale_x, scale_y, scale_x, scale_y], dtype=np.float32
+            )
             x1, y1, x2, y2 = _expanded_box(
-                face["bbox_xyxy"],
+                scaled_box,
                 face_options["bbox_expansion"],
                 rgb.shape[2],
                 rgb.shape[1],
             )
-            points = face["landmarks_xy"][ring] - np.asarray([x1, y1], dtype=np.float32)
+            landmarks = face["landmarks_xy"] * np.asarray(
+                [scale_x, scale_y], dtype=np.float32
+            )
+            points = landmarks[ring] - np.asarray([x1, y1], dtype=np.float32)
             crop_mask = _polygon_mask(y2 - y1, x2 - x1, points, rgb.device, rgb.dtype)
-            crop_mask = crop_mask * full_alpha[y1:y2, x1:x2].to(crop_mask)
+            alpha_height, alpha_width = full_alpha.shape
+            alpha_x1 = max(0, min(alpha_width - 1, x1 * alpha_width // rgb.shape[2]))
+            alpha_y1 = max(0, min(alpha_height - 1, y1 * alpha_height // rgb.shape[1]))
+            alpha_x2 = max(
+                alpha_x1 + 1,
+                min(alpha_width, (x2 * alpha_width + rgb.shape[2] - 1) // rgb.shape[2]),
+            )
+            alpha_y2 = max(
+                alpha_y1 + 1,
+                min(alpha_height, (y2 * alpha_height + rgb.shape[1] - 1) // rgb.shape[1]),
+            )
+            alpha_crop = full_alpha[None, alpha_y1:alpha_y2, alpha_x1:alpha_x2]
+            alpha_crop = _resize_composite_mask(
+                alpha_crop,
+                x2 - x1,
+                y2 - y1,
+                background_options["mask_resize_method"],
+            )[0]
+            crop_mask = crop_mask * alpha_crop.to(crop_mask)
             crop_mask = _expand_mask(crop_mask, face_options["mask_expansion"]).clamp(
                 0, 1
             )[None]

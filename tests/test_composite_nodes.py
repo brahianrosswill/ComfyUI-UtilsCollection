@@ -806,6 +806,81 @@ def test_staged_layered_composite_reuses_prepared_cutouts(monkeypatch):
     assert output.ui["uc_layered_scene_editor"][0]["layers"][0]["crop_width"] == 4
 
 
+@pytest.mark.parametrize(
+    ("model_resolution", "configured_resolution"),
+    [(12, 0), (16, 12)],
+)
+def test_staged_foreground_masks_use_model_resolution_and_preserve_source_crop(
+    monkeypatch, model_resolution, configured_resolution
+):
+    foreground = torch.zeros(1, 300, 200, 3)
+    foreground[:, 60:240, 40:160, 0] = 1
+    model = _QueuedBackgroundModel([torch.ones(1, 12, 8)])
+    model.image_size = model_resolution
+    received_shapes = []
+    nonzero_shapes = []
+    original_encode = model.encode_image
+    original_nonzero = torch.nonzero
+
+    def encode_image(image):
+        received_shapes.append(tuple(image.shape))
+        return original_encode(image)
+
+    model.encode_image = encode_image
+    monkeypatch.setattr(
+        staged_compositor_helpers.torch,
+        "nonzero",
+        lambda value, *args, **kwargs: nonzero_shapes.append(tuple(value.shape))
+        or original_nonzero(value, *args, **kwargs),
+    )
+    staged = staged_compositor_helpers._stage_layered_foregrounds(
+        model,
+        {"foreground_0": foreground},
+        0.5,
+        0,
+        0,
+        0,
+        mask_processing_resolution=configured_resolution,
+    )
+
+    assert received_shapes == [(1, 12, 8, 3)]
+    layer = staged["layers"][0]
+    assert layer["image"].shape == foreground.shape
+    assert layer["mask"].shape == (1, 300, 200)
+    assert torch.equal(layer["image"], foreground)
+    assert nonzero_shapes
+    assert max(torch.tensor(shape).prod().item() for shape in nonzero_shapes) <= 12
+
+
+def test_staged_editor_preview_is_bounded_without_changing_layer_geometry(monkeypatch):
+    saved_shapes = []
+    monkeypatch.setattr(
+        staged_compositor_helpers,
+        "_save_editor_preview",
+        lambda image, prefix: saved_shapes.append(tuple(image.shape)) or {"filename": prefix},
+    )
+    staged = {
+        "version": 1,
+        "mask_processing_resolution": 12,
+        "layers": [
+            {
+                "socket": "foreground_0",
+                "image": torch.ones(1, 30, 20, 3),
+                "mask": torch.ones(1, 30, 20),
+                "uses_embedded_alpha": False,
+            }
+        ],
+    }
+
+    output = staged_compositor_helpers._preview_staged_foregrounds(
+        torch.zeros(1, 40, 40, 3), staged, 0
+    )
+
+    assert saved_shapes == [(1, 12, 8, 4)]
+    metadata = output.ui["uc_layered_scene_editor"][0]["layers"][0]
+    assert (metadata["crop_height"], metadata["crop_width"]) == (30, 20)
+
+
 def test_staged_compositor_uses_embedded_alpha_without_background_removal(monkeypatch):
     monkeypatch.setattr(
         staged_compositor_helpers, "_save_editor_preview", lambda *args: None
@@ -1098,6 +1173,7 @@ def test_staged_compositor_uses_connected_background_options(monkeypatch):
         gap,
         mask_resize,
         placement,
+        mask_processing_resolution=0,
     ):
         captured["stage"] = (
             threshold,
@@ -1106,6 +1182,7 @@ def test_staged_compositor_uses_connected_background_options(monkeypatch):
             gap,
             mask_resize,
             placement,
+            mask_processing_resolution,
         )
         return staged
 
@@ -1145,6 +1222,7 @@ def test_staged_compositor_uses_connected_background_options(monkeypatch):
         "border_cleanup_width": 3,
         "artifact_cleanup_radius": 4,
         "gap_fill_radius": 5,
+        "mask_processing_resolution": 1536,
         "feather_radius": 6,
         "mask_resize_method": "bilinear",
         "foreground_blend": 0.0,
@@ -1161,6 +1239,7 @@ def test_staged_compositor_uses_connected_background_options(monkeypatch):
 
     assert result is sentinel
     assert captured["stage"][:5] == (0.75, 3, 4, 5, "bilinear")
+    assert captured["stage"][-1] == 1536
     preview_stage, feather, placement, image_resize, mask_resize = captured["preview"]
     assert feather == 6
     assert placement == '{"version":2,"layers":{}}'
@@ -1276,6 +1355,61 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
             "run_staged",
             '{"version":1,"layers":{}}',
         )
+
+
+def test_staged_compositor_rebuilds_serialized_layout_after_cache_loss(monkeypatch):
+    node = composite_nodes.UC_StagedLayeredBackgroundComposite
+    node._staged_by_node.clear()
+    monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="restart"))
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
+    background = torch.zeros(1, 20, 20, 3)
+    foreground = torch.ones(1, 4, 8, 3)
+    placement = json.dumps(
+        {
+            "version": 3,
+            "layer_order": ["foreground_0"],
+            "layers": {
+                "foreground_0": {
+                    "scale": 0.35,
+                    "center_x": 0.7,
+                    "center_y": 0.3,
+                    "rotation": 90,
+                    "corners": [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+                }
+            },
+        }
+    )
+    options = {
+        "border_cleanup_width": 0,
+        "artifact_cleanup_radius": 0,
+        "gap_fill_radius": 0,
+        "feather_radius": 0,
+    }
+
+    first = node.execute(
+        background,
+        {"foreground_0": foreground},
+        "full_run",
+        placement,
+        background_removal_model=_QueuedBackgroundModel([torch.ones(1, 4, 8)]),
+        background_options=options,
+    )
+    node._staged_by_node.clear()
+    rebuilt = node.execute(
+        background,
+        {"foreground_0": foreground},
+        "full_run",
+        placement,
+        background_removal_model=_QueuedBackgroundModel([torch.ones(1, 4, 8)]),
+        background_options=options,
+    )
+
+    assert torch.equal(first.result[0], rebuilt.result[0])
+    assert torch.equal(first.result[1], rebuilt.result[1])
+    assert first.result[2] == rebuilt.result[2]
+    assert torch.equal(first.result[3], rebuilt.result[3])
 
 
 def test_internal_background_removal_loader_selects_exact_files_and_caches(

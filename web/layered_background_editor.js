@@ -40,6 +40,7 @@ import {
   naturalEditorWidth,
   previewHeight,
   visibleLayerListHeight,
+  wrapConnectionRefresh,
 } from "./staged_editor_layout.js";
 import {
   buildLayerContextActions,
@@ -600,12 +601,7 @@ class LayeredPlacementEditor {
       this.setOutput(output);
       return result;
     };
-    const originalConnections = this.node.onConnectionsChange;
-    this.node.onConnectionsChange = (...args) => {
-      const result = originalConnections?.apply(this.node, args);
-      queueMicrotask(() => this.refreshSources(true));
-      return result;
-    };
+    wrapConnectionRefresh(this.node, (force) => this.refreshSources(force));
     const originalRemoved = this.node.onRemoved;
     this.node.onRemoved = (...args) => {
       this.dispose();

@@ -682,6 +682,7 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
         "border_cleanup_width": 2,
         "artifact_cleanup_radius": 2,
         "gap_fill_radius": 2,
+        "mask_processing_resolution": 0,
         "feather_radius": 2,
         "image_resize_method": "auto",
         "mask_resize_method": "auto",
@@ -719,6 +720,18 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
                     tooltip=(
                         "1.0 is fully foreground; 0.0 is a 50/50 normal blend where another foreground or face "
                         "is underneath. Background-only areas remain fully foreground."
+                    ),
+                ),
+                io.Int.Input(
+                    "mask_processing_resolution",
+                    default=0,
+                    min=0,
+                    max=65536,
+                    step=64,
+                    advanced=True,
+                    tooltip=(
+                        "Longest edge used for background-removal mask refinement. "
+                        "0 uses the connected model's native image_size. Original-resolution RGB is preserved."
                     ),
                 ),
             ],
@@ -926,7 +939,7 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
 
 
 class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
-    _staged_by_node = {}
+    _staged_by_node = RetainedStageCache(max_entries=8)
 
     @classmethod
     def define_schema(cls):
@@ -1083,9 +1096,13 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                 background_options["gap_fill_radius"],
                 background_options["mask_resize_method"],
                 placement_data,
+                mask_processing_resolution=background_options[
+                    "mask_processing_resolution"
+                ],
             )
             staged["background_removal_model_name"] = effective_model_name
             cls._staged_by_node[node_id] = staged
+            staged = cls._staged_by_node[node_id]
             if execution_mode == "run_staging":
                 preview_stage = _apply_staged_layer_options(
                     staged,
@@ -1240,6 +1257,9 @@ class UC_StagedIndividualComposites(io.ComfyNode):
                 background_options["gap_fill_radius"],
                 background_options["mask_resize_method"],
                 placement_data,
+                mask_processing_resolution=background_options[
+                    "mask_processing_resolution"
+                ],
             )
             staged["background_removal_model_name"] = effective_model_name
             cls._staged_by_node[node_id] = staged

@@ -158,6 +158,20 @@ def cached_layer_preview(staged, socket, cache_key, build_tensor, save_preview):
     return preview
 
 
+def bounded_editor_preview(image, longest_edge):
+    longest_edge = max(0, int(longest_edge))
+    height, width = image.shape[1:3]
+    if longest_edge == 0 or max(height, width) <= longest_edge:
+        return image
+    scale = longest_edge / max(height, width)
+    return _resize_composite_image(
+        image,
+        max(1, round(width * scale)),
+        max(1, round(height * scale)),
+        "auto",
+    )
+
+
 def is_identity_projective_transform(corners, rotation):
     if float(rotation) != 0.0 or len(corners) != 4:
         return False
@@ -280,6 +294,7 @@ def _stage_layered_foregrounds(
     mask_resize_method="auto",
     placement_data=None,
     retain_full_alpha=False,
+    mask_processing_resolution=0,
 ):
     foregrounds = _ordered_single_foregrounds(foreground_images)
     if not foregrounds:
@@ -289,6 +304,9 @@ def _stage_layered_foregrounds(
     layers = []
     full_alpha_by_socket = {}
     placements = _parse_layer_placements(placement_data)
+    requested_size = max(0, int(mask_processing_resolution))
+    model_size = int(getattr(background_removal_model, "image_size", 0) or 0)
+    processing_size = requested_size or model_size
     for key, foreground in foregrounds:
         if foreground.shape[-1] < 3:
             raise ValueError(
@@ -296,6 +314,7 @@ def _stage_layered_foregrounds(
             )
         embedded_alpha = foreground[..., 3] if foreground.shape[-1] >= 4 else None
         foreground = foreground[..., :3]
+        source_height, source_width = foreground.shape[1:3]
         uses_embedded_alpha = embedded_alpha is not None
         if embedded_alpha is not None:
             # A supplied alpha channel is an explicit foreground matte. Preserve
@@ -306,8 +325,32 @@ def _stage_layered_foregrounds(
                 .clamp(0.0, 1.0)
             )
             full_alpha = refined
+            if (
+                retain_full_alpha
+                and processing_size > 0
+                and max(source_height, source_width) > processing_size
+            ):
+                scale = processing_size / max(source_height, source_width)
+                full_alpha = _resize_composite_mask(
+                    full_alpha[None],
+                    max(1, round(source_width * scale)),
+                    max(1, round(source_height * scale)),
+                    mask_resize_method,
+                )[0]
         else:
-            raw_mask = background_removal_model.encode_image(foreground)
+            if processing_size > 0 and max(source_height, source_width) > processing_size:
+                scale = processing_size / max(source_height, source_width)
+                mask_input_height = max(1, round(source_height * scale))
+                mask_input_width = max(1, round(source_width * scale))
+                mask_input = _resize_composite_image(
+                    foreground,
+                    mask_input_width,
+                    mask_input_height,
+                    "auto",
+                )
+            else:
+                mask_input = foreground
+            raw_mask = background_removal_model.encode_image(mask_input)
             if not torch.is_tensor(raw_mask):
                 raise ValueError(
                     f"Background removal returned an invalid mask for {key}."
@@ -320,18 +363,19 @@ def _stage_layered_foregrounds(
                 raise ValueError(
                     f"Background removal must return one [batch, height, width] mask for {key}."
                 )
-            if raw_mask.shape[-2:] != foreground.shape[1:3]:
+            if raw_mask.shape[-2:] != mask_input.shape[1:3]:
                 raw_mask = _resize_composite_mask(
                     raw_mask,
-                    foreground.shape[2],
-                    foreground.shape[1],
+                    mask_input.shape[2],
+                    mask_input.shape[1],
                     mask_resize_method,
                 )
-            full_alpha = (
+            working_alpha = (
                 raw_mask[0]
                 .to(device=foreground.device, dtype=foreground.dtype)
                 .clamp(0.0, 1.0)
             )
+            full_alpha = working_alpha
             refined = _refine_foreground_mask(
                 raw_mask[0],
                 float(mask_threshold),
@@ -340,20 +384,38 @@ def _stage_layered_foregrounds(
                 gap_fill_radius,
             )
         if retain_full_alpha:
-            full_alpha_by_socket[key] = full_alpha
-        points = torch.nonzero(refined > 0, as_tuple=False)
-        if points.numel() == 0:
+            full_alpha_by_socket[key] = {
+                "mask": full_alpha,
+                "source_height": source_height,
+                "source_width": source_width,
+            }
+        occupied = refined > 0
+        occupied_rows = torch.nonzero(occupied.any(dim=1), as_tuple=False).flatten()
+        occupied_columns = torch.nonzero(occupied.any(dim=0), as_tuple=False).flatten()
+        if occupied_rows.numel() == 0 or occupied_columns.numel() == 0:
             raise ValueError(
                 f"Background removal produced an empty foreground mask for {key}."
             )
-        top = int(points[:, 0].min())
-        bottom = int(points[:, 0].max()) + 1
-        left = int(points[:, 1].min())
-        right = int(points[:, 1].max()) + 1
+        mask_height, mask_width = refined.shape
+        mask_top = int(occupied_rows[0])
+        mask_bottom = int(occupied_rows[-1]) + 1
+        mask_left = int(occupied_columns[0])
+        mask_right = int(occupied_columns[-1]) + 1
+        top = mask_top * source_height // mask_height
+        bottom = (mask_bottom * source_height + mask_height - 1) // mask_height
+        left = mask_left * source_width // mask_width
+        right = (mask_right * source_width + mask_width - 1) // mask_width
         flip_horizontal = placements.get(key, {}).get("flip_horizontal", False)
         flip_vertical = placements.get(key, {}).get("flip_vertical", False)
         cropped_image = foreground[:, top:bottom, left:right]
-        cropped_mask = refined[None, top:bottom, left:right]
+        cropped_mask = refined[None, mask_top:mask_bottom, mask_left:mask_right]
+        if cropped_mask.shape[1:3] != cropped_image.shape[1:3]:
+            cropped_mask = _resize_composite_mask(
+                cropped_mask,
+                cropped_image.shape[2],
+                cropped_image.shape[1],
+                mask_resize_method,
+            )
         if flip_horizontal:
             cropped_image = torch.flip(cropped_image, dims=(2,))
             cropped_mask = torch.flip(cropped_mask, dims=(2,))
@@ -370,7 +432,11 @@ def _stage_layered_foregrounds(
                 "uses_embedded_alpha": uses_embedded_alpha,
             }
         )
-    staged = {"version": 1, "layers": layers}
+    staged = {
+        "version": 1,
+        "layers": layers,
+        "mask_processing_resolution": processing_size,
+    }
     return (staged, full_alpha_by_socket) if retain_full_alpha else staged
 
 
@@ -427,6 +493,9 @@ def _preview_staged_foregrounds(
     if not isinstance(layers, list) or not layers:
         raise ValueError("Staged foreground data contains no layers.")
     background_height, background_width = background.shape[1:3]
+    preview_resolution = int(
+        staged_foregrounds.get("mask_processing_resolution", 0) or 0
+    )
     editor_metadata = {
         "version": 1,
         "stage_mode": "fresh",
@@ -459,12 +528,19 @@ def _preview_staged_foregrounds(
                 alpha = layer["mask"][0]
                 if applies_feather:
                     alpha = _feather_mask(alpha, -layer_feather)
-                return torch.cat((crop[0], alpha.unsqueeze(-1)), dim=-1).unsqueeze(0)
+                rgba = torch.cat(
+                    (crop[0], alpha.unsqueeze(-1)), dim=-1
+                ).unsqueeze(0)
+                return bounded_editor_preview(rgba, preview_resolution)
 
             entry["preview"] = cached_layer_preview(
                 staged_foregrounds,
                 layer["socket"],
-                ("rgba-v1", layer_feather if applies_feather else 0),
+                (
+                    "rgba-v2",
+                    layer_feather if applies_feather else 0,
+                    preview_resolution,
+                ),
                 build_preview_tensor,
                 lambda image: _save_editor_preview(
                     image, f"UC_layered_{layer['socket']}"

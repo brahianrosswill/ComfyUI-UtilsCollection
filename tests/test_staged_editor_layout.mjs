@@ -10,6 +10,7 @@ import {
   naturalEditorWidth,
   previewHeight,
   visibleLayerListHeight,
+  wrapConnectionRefresh,
 } from "../web/staged_editor_layout.js";
 
 test("background preview is not arbitrarily dimmed", () => {
@@ -60,4 +61,23 @@ test("required sizing grows from the manual size floor rather than previous auto
   assert.deepEqual(growNodeSize([900, 700], [800, 600]), [900, 700]);
   assert.deepEqual(growNodeSize([700, 500], [800, 600]), [800, 600]);
   assert.deepEqual(growNodeSize([800, 600], [800, 600]), [800, 600]);
+});
+
+test("connection changes preserve existing handlers and force source refresh", async () => {
+  const calls = [];
+  const node = {
+    onConnectionsChange(...args) {
+      calls.push(["original", ...args]);
+      return "preserved";
+    },
+  };
+  wrapConnectionRefresh(node, (force) => calls.push(["refresh", force]));
+
+  assert.equal(node.onConnectionsChange("input", 1), "preserved");
+  assert.deepEqual(calls, [["original", "input", 1]]);
+  await new Promise((resolve) => queueMicrotask(resolve));
+  assert.deepEqual(calls, [
+    ["original", "input", 1],
+    ["refresh", true],
+  ]);
 });
