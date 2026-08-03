@@ -134,11 +134,33 @@ def test_encoder_guide_explains_dedicated_minimax_h3_keyframe_contract():
     images = UC_EncoderNodesGuide.execute("image_inputs_and_placeholders").args[0]
 
     assert "`UC_AdvancedMiniMaxH3ImageToVideo`" in catalog
-    assert "image 1 is always the VAE first frame" in images
-    assert "image 2 is the VAE last frame" in images
-    assert "Every flattened image still participates in Qwen conditioning" in images
+    assert "In `first frame` mode the first connected source is the VAE first frame" in images
+    assert "the second connected source is also the VAE last frame" in images
+    assert "Every flattened source participates in native H3 Qwen conditioning" in images
+    assert "`reference images` mode" in images
+    assert "identical pixels to Qwen through native `minimax_ref_items` and to the VAE" in images
+    assert "separate ordered `minimax_refs` entry" in images
+    assert "`ref_image_size`" in images
+    assert "Spatial fusion must be disabled in this mode" in images
+    assert "ignored by the two keyframe modes" in images
     assert "Qwen-only visual conditioning" in images
     assert "do not create `minimax_keyframes` or an H3 latent" in images
+
+
+def test_encoder_guide_explains_combined_minimax_h3_patched_model_contract():
+    catalog = UC_EncoderNodesGuide.execute("node_catalog").args[0]
+    images = UC_EncoderNodesGuide.execute("image_inputs_and_placeholders").args[0]
+
+    assert "`UC_MiniMaxH3FirstFrameReferences`" in catalog
+    assert "true first-frame anchor, an optional last-frame anchor" in catalog
+    assert "all three outputs must feed the same sampling branch" in catalog
+    assert "Qwen `<Picture 1>`" in images
+    assert "`last_frame`" in images
+    assert "`reference_image_1`" in images
+    assert "`<Picture 3>`" in images
+    assert "passes `prompt` directly" in images
+    assert "does not provide fusion or consensus" in images
+    assert "bypassing the model output" in images
 
 
 def test_encoder_guide_lists_only_registered_compatibility_migrations_as_mappings():

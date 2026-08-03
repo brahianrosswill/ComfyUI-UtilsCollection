@@ -15,6 +15,8 @@ package.__path__ = [str(CUSTOM_NODE_ROOT)]
 sys.modules.setdefault(PACKAGE_NAME, package)
 
 from comfy.cli_args import args as cli_args
+import comfy.model_base
+import comfy.patcher_extension
 
 prior_cpu = cli_args.cpu
 cli_args.cpu = True
@@ -23,6 +25,7 @@ try:
     from utils_collection_encoder_test.encoder_nodes import (
         TextEncodeKrea2SysEditScaledAdvAttn,
         UC_AdvancedMiniMaxH3ImageToVideo,
+        UC_MiniMaxH3FirstFrameReferences,
         UC_AdvancedVisualConditioningEncode,
         UC_AttentionBiasTextEncode,
         UC_ConditioningConsensusBlend,
@@ -234,12 +237,26 @@ def test_inline_image_placeholders_honor_legacy_flat_encoder_path():
 class _MiniMaxH3TestClip:
     def __init__(self):
         self.encoded_tokens = []
+        self.tokenize_calls = []
 
     @staticmethod
     def _text_entries(text):
         return [] if not text else [(text, 1.0)]
 
-    def tokenize(self, text, images=None, **_kwargs):
+    def tokenize(self, text, images=None, minimax_ref_items=None, **_kwargs):
+        self.tokenize_calls.append(
+            {
+                "text": text,
+                "images": images,
+                "minimax_ref_items": minimax_ref_items,
+            }
+        )
+        if minimax_ref_items is not None:
+            images = [
+                item["data"]
+                for item in minimax_ref_items
+                if item["type"] == "image"
+            ]
         entries = []
         for index, image in enumerate(images or []):
             entries.extend(self._text_entries(f"<Picture {index + 1}>: "))
@@ -278,8 +295,35 @@ class _RecordingMiniMaxVAE:
         self.images = []
 
     def encode(self, image):
-        self.images.append(image.clone())
+        self.images.append(image)
         return torch.full((1, 4, 1, 1), float(image.mean()))
+
+
+class _MiniMaxH3TestPatcher:
+    def __init__(self, model=None):
+        self.model = model or object.__new__(comfy.model_base.MiniMaxH3)
+        self.wrappers = {}
+        self.clone_calls = 0
+
+    def clone(self):
+        self.clone_calls += 1
+        cloned = _MiniMaxH3TestPatcher(self.model)
+        cloned.wrappers = {
+            wrapper_type: {
+                key: values.copy() for key, values in keyed.items()
+            }
+            for wrapper_type, keyed in self.wrappers.items()
+        }
+        return cloned
+
+    def add_wrapper_with_key(self, wrapper_type, key, wrapper):
+        self.wrappers.setdefault(wrapper_type, {}).setdefault(key, []).append(wrapper)
+
+    def remove_wrappers_with_key(self, wrapper_type, key):
+        self.wrappers.get(wrapper_type, {}).pop(key, None)
+
+    def get_wrappers(self, wrapper_type, key):
+        return self.wrappers.get(wrapper_type, {}).get(key, [])
 
 
 def test_minimax_h3_prompt_tokens_preserve_inline_order_and_raw_syntax():
@@ -356,9 +400,445 @@ def test_advanced_minimax_h3_node_schema_explains_positional_contract():
     assert schema.display_name == "Advanced MiniMax H3 Image to Video"
     assert len(schema.outputs) == 2
     assert schema.outputs[0].display_name == "positive"
-    assert inputs["keyframe_mode"].options == ["first frame", "first + last frames"]
+    assert inputs["keyframe_mode"].options == [
+        "first frame",
+        "first + last frames",
+        "reference images",
+    ]
     assert "image 1" in inputs["keyframe_mode"].tooltip.lower()
+    assert inputs["ref_image_size"].options == ["match", "max"]
+    assert inputs["ref_image_size"].default == "match"
+    assert "only by reference images mode" in inputs["ref_image_size"].tooltip.lower()
     assert "batched socket" in inputs["image_inputs"].tooltip.lower()
+    serialized_widgets = [
+        value.id
+        for value in schema.inputs
+        if value.id in {
+            "prompt",
+            "system_prompt",
+            "keyframe_mode",
+            "width",
+            "height",
+            "length",
+            "multiplier",
+            "ref_image_size",
+        }
+    ]
+    assert serialized_widgets == [
+        "prompt",
+        "system_prompt",
+        "keyframe_mode",
+        "width",
+        "height",
+        "length",
+        "multiplier",
+        "ref_image_size",
+    ]
+
+
+def test_combined_minimax_h3_node_schema_is_additive_and_one_based():
+    schema = UC_MiniMaxH3FirstFrameReferences.define_schema()
+    inputs = {value.id: value for value in schema.inputs}
+
+    assert schema.node_id == "UC_MiniMaxH3FirstFrameReferences"
+    assert schema.display_name == "MiniMax H3 First/Last Frame + References"
+    assert schema.category == "model/conditioning/minimax"
+    assert [value.id for value in schema.inputs] == [
+        "model",
+        "clip",
+        "vae",
+        "first_frame",
+        "last_frame",
+        "prompt",
+        "width",
+        "height",
+        "length",
+        "ref_image_size",
+        "reference_images",
+    ]
+    assert inputs["reference_images"].template.names == [
+        f"reference_image_{index}" for index in range(1, 17)
+    ]
+    assert inputs["ref_image_size"].options == ["match", "max"]
+    assert inputs["ref_image_size"].default == "match"
+    assert inputs["length"].default == 124
+    assert [output.display_name for output in schema.outputs] == [
+        "model",
+        "positive",
+        None,
+    ]
+
+
+def test_combined_minimax_h3_native_order_metadata_and_model_patch():
+    model = _MiniMaxH3TestPatcher()
+    wrapper_type = comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL
+    unrelated = object()
+    model.wrappers = {wrapper_type: {"unrelated": [unrelated]}}
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    first = torch.full((1, 32, 64, 3), 0.125)
+    second = torch.full((1, 32, 64, 3), 0.25)
+    third = torch.full((1, 32, 64, 3), 0.5)
+    fourth = torch.full((1, 64, 32, 3), 0.75)
+    last = torch.full((1, 32, 64, 3), 0.875)
+
+    patched, conditioning, latent = UC_MiniMaxH3FirstFrameReferences.execute(
+        model,
+        clip,
+        vae,
+        first,
+        "subject",
+        64,
+        32,
+        5,
+        "match",
+        {
+            "reference_image_2": fourth,
+            "reference_image_1": torch.cat([second, third], dim=0),
+        },
+        last,
+    ).args
+
+    native_call = clip.tokenize_calls[-1]
+    presented = [item["data"] for item in native_call["minimax_ref_items"]]
+    assert native_call["images"] is None
+    assert native_call["text"] == "subject"
+    assert [float(image.mean()) for image in presented] == pytest.approx(
+        [0.125, 0.875, 0.25, 0.5, 0.75], abs=0.004
+    )
+    assert len(vae.images) == 5
+    assert all(qwen is encoded for qwen, encoded in zip(presented, vae.images))
+
+    tensor, metadata = conditioning[0]
+    assert torch.all(tensor == 1.0)
+    assert metadata["minimax_frame_count"] == 5
+    assert [item["resolved_frame_index"] for item in metadata["minimax_keyframes"]] == [0, 4]
+    assert float(metadata["minimax_keyframes"][0]["latent"].mean()) == pytest.approx(
+        float(presented[0].mean())
+    )
+    assert [float(item["latent"].mean()) for item in metadata["minimax_refs"]] == pytest.approx(
+        [0.25, 0.5, 0.75], abs=0.004
+    )
+    assert metadata["minimax_token_tags"].numel() == tensor.shape[1]
+    video, audio = latent["samples"].tensors
+    assert video.shape == (1, 24, 2, 2, 4)
+    assert audio.shape == (1, 32, 2, 8)
+
+    assert patched is not model
+    assert model.clone_calls == 1
+    assert model.get_wrappers(wrapper_type, "uc_minimax_h3_combined_visual_latents") == []
+    assert patched.get_wrappers(wrapper_type, "unrelated") == [unrelated]
+    assert patched.get_wrappers(
+        wrapper_type, "uc_minimax_h3_combined_visual_latents"
+    ) == [encoder_helpers.minimax_h3_combined_payload_wrapper]
+
+
+def test_combined_minimax_h3_wrapper_repairs_rows_without_mutation():
+    keyframe_latent = torch.tensor([1.0])
+    reference_latent = torch.tensor([2.0])
+    audio_latent = torch.tensor([3.0])
+    layout = object()
+    payload = {
+        "keyframes": [{"latent": keyframe_latent}],
+        "refs": [
+            {"kind": "image", "latent": reference_latent},
+            {"kind": "audio", "audio_latent": audio_latent},
+        ],
+        "cond_video_latents": [reference_latent],
+        "cond_audio_latents": [audio_latent],
+        "layout": layout,
+        "seed": 9,
+    }
+    original_kwargs = {"minimax_payload": payload, "marker": object()}
+    observed = {}
+
+    def executor(*args, **kwargs):
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return "done"
+
+    assert encoder_helpers.minimax_h3_combined_payload_wrapper(
+        executor, "x", **original_kwargs
+    ) == "done"
+    updated_kwargs = observed["kwargs"]
+    updated_payload = updated_kwargs["minimax_payload"]
+    assert observed["args"] == ("x",)
+    assert updated_kwargs is not original_kwargs
+    assert updated_payload is not payload
+    assert payload["cond_video_latents"] == [reference_latent]
+    assert updated_payload["cond_video_latents"][0] is keyframe_latent
+    assert updated_payload["cond_video_latents"][1] is reference_latent
+    assert updated_payload["layout"] is layout
+    assert updated_payload["cond_audio_latents"] is payload["cond_audio_latents"]
+    assert updated_kwargs["marker"] is original_kwargs["marker"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        {"keyframes": [{"latent": torch.tensor([1.0])}]},
+        {"refs": [{"kind": "image", "latent": torch.tensor([2.0])}]},
+    ],
+)
+def test_combined_minimax_h3_wrapper_passes_single_modes_through(payload):
+    kwargs = {"minimax_payload": payload}
+    observed = {}
+
+    def executor(**received):
+        observed.update(received)
+        return "unchanged"
+
+    assert encoder_helpers.minimax_h3_combined_payload_wrapper(
+        executor, **kwargs
+    ) == "unchanged"
+    assert observed["minimax_payload"] is payload
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"keyframes": [{}], "refs": [{"kind": "image", "latent": torch.ones(1)}]},
+        {"keyframes": [{"latent": torch.ones(1)}], "refs": [{"kind": "image"}]},
+        {"keyframes": [{"latent": torch.ones(1)}], "refs": [None]},
+    ],
+)
+def test_combined_minimax_h3_wrapper_rejects_malformed_combined_payload(payload):
+    with pytest.raises(ValueError, match="Malformed combined MiniMax H3"):
+        encoder_helpers.minimax_h3_combined_payload_wrapper(
+            lambda **_kwargs: None, minimax_payload=payload
+        )
+
+
+def test_combined_minimax_h3_validates_before_expensive_work():
+    class WrongPatcher:
+        model = object()
+
+        @staticmethod
+        def clone():
+            raise AssertionError("model cloned before validation")
+
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    image = torch.ones(1, 32, 32, 3)
+    with pytest.raises(ValueError, match="requires a MiniMax H3 model"):
+        UC_MiniMaxH3FirstFrameReferences.execute(
+            WrongPatcher(), clip, vae, image, "prompt", 32, 32, 5,
+            "match", {"reference_image_1": image},
+        )
+    assert clip.tokenize_calls == []
+    assert vae.images == []
+
+
+def test_combined_minimax_h3_rejects_invalid_clip_images_and_controls_before_clone():
+    model = _MiniMaxH3TestPatcher()
+    image = torch.ones(1, 32, 32, 3)
+    reference = {"reference_image_1": image}
+
+    class WrongClip:
+        tokenizer = types.SimpleNamespace(clip_name="qwen3vl_8b")
+
+    with pytest.raises(ValueError, match="qwen3vl_32b"):
+        UC_MiniMaxH3FirstFrameReferences.execute(
+            model, WrongClip(), _RecordingMiniMaxVAE(), image, "prompt",
+            32, 32, 5, "match", reference,
+        )
+    with pytest.raises(ValueError, match="first frame"):
+        UC_MiniMaxH3FirstFrameReferences.execute(
+            model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image.repeat(2, 1, 1, 1),
+            "prompt", 32, 32, 5, "match", reference,
+        )
+    with pytest.raises(ValueError, match="last frame"):
+        UC_MiniMaxH3FirstFrameReferences.execute(
+            model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image,
+            "prompt", 32, 32, 5, "match", reference, image.repeat(2, 1, 1, 1),
+        )
+    with pytest.raises(ValueError, match="at least one reference"):
+        UC_MiniMaxH3FirstFrameReferences.execute(
+            model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image, "prompt",
+            32, 32, 5, "match", {},
+        )
+    with pytest.raises(ValueError, match="reference image 1"):
+        UC_MiniMaxH3FirstFrameReferences.execute(
+            model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image, "prompt",
+            32, 32, 5, "match", {"reference_image_1": torch.ones(32, 32)},
+        )
+    with pytest.raises(ValueError, match="reference image size"):
+        UC_MiniMaxH3FirstFrameReferences.execute(
+            model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image, "prompt",
+            32, 32, 5, "hidden", reference,
+        )
+    with pytest.raises(ValueError, match="multiples of 32"):
+        UC_MiniMaxH3FirstFrameReferences.execute(
+            model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image, "prompt",
+            48, 32, 5, "match", reference,
+        )
+    assert model.clone_calls == 0
+
+
+def test_combined_minimax_h3_patch_is_idempotent_and_preserves_unrelated_wrappers():
+    wrapper_type = comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL
+    model = _MiniMaxH3TestPatcher()
+    unrelated = object()
+    model.wrappers = {wrapper_type: {"unrelated": [unrelated]}}
+
+    first_patch = encoder_helpers.patch_minimax_h3_combined_model(model)
+    second_patch = encoder_helpers.patch_minimax_h3_combined_model(first_patch)
+
+    assert first_patch.get_wrappers(
+        wrapper_type, "uc_minimax_h3_combined_visual_latents"
+    ) == [encoder_helpers.minimax_h3_combined_payload_wrapper]
+    assert second_patch.get_wrappers(
+        wrapper_type, "uc_minimax_h3_combined_visual_latents"
+    ) == [encoder_helpers.minimax_h3_combined_payload_wrapper]
+    assert second_patch.get_wrappers(wrapper_type, "unrelated") == [unrelated]
+
+
+def test_combined_minimax_h3_preserves_dtype_and_pooled_output():
+    class PooledClip(_MiniMaxH3TestClip):
+        def encode_from_tokens_scheduled(self, tokens):
+            conditioning = super().encode_from_tokens_scheduled(tokens)
+            conditioning[0][0] = conditioning[0][0].to(torch.float16)
+            conditioning[0][1]["pooled_output"] = torch.ones(
+                1, 4, dtype=torch.float16
+            )
+            return conditioning
+
+    image = torch.ones(1, 32, 32, 3)
+    _model, conditioning, _latent = UC_MiniMaxH3FirstFrameReferences.execute(
+        _MiniMaxH3TestPatcher(),
+        PooledClip(),
+        _RecordingMiniMaxVAE(),
+        image,
+        "prompt",
+        32,
+        32,
+        5,
+        "match",
+        {"reference_image_1": image},
+    ).args
+
+    tensor, metadata = conditioning[0]
+    assert tensor.dtype == torch.float16
+    assert metadata["pooled_output"].dtype == torch.float16
+    assert torch.all(tensor == 1.0)
+    assert torch.all(metadata["pooled_output"] == 1.0)
+
+
+@pytest.mark.parametrize(
+    ("image_width", "image_height", "generation_width", "generation_height", "mode", "expected"),
+    [
+        (128, 64, 64, 32, "match", (64, 32)),
+        (100, 50, 1024, 1024, "match", (96, 64)),
+        (4096, 4096, 64, 64, "max", (2048, 2048)),
+        (4096, 3072, 64, 64, "max", (2720, 2048)),
+    ],
+)
+def test_minimax_h3_reference_size_matches_core(
+    image_width,
+    image_height,
+    generation_width,
+    generation_height,
+    mode,
+    expected,
+):
+    assert encoder_helpers.minimax_h3_reference_size(
+        image_width,
+        image_height,
+        generation_width,
+        generation_height,
+        mode,
+    ) == expected
+
+
+def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    first = torch.full((1, 32, 64, 3), 0.25)
+    second = torch.full((1, 32, 64, 3), 0.5)
+    third = torch.full((1, 64, 32, 3), 0.75)
+
+    conditioning, latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        system_prompt="system",
+        keyframe_mode="reference images",
+        ref_image_size="match",
+        width=64,
+        height=32,
+        length=5,
+        image_inputs={
+            "image_1": torch.cat([first, second], dim=0),
+            "image_2": third,
+        },
+        visual_fusion_config=None,
+    ).args
+
+    entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+    qwen_images = [
+        entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)
+    ]
+    assert [float(image.mean()) for image in qwen_images] == pytest.approx(
+        [0.25, 0.5, 0.75], abs=0.004
+    )
+    native_call = clip.tokenize_calls[-1]
+    assert native_call["images"] is None
+    assert native_call["minimax_ref_items"] is not None
+    assert native_call["text"] == "system\nsubject"
+    assert len(vae.images) == 3
+    assert all(torch.equal(qwen, encoded) for qwen, encoded in zip(qwen_images, vae.images))
+
+    metadata = conditioning[0][1]
+    references = metadata["minimax_refs"]
+    assert [item["kind"] for item in references] == ["image", "image", "image"]
+    assert [(item["latent_h"], item["latent_w"]) for item in references] == [
+        (2, 4),
+        (2, 4),
+        (4, 2),
+    ]
+    assert [float(item["latent"].mean()) for item in references] == pytest.approx(
+        [0.25, 0.5, 0.75], abs=0.004
+    )
+    assert "minimax_keyframes" not in metadata
+    assert "minimax_frame_count" not in metadata
+    video, audio = latent["samples"].tensors
+    assert video.shape == (1, 24, 2, 2, 4)
+    assert audio.shape == (1, 32, 2, 8)
+
+
+def test_advanced_minimax_h3_reference_mode_rejects_spatial_fusion_before_encoding():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    images = torch.stack(
+        [
+            torch.full((32, 64, 3), 0.25),
+            torch.full((32, 64, 3), 0.5),
+            torch.full((32, 64, 3), 0.75),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="reference images do not support spatial fusion"):
+        UC_AdvancedMiniMaxH3ImageToVideo.execute(
+            clip,
+            vae,
+            prompt="subject",
+            system_prompt="",
+            keyframe_mode="reference images",
+            ref_image_size="match",
+            width=64,
+            height=32,
+            length=5,
+            image_inputs={"image_1": images},
+            visual_fusion_config={
+                "visual_fusion_method": "linear",
+                "visual_encoder_path": "grid-deepstack",
+            },
+        )
+
+    assert clip.encoded_tokens == []
+    assert vae.images == []
 
 
 def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
@@ -371,7 +851,7 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
     output = UC_AdvancedMiniMaxH3ImageToVideo.execute(
         clip,
         vae,
-        prompt="image_input_fusion subject",
+        prompt="subject",
         system_prompt="system",
         keyframe_mode="first + last frames",
         width=64,
@@ -403,6 +883,10 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
     )
     assert torch.equal(vae.images[0], encoded_images[0][0])
     assert torch.equal(vae.images[1], encoded_images[1][0])
+    image_calls = [call for call in clip.tokenize_calls if call["images"]]
+    assert image_calls
+    assert all(call["minimax_ref_items"] is None for call in image_calls)
+    assert all(call["text"] == "system\nsubject" for call in image_calls)
 
     metadata = conditioning[0][1]
     assert metadata["minimax_frame_count"] == 22
@@ -435,6 +919,7 @@ def test_advanced_minimax_h3_fusion_off_keeps_all_images_as_separate_pictures():
         length=5,
         image_inputs={"image_1": images},
         visual_fusion_config=None,
+        ref_image_size="ignored outside reference mode",
     ).args
 
     entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
@@ -445,6 +930,41 @@ def test_advanced_minimax_h3_fusion_off_keeps_all_images_as_separate_pictures():
     assert len(vae.images) == 1
     assert float(vae.images[0].mean()) == pytest.approx(0.25, abs=0.004)
     assert conditioning[0][1]["minimax_keyframes"][0]["resolved_frame_index"] == 0
+    native_call = clip.tokenize_calls[-1]
+    assert native_call["images"] is not None
+    assert native_call["minimax_ref_items"] is None
+    assert native_call["text"] == "subject"
+
+
+def test_advanced_minimax_h3_keeps_placeholder_like_text_raw(monkeypatch):
+    def reject_generic_placeholder_path(*_args, **_kwargs):
+        raise AssertionError("Dedicated H3 execution used generic placeholder handling.")
+
+    monkeypatch.setattr(
+        encoder_helpers,
+        "prepare_image_placeholder_prompt",
+        reject_generic_placeholder_path,
+    )
+    clip = _MiniMaxH3TestClip()
+    image = torch.ones(1, 4, 4, 3)
+
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        _RecordingMiniMaxVAE(),
+        prompt="image_input_fusion image_input_1 image_input_2",
+        system_prompt="system",
+        keyframe_mode="first frame",
+        width=64,
+        height=32,
+        length=5,
+        image_inputs={"image_1": image},
+    )
+
+    native_call = clip.tokenize_calls[-1]
+    assert native_call["text"] == (
+        "system\nimage_input_fusion image_input_1 image_input_2"
+    )
+    assert native_call["images"] is not None
 
 
 def test_advanced_minimax_h3_validates_encoder_and_keyframe_count():
