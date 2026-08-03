@@ -219,3 +219,6 @@ __marimo__/
 
 # Machine-local agent instructions
 AGENTS-LOCAL.md
+
+# Machine-local archived Codex session histories
+/old_sessions/
