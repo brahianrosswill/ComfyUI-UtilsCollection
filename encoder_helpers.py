@@ -20,6 +20,9 @@ import numpy as np
 import folder_paths
 import node_helpers
 import comfy
+import comfy.model_management
+import comfy.nested_tensor
+import comfy.utils
 from .helper_functions import resize_nchw
 
 from comfy.ldm.flux.math import apply_rope
@@ -192,6 +195,131 @@ class ImageInputMapping(Enum):
 
 _IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\bimage_input_(fusion|\d+)\b", re.IGNORECASE)
 VISION_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
+
+
+def visual_text_encoder_key(clip) -> str | None:
+    """Return the connected encoder's sole token key when it can be identified."""
+    stage = getattr(clip, "cond_stage_model", None)
+    for owner in (getattr(clip, "tokenizer", None), stage):
+        key_name = getattr(owner, "clip_name", None)
+        if isinstance(key_name, str):
+            return key_name
+    # Real ComfyUI CLIP objects declare clip_name. The fallback keeps lightweight
+    # test doubles and compatible wrappers detectable without probing a known
+    # model inside an unrelated visual-path context.
+    if stage is not None:
+        return None
+    tokenize = getattr(clip, "tokenize", None)
+    if tokenize is None:
+        return None
+    tokens = tokenize("")
+    if not isinstance(tokens, dict) or len(tokens) != 1:
+        return None
+    return next(iter(tokens))
+
+
+def is_minimax_h3_text_encoder(clip) -> bool:
+    return visual_text_encoder_key(clip) == "qwen3vl_32b"
+
+
+def _token_entries(tokens, key_name: str) -> list:
+    try:
+        batches = tokens[key_name]
+        if len(batches) != 1:
+            raise ValueError
+        return list(batches[0])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Expected one {key_name} token sequence from the connected encoder."
+        ) from exc
+
+
+def _minimax_h3_text_entries(clip, text: str) -> list:
+    if not text:
+        return []
+    return _token_entries(clip.tokenize(text), "qwen3vl_32b")
+
+
+def _minimax_h3_visual_entries(clip, image, picture_number: int) -> list:
+    """Build one numbered H3 picture block through Core's active tokenizer."""
+    full = _token_entries(
+        clip.tokenize("", images=[image]), "qwen3vl_32b"
+    )
+    picture_one = _minimax_h3_text_entries(clip, "<Picture 1>: ")
+    if len(full) <= len(picture_one):
+        raise ValueError("MiniMax H3 tokenizer returned an incomplete picture block.")
+    if [item[0] for item in full[: len(picture_one)]] != [
+        item[0] for item in picture_one
+    ]:
+        raise ValueError("MiniMax H3 tokenizer returned an unexpected picture prefix.")
+    visual = full[len(picture_one) :]
+    if sum(is_image_token(item) for item in visual) != 1:
+        raise ValueError("MiniMax H3 picture block must contain exactly one image entry.")
+    return _minimax_h3_text_entries(
+        clip, f"<Picture {picture_number}>: "
+    ) + visual
+
+
+def tokenize_minimax_h3_prompt(clip, text: str, images) -> dict:
+    """Replace internal visual-slot sentinels with H3 picture token entries."""
+    segments = text.split(VISION_BLOCK)
+    marker_count = len(segments) - 1
+    if marker_count > len(images):
+        raise ValueError(
+            "MiniMax H3 prompt contains more visual slots than supplied images."
+        )
+    entries = []
+    for index, segment in enumerate(segments):
+        entries.extend(_minimax_h3_text_entries(clip, segment))
+        if index < marker_count:
+            entries.extend(
+                _minimax_h3_visual_entries(clip, images[index], index + 1)
+            )
+    if not entries:
+        entries = _token_entries(clip.tokenize(""), "qwen3vl_32b")
+    return {"qwen3vl_32b": [entries]}
+
+
+def format_minimax_h3_prompt(prompt: str, system_prompt: str) -> str:
+    """Keep an implicit prefix picture before all raw H3 prompt text."""
+    leading_slots = ""
+    while prompt.startswith(VISION_BLOCK):
+        leading_slots += VISION_BLOCK
+        prompt = prompt[len(VISION_BLOCK) :]
+    text = f"{system_prompt}\n{prompt}" if system_prompt else prompt
+    return leading_slots + text
+
+
+def minimax_h3_frame_count(length: int) -> int:
+    """Snap a requested H3 frame count to Core's 17k+5 temporal grid."""
+    frame_count = max(5, int(length))
+    while frame_count % 17 != 5:
+        frame_count += 1
+    return frame_count
+
+
+def minimax_h3_empty_av_latent(width: int, height: int, length: int) -> tuple[dict, int]:
+    """Create the batch-one joint video/audio latent expected by MiniMax H3."""
+    width = int(width)
+    height = int(height)
+    if width < 32 or height < 32 or width % 32 or height % 32:
+        raise ValueError("MiniMax H3 width and height must be multiples of 32.")
+    frame_count = minimax_h3_frame_count(length)
+    video_t = 2 if frame_count <= 5 else ((frame_count - 5) // 17) * 5 + 2
+    audio_t = round((frame_count / 24) * 40)
+    device = comfy.model_management.intermediate_device()
+    video = torch.zeros([1, 24, video_t, height // 16, width // 16], device=device)
+    audio = torch.zeros([1, 32, 2, audio_t], device=device)
+    return {"samples": comfy.nested_tensor.NestedTensor((video, audio))}, frame_count
+
+
+def prepare_minimax_h3_frame(image: torch.Tensor, width: int, height: int, crop: str) -> torch.Tensor:
+    """Prepare one BHWC image using the same geometry operation as Core H3."""
+    if not torch.is_tensor(image) or image.ndim != 4 or image.shape[0] != 1:
+        raise ValueError("Each MiniMax H3 visual source must contain exactly one image.")
+    samples = image[..., :3].movedim(-1, 1)
+    samples = comfy.utils.common_upscale(samples, int(width), int(height), "lanczos", crop)
+    return samples.movedim(1, -1)
 
 
 def prepare_image_placeholder_prompt(prompt: str, image_count: int, fusion_active: bool, context: str) -> tuple[str, tuple[int, ...]]:
@@ -1524,29 +1652,41 @@ def find_visual_token_range(tokens, cond_tensor, legacy_krea_spatial=False) -> t
 
     return 0, 0
 
-def encode_embedding_classical_scaled_bias(clip, text, llama_template=None, visual_encoder_path="grid-deepstack", **kwargs):
+def encode_embedding_classical_scaled_bias(
+    clip,
+    text,
+    llama_template=None,
+    visual_encoder_path="grid-deepstack",
+    tokenize_callback=None,
+    **kwargs,
+):
     if clip is None:
         raise RuntimeError("ERROR: clip input is invalid: None\n\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.")
 
+    def tokenize(value):
+        if tokenize_callback is not None:
+            return tokenize_callback(value)
+        return clip.tokenize(value, llama_template=llama_template, **kwargs)
+
     if "(" not in text or ")" not in text:
-        tokens = clip.tokenize(text, llama_template=llama_template, **kwargs)
+        tokens = tokenize(text)
         return _encode_scheduled_with_visual_path(clip, tokens, visual_encoder_path)
 
     clean_text = ""
     biases_to_apply = []
     for segment, strength in _contextual_token_weights(text):
-        start_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
+        start_tokens = tokenize(clean_text)
         key_name = next(iter(start_tokens.keys()))
         start_count = len(start_tokens[key_name][0])
         clean_text += segment
-        end_tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
+        end_tokens = tokenize(clean_text)
         end_count = len(end_tokens[key_name][0])
         if strength != 1.0 and end_count > start_count:
             if not math.isfinite(strength):
                 raise ValueError("Contextual prompt weights must be finite.")
             biases_to_apply.append({"start": start_count, "end": end_count, "strength": float(strength)})
 
-    tokens = clip.tokenize(clean_text, llama_template=llama_template, **kwargs)
+    tokens = tokenize(clean_text)
     conditioning = _encode_scheduled_with_visual_path(clip, tokens, visual_encoder_path)
 
     if not biases_to_apply:
@@ -1771,6 +1911,7 @@ def blend_complete_conditionings(conditionings, blend_config):
             "attention_mask",
             "attention_mask_img_shape",
             "embeds_info",
+            "minimax_token_tags",
             "pooled_output",
         }
         metadata_items = [entry[1] for entry in entries]
@@ -1797,6 +1938,14 @@ def blend_complete_conditionings(conditionings, blend_config):
                 metadata[key] = first
         if pooled is not None:
             metadata["pooled_output"] = pooled
+        reference_entry = max(entries, key=lambda entry: entry[0].shape[1])
+        minimax_tags = reference_entry[1].get("minimax_token_tags")
+        if minimax_tags is not None:
+            if not torch.is_tensor(minimax_tags) or minimax_tags.numel() != tensor.shape[1]:
+                raise ValueError(
+                    "MiniMax H3 modality tags do not match the consensus sequence length."
+                )
+            metadata["minimax_token_tags"] = minimax_tags
         blended.append([tensor, metadata])
     return blended
 
@@ -1863,17 +2012,29 @@ def _encode_visual_consensus_source(
     clip, source_image, resolution, prompt, visual_encoder_path
 ):
     processed = prepare_vlm_image(source_image, resolution)
+    minimax_h3 = is_minimax_h3_text_encoder(clip)
+    tokenize_callback = None
+    encode_kwargs = {"images": [processed], "skip_template": True}
+    if minimax_h3:
+        tokenize_callback = lambda text: tokenize_minimax_h3_prompt(
+            clip, text, [processed]
+        )
+        encode_kwargs = {}
     conditioning = encode_embedding_classical_scaled_bias(
         clip,
         prompt,
-        images=[processed],
-        skip_template=True,
         visual_encoder_path=visual_encoder_path,
+        tokenize_callback=tokenize_callback,
+        **encode_kwargs,
     )
     if len(conditioning) != 1:
         raise ValueError("Visual consensus encoding requires one schedule entry.")
     tensor, metadata = conditioning[0]
-    tokens = clip.tokenize(prompt, images=[processed], skip_template=True)
+    tokens = (
+        tokenize_minimax_h3_prompt(clip, prompt, [processed])
+        if minimax_h3
+        else clip.tokenize(prompt, images=[processed], skip_template=True)
+    )
     visual_range = find_visual_token_range(
         tokens,
         tensor,
@@ -1932,7 +2093,179 @@ def _spatially_fuse_visual_consensus_sources(
         metadata.pop("attention_mask_img_shape", None)
     if pooled is not None:
         metadata["pooled_output"] = pooled
+    minimax_tags = metadata.get("minimax_token_tags")
+    if minimax_tags is not None and (
+        not torch.is_tensor(minimax_tags) or minimax_tags.numel() != tensor.shape[1]
+    ):
+        raise ValueError(
+            "MiniMax H3 modality tags do not match the spatially fused sequence length."
+        )
     return [[tensor, metadata]]
+
+
+def execute_advanced_minimax_h3_image_to_video(
+    clip,
+    vae,
+    prompt,
+    system_prompt,
+    keyframe_mode,
+    width,
+    height,
+    length,
+    image_inputs,
+    visual_fusion_config=None,
+    multiplier=1.0,
+):
+    """Build coordinated Qwen visual conditioning, H3 keyframes, and AV latent."""
+    if not is_minimax_h3_text_encoder(clip):
+        raise ValueError(
+            "Advanced MiniMax H3 Image to Video requires the qwen3vl_32b text encoder."
+        )
+    mode_aliases = {
+        "first frame": "first_frame",
+        "first + last frames": "first_and_last",
+        "first_frame": "first_frame",
+        "first_and_last": "first_and_last",
+    }
+    requested_mode = keyframe_mode
+    keyframe_mode = mode_aliases.get(requested_mode)
+    if keyframe_mode is None:
+        raise ValueError(f"Unsupported MiniMax H3 keyframe mode: {requested_mode}")
+
+    _, flat_images, _ = extract_and_flatten_images(image_inputs)
+    required_images = 2 if keyframe_mode == "first_and_last" else 1
+    if len(flat_images) < required_images:
+        requirement = "two images" if required_images == 2 else "one image"
+        raise ValueError(
+            f"MiniMax H3 {keyframe_mode} mode requires at least {requirement}."
+        )
+
+    latent, frame_count = minimax_h3_empty_av_latent(width, height, length)
+    prepared_images = [
+        prepare_minimax_h3_frame(
+            image,
+            width,
+            height,
+            "disabled" if index == 0 else "center",
+        )
+        for index, image in enumerate(flat_images)
+    ]
+
+    config = dict(visual_fusion_config or {})
+    visual_method = config.get("visual_fusion_method", "off")
+    fusion_active = visual_method != "off"
+    visual_encoder_path = config.get("visual_encoder_path", "grid-deepstack")
+    prepared_prompt, inline_numbers = prepare_image_placeholder_prompt(
+        prompt,
+        image_count=len(prepared_images),
+        fusion_active=fusion_active,
+        context="AdvancedMiniMaxH3ImageToVideo",
+    )
+
+    if fusion_active:
+        branches = []
+        for index, image in enumerate(prepared_images):
+            full_prompt = format_minimax_h3_prompt(prepared_prompt, system_prompt)
+            tokenize_callback = lambda text, source=image: tokenize_minimax_h3_prompt(
+                clip, text, [source]
+            )
+            conditioning = encode_embedding_classical_scaled_bias(
+                clip,
+                full_prompt,
+                tokenize_callback=tokenize_callback,
+                visual_encoder_path=visual_encoder_path,
+            )
+            if len(conditioning) != 1:
+                raise ValueError(
+                    "MiniMax H3 visual fusion requires one conditioning schedule entry."
+                )
+            tensor, metadata = conditioning[0]
+            tokens = tokenize_callback(full_prompt)
+            visual_range = find_visual_token_range(
+                tokens,
+                tensor,
+                legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+            )
+            if visual_range == (0, 0):
+                raise ValueError(
+                    f"Could not locate the MiniMax H3 visual span for image {index + 1}."
+                )
+            branches.append(
+                {
+                    "tensor": tensor,
+                    "pooled": metadata.get("pooled_output"),
+                    "metadata": metadata,
+                    "tokens": tokens,
+                    "visual_range": visual_range,
+                    "grid": visual_fusion_grid(
+                        image,
+                        visual_range[1] - visual_range[0],
+                        visual_encoder_path == "legacy-flat",
+                    ),
+                }
+            )
+        conditioning = _spatially_fuse_visual_consensus_sources(
+            branches, config, clip, allow_export=True
+        )
+    else:
+        if inline_numbers:
+            qwen_images = [prepared_images[number - 1] for number in inline_numbers]
+        else:
+            prepared_prompt = VISION_BLOCK * len(prepared_images) + prepared_prompt
+            qwen_images = prepared_images
+        full_prompt = format_minimax_h3_prompt(prepared_prompt, system_prompt)
+        tokenize_callback = lambda text: tokenize_minimax_h3_prompt(
+            clip, text, qwen_images
+        )
+        conditioning = encode_embedding_classical_scaled_bias(
+            clip,
+            full_prompt,
+            tokenize_callback=tokenize_callback,
+            visual_encoder_path="grid-deepstack",
+        )
+        if len(conditioning) != 1:
+            raise ValueError(
+                "MiniMax H3 visual conditioning requires one schedule entry."
+            )
+
+    for tensor, metadata in conditioning:
+        tags = metadata.get("minimax_token_tags")
+        if not torch.is_tensor(tags) or tags.numel() != tensor.shape[1]:
+            raise ValueError(
+                "MiniMax H3 modality tags do not match the conditioning sequence length."
+            )
+
+    if multiplier != 1.0:
+        scaled = []
+        for tensor, metadata in conditioning:
+            metadata = metadata.copy()
+            pooled = metadata.get("pooled_output")
+            if pooled is not None:
+                metadata["pooled_output"] = pooled * multiplier
+            scaled.append([tensor * multiplier, metadata])
+        conditioning = scaled
+
+    keyframes = [
+        {
+            "resolved_frame_index": 0,
+            "latent": vae.encode(prepared_images[0]),
+        }
+    ]
+    if keyframe_mode == "first_and_last":
+        keyframes.append(
+            {
+                "resolved_frame_index": frame_count - 1,
+                "latent": vae.encode(prepared_images[1]),
+            }
+        )
+    conditioning = node_helpers.conditioning_set_values(
+        conditioning,
+        {
+            "minimax_keyframes": keyframes,
+            "minimax_frame_count": frame_count,
+        },
+    )
+    return conditioning, latent
 
 
 def execute_advanced_visual_consensus(
@@ -1953,14 +2286,27 @@ def execute_advanced_visual_consensus(
     if not isinstance(joint_config, dict):
         raise ValueError("Connect a Visual Consensus Configuration.")
 
+    minimax_h3 = is_minimax_h3_text_encoder(clip)
+    if minimax_h3 and ref_latent_mode != "off":
+        raise ValueError(
+            "MiniMax H3 reference latents require Core's MiniMax H3 reference conditioning node; set ref_latent_mode to off."
+        )
+
     lanes, reference_images = build_visual_consensus_batch_lanes(image_inputs)
     if not lanes:
         clean_prompt, _ = prepare_image_placeholder_prompt(
             prompt, 0, False, "Advanced Visual Consensus Encoder"
         )
+        formatted_prompt = (
+            format_minimax_h3_prompt(clean_prompt, system_prompt)
+            if minimax_h3
+            else _format_advanced_visual_consensus_prompt(
+                clean_prompt, system_prompt
+            )
+        )
         conditioning = encode_embedding_classical_scaled_bias(
             clip,
-            _format_advanced_visual_consensus_prompt(clean_prompt, system_prompt),
+            formatted_prompt,
             skip_template=True,
         )
         return _scale_and_attach_visual_consensus_references(
@@ -1977,6 +2323,10 @@ def execute_advanced_visual_consensus(
 
     spatial_enabled = bool(joint_config.get("enable_spatial_fusion", True))
     consensus_enabled = bool(joint_config.get("enable_consensus", True))
+    if minimax_h3 and not consensus_enabled and len(lanes) > 1:
+        raise ValueError(
+            "MiniMax H3 supports batch size 1; enable consensus or provide one batch lane."
+        )
     visual_config = dict(joint_config["visual"])
     consensus_config = dict(joint_config["consensus"])
     visual_encoder_path = visual_config.get("visual_encoder_path", "grid-deepstack")
@@ -1992,8 +2342,10 @@ def execute_advanced_visual_consensus(
         for marker in ("<|image_pad|>", "<|image|>", "<|vision_start|>")
     ):
         prepared_prompt = VISION_BLOCK + prepared_prompt
-    full_prompt = _format_advanced_visual_consensus_prompt(
-        prepared_prompt, system_prompt
+    full_prompt = (
+        format_minimax_h3_prompt(prepared_prompt, system_prompt)
+        if minimax_h3
+        else _format_advanced_visual_consensus_prompt(prepared_prompt, system_prompt)
     )
 
     if consensus_enabled:

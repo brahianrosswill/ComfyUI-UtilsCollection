@@ -288,6 +288,52 @@ def test_complete_conditioning_helper_matches_consensus_math(monkeypatch):
     assert torch.equal(actual[0][1]["pooled_output"], expected_pooled)
 
 
+def test_complete_conditioning_consensus_preserves_minimax_reference_tags(monkeypatch):
+    monkeypatch.setattr(
+        encoder_helpers.comfy.model_management,
+        "get_torch_device",
+        lambda: torch.device("cpu"),
+    )
+    monkeypatch.setattr(
+        encoder_helpers.comfy.model_management,
+        "intermediate_dtype",
+        lambda: torch.float32,
+    )
+    short_tags = torch.tensor([1, 0])
+    long_tags = torch.tensor([1, 0, 0, 1])
+    short = [[torch.ones(1, 2, 3), {"minimax_token_tags": short_tags}]]
+    long = [[torch.ones(1, 4, 3), {"minimax_token_tags": long_tags}]]
+
+    result = encoder_helpers.blend_complete_conditionings(
+        [short, long],
+        {"blend_preset": "custom", "blend_method": "linear"},
+    )
+
+    assert result[0][0].shape[1] == 4
+    assert torch.equal(result[0][1]["minimax_token_tags"], long_tags)
+
+
+def test_complete_conditioning_consensus_rejects_bad_minimax_tags(monkeypatch):
+    monkeypatch.setattr(
+        encoder_helpers.comfy.model_management,
+        "get_torch_device",
+        lambda: torch.device("cpu"),
+    )
+    monkeypatch.setattr(
+        encoder_helpers.comfy.model_management,
+        "intermediate_dtype",
+        lambda: torch.float32,
+    )
+    bad = [[torch.ones(1, 3, 2), {"minimax_token_tags": torch.ones(2)}]]
+    other = [[torch.ones(1, 2, 2), {"minimax_token_tags": torch.ones(2)}]]
+
+    with pytest.raises(ValueError, match="modality tags do not match"):
+        encoder_helpers.blend_complete_conditionings(
+            [bad, other],
+            {"blend_preset": "custom", "blend_method": "linear"},
+        )
+
+
 def _execution_config(spatial=True, consensus=True, samples=1):
     return {
         "enable_spatial_fusion": spatial,
@@ -452,6 +498,55 @@ def _source_branch(source):
         "grid": (2, 2),
         "image": source,
     }
+
+
+def test_minimax_h3_rejects_consensus_disabled_multiple_lanes():
+    class Clip:
+        @staticmethod
+        def tokenize(_text, **_kwargs):
+            return {"qwen3vl_32b": [[(151643, 1.0)]]}
+
+    with pytest.raises(ValueError, match="MiniMax H3 supports batch size 1"):
+        encoder_helpers.execute_advanced_visual_consensus(
+            Clip(),
+            "prompt",
+            "",
+            384,
+            {
+                "image0": torch.zeros(2, 1, 1, 1),
+                "image1": torch.zeros(2, 1, 1, 1),
+            },
+            _execution_config(spatial=True, consensus=False),
+            "Original",
+            "off",
+            None,
+            1.0,
+            8,
+            lambda _clip, conditioning, _latents, _mode: conditioning,
+        )
+
+
+def test_minimax_h3_rejects_generic_reference_latents():
+    class Clip:
+        @staticmethod
+        def tokenize(_text, **_kwargs):
+            return {"qwen3vl_32b": [[(151643, 1.0)]]}
+
+    with pytest.raises(ValueError, match="MiniMax H3 reference latents require Core"):
+        encoder_helpers.execute_advanced_visual_consensus(
+            Clip(),
+            "prompt",
+            "",
+            384,
+            {},
+            _execution_config(),
+            "Original",
+            "single",
+            None,
+            1.0,
+            8,
+            lambda _clip, conditioning, _latents, _mode: conditioning,
+        )
 
 
 def _execute_source_distinct(monkeypatch, image_inputs, config):

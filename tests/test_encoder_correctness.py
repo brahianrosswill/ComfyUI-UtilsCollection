@@ -22,6 +22,7 @@ try:
     from utils_collection_encoder_test import encoder_helpers, encoder_nodes
     from utils_collection_encoder_test.encoder_nodes import (
         TextEncodeKrea2SysEditScaledAdvAttn,
+        UC_AdvancedMiniMaxH3ImageToVideo,
         UC_AdvancedVisualConditioningEncode,
         UC_AttentionBiasTextEncode,
         UC_ConditioningConsensusBlend,
@@ -228,6 +229,239 @@ def test_inline_image_placeholders_honor_legacy_flat_encoder_path():
     )
 
     assert transformer.build_image_inputs(None, None) == ("grid", "mask", "deepstack")
+
+
+class _MiniMaxH3TestClip:
+    def __init__(self):
+        self.encoded_tokens = []
+
+    @staticmethod
+    def _text_entries(text):
+        return [] if not text else [(text, 1.0)]
+
+    def tokenize(self, text, images=None, **_kwargs):
+        entries = []
+        for index, image in enumerate(images or []):
+            entries.extend(self._text_entries(f"<Picture {index + 1}>: "))
+            entries.extend(
+                [
+                    (151652, 1.0),
+                    ({"type": "image", "data": image}, 1.0),
+                    (151653, 1.0),
+                ]
+            )
+        entries.extend(self._text_entries(text))
+        if not entries:
+            entries = [(151643, 1.0)]
+        return {"qwen3vl_32b": [entries]}
+
+    def encode_from_tokens_scheduled(self, tokens):
+        self.encoded_tokens.append(tokens)
+        entries = tokens["qwen3vl_32b"][0]
+        tag_values = []
+        for entry in entries:
+            span = (
+                encoder_helpers._qwen3vl_image_span(entry)
+                if encoder_helpers.is_image_token(entry)
+                else 1
+            )
+            tag_values.extend(
+                [0 if encoder_helpers.is_image_token(entry) else 1] * span
+            )
+        length = len(tag_values)
+        tags = torch.tensor(tag_values)
+        return [[torch.ones(1, length, 4), {"minimax_token_tags": tags}]]
+
+
+class _RecordingMiniMaxVAE:
+    def __init__(self):
+        self.images = []
+
+    def encode(self, image):
+        self.images.append(image.clone())
+        return torch.full((1, 4, 1, 1), float(image.mean()))
+
+
+def test_minimax_h3_prompt_tokens_preserve_inline_order_and_raw_syntax():
+    clip = _MiniMaxH3TestClip()
+    first = torch.tensor([1.0])
+    second = torch.tensor([2.0])
+    prompt = encoder_helpers.format_minimax_h3_prompt(
+        f"first {encoder_helpers.VISION_BLOCK} then {encoder_helpers.VISION_BLOCK}",
+        "system",
+    )
+
+    tokens = encoder_helpers.tokenize_minimax_h3_prompt(
+        clip, prompt, [second, first]
+    )["qwen3vl_32b"][0]
+    image_entries = [entry[0]["data"] for entry in tokens if encoder_helpers.is_image_token(entry)]
+    text = "".join(entry[0] for entry in tokens if isinstance(entry[0], str))
+
+    assert torch.equal(image_entries[0], second)
+    assert torch.equal(image_entries[1], first)
+    assert text == "system\nfirst <Picture 1>:  then <Picture 2>: "
+    assert "<|im_start|>" not in text
+
+
+def test_minimax_h3_implicit_picture_stays_before_system_text():
+    formatted = encoder_helpers.format_minimax_h3_prompt(
+        encoder_helpers.VISION_BLOCK + "prompt", "system"
+    )
+    assert formatted == encoder_helpers.VISION_BLOCK + "system\nprompt"
+
+
+def test_advanced_visual_encoder_uses_minimax_inline_picture_syntax(monkeypatch):
+    clip = _MiniMaxH3TestClip()
+    first = torch.ones(1, 2, 2, 3)
+    second = torch.full((1, 2, 2, 3), 2.0)
+    monkeypatch.setattr(encoder_nodes, "prepare_vlm_image", lambda image, _resolution: image)
+
+    output = UC_AdvancedVisualConditioningEncode.execute(
+        clip,
+        prompt="second image_input_2 then image_input_1",
+        system_prompt="system",
+        vlm_resolution=0,
+        image_inputs={"image_1": first, "image_2": second},
+        visual_fusion_config={"visual_fusion_method": "off"},
+    ).args[0]
+
+    entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+    images = [entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)]
+    text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
+    assert torch.equal(images[0], second)
+    assert torch.equal(images[1], first)
+    assert "<Picture 1>: " in text and "<Picture 2>: " in text
+    assert "<|im_start|>" not in text
+    assert output[0][1]["minimax_token_tags"].numel() == output[0][0].shape[1]
+
+
+def test_advanced_visual_encoder_rejects_generic_minimax_reference_latents():
+    with pytest.raises(ValueError, match="MiniMax H3 reference latents require Core"):
+        UC_AdvancedVisualConditioningEncode.execute(
+            _MiniMaxH3TestClip(),
+            prompt="prompt",
+            system_prompt="",
+            vlm_resolution=0,
+            image_inputs={},
+            visual_fusion_config={"visual_fusion_method": "off"},
+            ref_latent_mode="single",
+        )
+
+
+def test_advanced_minimax_h3_node_schema_explains_positional_contract():
+    schema = UC_AdvancedMiniMaxH3ImageToVideo.define_schema()
+    inputs = {value.id: value for value in schema.inputs}
+
+    assert schema.node_id == "UC_AdvancedMiniMaxH3ImageToVideo"
+    assert schema.display_name == "Advanced MiniMax H3 Image to Video"
+    assert len(schema.outputs) == 2
+    assert schema.outputs[0].display_name == "positive"
+    assert inputs["keyframe_mode"].options == ["first frame", "first + last frames"]
+    assert "image 1" in inputs["keyframe_mode"].tooltip.lower()
+    assert "batched socket" in inputs["image_inputs"].tooltip.lower()
+
+
+def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    first = torch.full((1, 4, 6, 3), 0.25)
+    second = torch.full((1, 4, 6, 3), 0.5)
+    third = torch.full((1, 4, 6, 3), 0.75)
+
+    output = UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="image_input_fusion subject",
+        system_prompt="system",
+        keyframe_mode="first + last frames",
+        width=64,
+        height=32,
+        length=22,
+        image_inputs={
+            "image_1": torch.cat([first, second], dim=0),
+            "image_2": third,
+        },
+        visual_fusion_config={
+            "visual_fusion_method": "linear",
+            "visual_encoder_path": "grid-deepstack",
+        },
+    )
+
+    conditioning, latent = output.args
+    encoded_images = []
+    for tokens in clip.encoded_tokens:
+        entries = tokens["qwen3vl_32b"][0]
+        images = [entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)]
+        if images:
+            encoded_images.append(images)
+    assert len(encoded_images) == 3
+    assert [float(images[0].mean()) for images in encoded_images] == pytest.approx(
+        [0.25, 0.5, 0.75], abs=0.004
+    )
+    assert [float(image.mean()) for image in vae.images] == pytest.approx(
+        [0.25, 0.5], abs=0.004
+    )
+    assert torch.equal(vae.images[0], encoded_images[0][0])
+    assert torch.equal(vae.images[1], encoded_images[1][0])
+
+    metadata = conditioning[0][1]
+    assert metadata["minimax_frame_count"] == 22
+    assert [item["resolved_frame_index"] for item in metadata["minimax_keyframes"]] == [0, 21]
+    assert metadata["minimax_token_tags"].numel() == conditioning[0][0].shape[1]
+    video, audio = latent["samples"].tensors
+    assert video.shape == (1, 24, 7, 2, 4)
+    assert audio.shape == (1, 32, 2, 37)
+
+
+def test_advanced_minimax_h3_fusion_off_keeps_all_images_as_separate_pictures():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    images = torch.stack(
+        [
+            torch.full((3, 5, 3), 0.25),
+            torch.full((3, 5, 3), 0.5),
+            torch.full((3, 5, 3), 0.75),
+        ]
+    )
+
+    conditioning, _latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        system_prompt="",
+        keyframe_mode="first frame",
+        width=64,
+        height=32,
+        length=5,
+        image_inputs={"image_1": images},
+        visual_fusion_config=None,
+    ).args
+
+    entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+    qwen_images = [entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)]
+    assert [float(image.mean()) for image in qwen_images] == pytest.approx(
+        [0.25, 0.5, 0.75], abs=0.004
+    )
+    assert len(vae.images) == 1
+    assert float(vae.images[0].mean()) == pytest.approx(0.25, abs=0.004)
+    assert conditioning[0][1]["minimax_keyframes"][0]["resolved_frame_index"] == 0
+
+
+def test_advanced_minimax_h3_validates_encoder_and_keyframe_count():
+    class WrongClip:
+        tokenizer = types.SimpleNamespace(clip_name="qwen3vl_8b")
+
+    image = torch.ones(1, 4, 4, 3)
+    with pytest.raises(ValueError, match="qwen3vl_32b"):
+        UC_AdvancedMiniMaxH3ImageToVideo.execute(
+            WrongClip(), _RecordingMiniMaxVAE(), "prompt", "", "first frame",
+            64, 32, 5, {"image_1": image},
+        )
+    with pytest.raises(ValueError, match="requires at least two images"):
+        UC_AdvancedMiniMaxH3ImageToVideo.execute(
+            _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), "prompt", "",
+            "first + last frames", 64, 32, 5, {"image_1": image},
+        )
 
 
 def test_embedding_output_cannot_escape_root(tmp_path):
