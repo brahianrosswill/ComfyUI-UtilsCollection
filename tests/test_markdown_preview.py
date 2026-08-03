@@ -16,6 +16,7 @@ prior_cpu = cli_args.cpu
 cli_args.cpu = True
 try:
     from utils_collection_markdown_preview_test.utils_nodes import (
+        UC_ImageToVideoPrompt,
         UC_MarkdownPreview,
     )
 finally:
@@ -57,3 +58,16 @@ def test_markdown_preview_frontend_uses_core_markdown_widget():
     assert 'nodeData.name !== "UC_MarkdownPreview"' in frontend
     assert "ComfyWidgets.MARKDOWN(" in frontend
     assert "preview_mode" not in frontend
+
+
+def test_image_to_video_prompt_node_wraps_existing_replacement_rules():
+    schema = UC_ImageToVideoPrompt.define_schema()
+
+    assert schema.node_id == "UC_ImageToVideoPrompt"
+    assert schema.display_name == "Image Prompt to Video Prompt"
+    assert [value.id for value in schema.inputs] == ["text"]
+    assert [value.id for value in schema.outputs] == ["text"]
+    assert UC_ImageToVideoPrompt.execute(
+        "Keep pose in the image."
+    ).args == ("Fluid movement and dynamic posing in the video.",)
+    assert UC_ImageToVideoPrompt.execute("").args == ("",)

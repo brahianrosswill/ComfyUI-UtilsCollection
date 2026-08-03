@@ -45,6 +45,7 @@ from .encoder_helpers import(
     CONSENSUS_BLEND_PRESETS,
     execute_advanced_visual_consensus,
     execute_advanced_minimax_h3_image_to_video,
+    execute_minimax_h3_first_frame_references,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -3336,8 +3337,8 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             display_name="Advanced MiniMax H3 Image to Video",
             category="advanced/conditioning",
             description=(
-                "Creates coordinated MiniMax H3 Qwen visual conditioning, positional first/last VAE keyframes, "
-                "and the matching joint video/audio latent without resolution consensus."
+                "Creates coordinated MiniMax H3 Qwen visual conditioning, positional VAE keyframes or ordered "
+                "image references, and the matching joint video/audio latent without resolution consensus."
             ),
             inputs=[
                 io.Clip.Input(
@@ -3346,16 +3347,13 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 ),
                 io.Vae.Input(
                     "vae",
-                    tooltip="MiniMax H3 video VAE used only for the positional canonical keyframe image or images.",
+                    tooltip="MiniMax H3 video VAE used for positional keyframes or every ordered image reference.",
                 ),
                 io.String.Input(
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip=(
-                        "Main prompt. With fusion enabled, place the fused visual using image_input_fusion "
-                        "(image_input_1 is accepted as an alias). With fusion off, image_input_N places that image separately."
-                    ),
+                    tooltip="Main MiniMax H3 prompt. Images are presented through the selected native H3 mode, not prompt placeholders.",
                 ),
                 io.String.Input(
                     "system_prompt",
@@ -3366,11 +3364,12 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "keyframe_mode",
-                    options=["first frame", "first + last frames"],
+                    options=["first frame", "first + last frames", "reference images"],
                     default="first frame",
                     tooltip=(
                         "First frame: image 1 is the VAE first frame. First + last: image 1 is the VAE first frame "
-                        "and image 2 is the VAE last frame. All images remain Qwen visual sources."
+                        "and image 2 is the VAE last frame. Reference images: every image becomes an ordered H3 "
+                        "structural reference. All images remain Qwen visual sources."
                     ),
                 ),
                 io.Int.Input("width", default=1344, min=32, max=nodes.MAX_RESOLUTION, step=32),
@@ -3388,8 +3387,8 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     display_name="Fusion Config",
                     optional=True,
                     tooltip=(
-                        "Optional spatial fusion configuration. When connected and enabled, every flattened image source "
-                        "contributes to one fused Qwen visual slot; VAE keyframe assignment remains positional."
+                        "Optional spatial fusion for first-frame and first-plus-last modes. Reference-images mode requires "
+                        "fusion to be disabled so every native H3 reference remains separate and ordered."
                     ),
                 ),
                 io.Float.Input(
@@ -3400,12 +3399,23 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     step=0.1,
                     tooltip="Scales the final Qwen conditioning and pooled output; does not alter VAE keyframes or the H3 latent.",
                 ),
+                io.Combo.Input(
+                    "ref_image_size",
+                    options=["match", "max"],
+                    default="match",
+                    tooltip=(
+                        "Used only by reference images mode. Match limits each reference to the generation pixel area; "
+                        "max limits its short edge to 2048 pixels. Both preserve aspect ratio; final 32-pixel alignment "
+                        "can marginally enlarge a dimension."
+                    ),
+                ),
                 io.Autogrow.Input(
                     "image_inputs",
                     template=autogrow_template,
                     tooltip=(
                         "Ordered visual sources. A batched socket is flattened exactly as if its images were connected separately. "
-                        "Image 1 supplies the first VAE frame; in first + last mode image 2 supplies the last."
+                        "Image 1 supplies the first VAE frame; in first + last mode image 2 supplies the last; in reference "
+                        "images mode every flattened image is sent through both Qwen and the VAE."
                     ),
                 ),
             ],
@@ -3430,6 +3440,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
         image_inputs: io.Autogrow.Type,
         visual_fusion_config=None,
         multiplier=1.0,
+        ref_image_size="match",
     ) -> io.NodeOutput:
         conditioning, latent = execute_advanced_minimax_h3_image_to_video(
             clip,
@@ -3443,8 +3454,132 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             image_inputs,
             visual_fusion_config,
             multiplier,
+            ref_image_size,
         )
         return io.NodeOutput(conditioning, latent)
+
+
+class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        reference_names = [f"reference_image_{index}" for index in range(1, 17)]
+        reference_template = io.Autogrow.TemplateNames(
+            io.Image.Input(
+                "reference_image",
+                tooltip=(
+                    "Ordered image reference. reference_image_1 becomes Qwen <Picture 2>; "
+                    "a batch expands in order before the next socket."
+                ),
+            ),
+            names=reference_names,
+            min=1,
+        )
+        return io.Schema(
+            node_id="UC_MiniMaxH3FirstFrameReferences",
+            display_name="MiniMax H3 First/Last Frame + References",
+            category="model/conditioning/minimax",
+            description=(
+                "Creates a true MiniMax H3 frame-zero anchor, an optional final-frame anchor, and separate "
+                "ordered image references. The first frame is Qwen <Picture 1>; references start at <Picture 2> "
+                "without a last frame or <Picture 3> with one. The "
+                "returned patched model must be connected to the sampler together with positive and latent."
+            ),
+            inputs=[
+                io.Model.Input(
+                    "model",
+                    tooltip="MiniMax H3 diffusion model. The returned patched clone must feed the sampler.",
+                ),
+                io.Clip.Input(
+                    "clip",
+                    tooltip="MiniMax H3 Qwen3-VL 32B text encoder (qwen3vl_32b).",
+                ),
+                io.Vae.Input(
+                    "vae",
+                    tooltip="MiniMax H3 video VAE used for the first frame and every image reference.",
+                ),
+                io.Image.Input(
+                    "first_frame",
+                    tooltip="Exactly one frame-zero image. It is Qwen <Picture 1> and the VAE keyframe anchor.",
+                ),
+                io.Image.Input(
+                    "last_frame",
+                    optional=True,
+                    tooltip=(
+                        "Optional final-frame anchor. When connected it becomes Qwen <Picture 2>, and references "
+                        "start at <Picture 3>."
+                    ),
+                ),
+                io.String.Input(
+                    "prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    tooltip="Raw MiniMax H3 prompt; no image placeholders or aliases are interpreted.",
+                ),
+                io.Int.Input("width", default=1344, min=32, max=nodes.MAX_RESOLUTION, step=32),
+                io.Int.Input("height", default=768, min=32, max=nodes.MAX_RESOLUTION, step=32),
+                io.Int.Input(
+                    "length",
+                    default=124,
+                    min=5,
+                    max=3600,
+                    step=17,
+                    tooltip="Frame count at 24 fps, snapped upward to MiniMax H3's 17k+5 temporal grid.",
+                ),
+                io.Combo.Input(
+                    "ref_image_size",
+                    options=["match", "max"],
+                    default="match",
+                    tooltip=(
+                        "Match limits each reference to the generation pixel area; max limits its short edge "
+                        "to 2048 pixels. Both preserve aspect ratio and align to 32 pixels."
+                    ),
+                ),
+                io.Autogrow.Input(
+                    "reference_images",
+                    template=reference_template,
+                    tooltip=(
+                        "One-based ordered references. Socket order is numeric and images inside a batch retain "
+                        "batch order. reference_image_1 is Qwen <Picture 2>."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Model.Output(display_name="model"),
+                io.Conditioning.Output(display_name="positive"),
+                io.Latent.Output(),
+            ],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model,
+        clip,
+        vae,
+        first_frame,
+        prompt,
+        width,
+        height,
+        length,
+        ref_image_size,
+        reference_images: io.Autogrow.Type,
+        last_frame=None,
+    ) -> io.NodeOutput:
+        patched_model, conditioning, latent = execute_minimax_h3_first_frame_references(
+            model,
+            clip,
+            vae,
+            first_frame,
+            last_frame,
+            prompt,
+            width,
+            height,
+            length,
+            ref_image_size,
+            reference_images,
+        )
+        return io.NodeOutput(patched_model, conditioning, latent)
 
 
 class UC_AdvancedVisConEncoder(io.ComfyNode):
