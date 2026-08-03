@@ -45,6 +45,16 @@ def test_encoder_guide_topics_are_complete_and_render_markdown():
         assert "Unknown topic" not in markdown
 
 
+def test_encoder_guide_documents_minimax_h3_visual_contract():
+    markdown = UC_EncoderNodesGuide.execute(
+        "image_inputs_and_placeholders"
+    ).args[0]
+
+    assert "`qwen3vl_32b`" in markdown
+    assert "raw `<Picture N>:` presentation" in markdown
+    assert "Keep `ref_latent_mode` off" in markdown
+
+
 def test_encoder_guide_covers_current_visual_fusion_contract():
     resolution = UC_EncoderNodesGuide.execute(
         "resolution_and_reference_latents"
@@ -117,6 +127,18 @@ def test_encoder_guide_separates_flattened_sources_from_consensus_lanes():
     assert "Visual sources, batch lanes, and resolution variants remain separate" in images
     assert "pair equal-index images into independent lanes" in images
     assert "Singleton image sockets broadcast into every batch lane" in images
+
+
+def test_encoder_guide_explains_dedicated_minimax_h3_keyframe_contract():
+    catalog = UC_EncoderNodesGuide.execute("node_catalog").args[0]
+    images = UC_EncoderNodesGuide.execute("image_inputs_and_placeholders").args[0]
+
+    assert "`UC_AdvancedMiniMaxH3ImageToVideo`" in catalog
+    assert "image 1 is always the VAE first frame" in images
+    assert "image 2 is the VAE last frame" in images
+    assert "Every flattened image still participates in Qwen conditioning" in images
+    assert "Qwen-only visual conditioning" in images
+    assert "do not create `minimax_keyframes` or an H3 latent" in images
 
 
 def test_encoder_guide_lists_only_registered_compatibility_migrations_as_mappings():

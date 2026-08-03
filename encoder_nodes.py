@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from safetensors.torch import save_file
 
 import comfy
+import nodes
 import folder_paths
 import node_helpers
 from comfy_api.latest import ComfyExtension, io
@@ -38,8 +39,12 @@ from .encoder_helpers import(
     prepare_vlm_image,
     prepare_vae_reference_image,
     qwen3vl_visual_encoder_path,
+    is_minimax_h3_text_encoder,
+    tokenize_minimax_h3_prompt,
+    format_minimax_h3_prompt,
     CONSENSUS_BLEND_PRESETS,
     execute_advanced_visual_consensus,
+    execute_advanced_minimax_h3_image_to_video,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -729,7 +734,7 @@ class UC_ScaledBiasTextEncodeLtxv2SystemPrompt(io.ComfyNode):
                     "ref_latent_mode",
                     options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
-                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override.",
+                    tooltip="Reference latent encoding mode. 'single'/'multi' append latents; 'parallel-single'/'parallel-multi' run them in a separate conditioning stream to prevent semantic override. MiniMax H3 requires off and uses Core's dedicated H3 reference conditioning instead.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Image.Input("image", optional=True),
@@ -2120,8 +2125,15 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
     def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
+        minimax_h3 = is_minimax_h3_text_encoder(clip)
+        if minimax_h3 and ref_latent_mode != "off":
+            raise ValueError(
+                "MiniMax H3 reference latents require Core's MiniMax H3 reference conditioning node; set ref_latent_mode to off."
+            )
 
         def format_krea_prompt(user_prompt):
+            if minimax_h3:
+                return format_minimax_h3_prompt(user_prompt, system_prompt)
             if system_prompt:
                 return (
                     "<|im_start|>user\n<|im_end|>\n"
@@ -2184,8 +2196,14 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 )
             try:
                 with qwen3vl_visual_encoder_path(clip, visual_encoder_path):
-                    inline_tokens = clip.tokenize(
-                        inline_prompt, images=inline_images, skip_template=True,
+                    inline_tokens = (
+                        tokenize_minimax_h3_prompt(
+                            clip, inline_prompt, inline_images
+                        )
+                        if minimax_h3
+                        else clip.tokenize(
+                            inline_prompt, images=inline_images, skip_template=True,
+                        )
                     )
                     inline_cond = clip.encode_from_tokens_scheduled(inline_tokens)
                 if len(inline_cond) != 1:
@@ -2229,16 +2247,23 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             full_prompt = format_krea_prompt(modified_prompt)
 
             processed_img = prepare_vlm_image(source_image, vlm_resolution)
+            tokenize_callback = None
+            encode_kwargs = {"images": [processed_img], "skip_template": True}
+            if minimax_h3:
+                tokenize_callback = lambda text, image=processed_img: (
+                    tokenize_minimax_h3_prompt(clip, text, [image])
+                )
+                encode_kwargs = {}
             cond_X = encode_embedding_classical_scaled_bias(
                 clip,
                 full_prompt,
-                images=[processed_img],
-                skip_template=True,
+                tokenize_callback=tokenize_callback,
                 visual_encoder_path=(
                     visual_encoder_path
                     if visual_method != "off"
                     else "grid-deepstack"
                 ),
+                **encode_kwargs,
             )
             if len(cond_X) != 1:
                 raise ValueError(
@@ -2250,8 +2275,14 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
 
             if visual_method != "off":
                 try:
-                    tokens = clip.tokenize(
-                        full_prompt, images=[processed_img], skip_template=True
+                    tokens = (
+                        tokenize_minimax_h3_prompt(
+                            clip, full_prompt, [processed_img]
+                        )
+                        if minimax_h3
+                        else clip.tokenize(
+                            full_prompt, images=[processed_img], skip_template=True
+                        )
                     )
                     tokens_dict[letter] = tokens
                     visual_ranges[letter] = find_visual_token_range(
@@ -2299,6 +2330,14 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             final_cond_dict.pop("attention_mask_img_shape", None)
         if P_blended is not None:
             final_cond_dict["pooled_output"] = P_blended
+        minimax_tags = final_cond_dict.get("minimax_token_tags")
+        if minimax_h3 and (
+            not torch.is_tensor(minimax_tags)
+            or minimax_tags.numel() != C_blended.shape[1]
+        ):
+            raise ValueError(
+                "MiniMax H3 modality tags do not match the fused conditioning sequence length."
+            )
 
         if multiplier != 1.0:
             C_blended *= multiplier
@@ -3279,6 +3318,135 @@ class UC_AdvancedVisualConditioningEncode(TextEncodeKrea2SystemEditScaledAdv):
         return schema
 
 
+class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.Image.Input(
+                "image",
+                optional=True,
+                tooltip="Visual source. Input order assigns VAE keyframes; every connected image still participates in Qwen visual conditioning.",
+            ),
+            prefix="image",
+            min=1,
+            max=16,
+        )
+        return io.Schema(
+            node_id="UC_AdvancedMiniMaxH3ImageToVideo",
+            display_name="Advanced MiniMax H3 Image to Video",
+            category="advanced/conditioning",
+            description=(
+                "Creates coordinated MiniMax H3 Qwen visual conditioning, positional first/last VAE keyframes, "
+                "and the matching joint video/audio latent without resolution consensus."
+            ),
+            inputs=[
+                io.Clip.Input(
+                    "clip",
+                    tooltip="MiniMax H3 Qwen3-VL 32B text encoder (qwen3vl_32b).",
+                ),
+                io.Vae.Input(
+                    "vae",
+                    tooltip="MiniMax H3 video VAE used only for the positional canonical keyframe image or images.",
+                ),
+                io.String.Input(
+                    "prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    tooltip=(
+                        "Main prompt. With fusion enabled, place the fused visual using image_input_fusion "
+                        "(image_input_1 is accepted as an alias). With fusion off, image_input_N places that image separately."
+                    ),
+                ),
+                io.String.Input(
+                    "system_prompt",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    default="",
+                    tooltip="Optional plain-text instruction placed before the prompt in MiniMax H3 presentation.",
+                ),
+                io.Combo.Input(
+                    "keyframe_mode",
+                    options=["first frame", "first + last frames"],
+                    default="first frame",
+                    tooltip=(
+                        "First frame: image 1 is the VAE first frame. First + last: image 1 is the VAE first frame "
+                        "and image 2 is the VAE last frame. All images remain Qwen visual sources."
+                    ),
+                ),
+                io.Int.Input("width", default=1344, min=32, max=nodes.MAX_RESOLUTION, step=32),
+                io.Int.Input("height", default=768, min=32, max=nodes.MAX_RESOLUTION, step=32),
+                io.Int.Input(
+                    "length",
+                    default=124,
+                    min=5,
+                    max=3600,
+                    step=17,
+                    tooltip="Frame count at 24 fps, snapped upward to MiniMax H3's 17k+5 temporal grid.",
+                ),
+                VisualFusionConfig.Input(
+                    "visual_fusion_config",
+                    display_name="Fusion Config",
+                    optional=True,
+                    tooltip=(
+                        "Optional spatial fusion configuration. When connected and enabled, every flattened image source "
+                        "contributes to one fused Qwen visual slot; VAE keyframe assignment remains positional."
+                    ),
+                ),
+                io.Float.Input(
+                    "multiplier",
+                    default=1.0,
+                    min=-1000.0,
+                    max=1000.0,
+                    step=0.1,
+                    tooltip="Scales the final Qwen conditioning and pooled output; does not alter VAE keyframes or the H3 latent.",
+                ),
+                io.Autogrow.Input(
+                    "image_inputs",
+                    template=autogrow_template,
+                    tooltip=(
+                        "Ordered visual sources. A batched socket is flattened exactly as if its images were connected separately. "
+                        "Image 1 supplies the first VAE frame; in first + last mode image 2 supplies the last."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Conditioning.Output(display_name="positive"),
+                io.Latent.Output(),
+            ],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        clip,
+        vae,
+        prompt,
+        system_prompt,
+        keyframe_mode,
+        width,
+        height,
+        length,
+        image_inputs: io.Autogrow.Type,
+        visual_fusion_config=None,
+        multiplier=1.0,
+    ) -> io.NodeOutput:
+        conditioning, latent = execute_advanced_minimax_h3_image_to_video(
+            clip,
+            vae,
+            prompt,
+            system_prompt,
+            keyframe_mode,
+            width,
+            height,
+            length,
+            image_inputs,
+            visual_fusion_config,
+            multiplier,
+        )
+        return io.NodeOutput(conditioning, latent)
+
+
 class UC_AdvancedVisConEncoder(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -3318,6 +3486,7 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
                     "ref_latent_mode",
                     options=["off", "single", "multi", "parallel-single", "parallel-multi"],
                     default="off",
+                    tooltip="Generic reference-latent mode. MiniMax H3 requires off and uses Core's dedicated H3 reference conditioning instead.",
                 ),
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1),
