@@ -86,6 +86,7 @@ class SamplingUtils(ComfyExtension):
             UC_UnifiedPresets,
             UC_AttentionBiasTextEncode,
             UC_TagNormalizeCombine,
+            UC_ImageToVideoPrompt,
             UC_LoadImagePath,
             UC_LoadImageDirectory,
             UC_HighResolutionTileSplit,

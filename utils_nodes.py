@@ -6,6 +6,7 @@ import os
 import torch
 from comfy_api.latest import io
 from comfy_extras.nodes_logic import SwitchNode, SoftSwitchNode
+from .helper_functions import to_video_prompt
 
 _MAX_SEED = 0xFFFFFFFFFFFFFFFF
 SeedClusterType = io.Custom("UC_SEED_CLUSTER")
@@ -240,6 +241,34 @@ class UC_GetJsonValue(io.ComfyNode):
             raise ValueError(f"Unsupported JSON value selection mode: {selection_mode!r}")
 
         return io.NodeOutput(value)
+
+
+class UC_ImageToVideoPrompt(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_ImageToVideoPrompt",
+            display_name="Image Prompt to Video Prompt",
+            category="advanced/text",
+            description=(
+                "Converts static image-oriented prompt wording into motion-oriented video wording "
+                "using the repository's established replacement rules."
+            ),
+            inputs=[
+                io.String.Input(
+                    "text",
+                    multiline=True,
+                    dynamic_prompts=True,
+                    default="",
+                    tooltip="Any text to transform with the image-to-video prompt replacement rules.",
+                ),
+            ],
+            outputs=[io.String.Output("text", display_name="text")],
+        )
+
+    @classmethod
+    def execute(cls, text: str) -> io.NodeOutput:
+        return io.NodeOutput(to_video_prompt(text))
 
 
 class UC_TagNormalizeCombine(io.ComfyNode):
