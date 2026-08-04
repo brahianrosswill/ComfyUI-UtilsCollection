@@ -3409,6 +3409,17 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                         "can marginally enlarge a dimension."
                     ),
                 ),
+                io.Int.Input(
+                    "vlm_resolution",
+                    default=384,
+                    min=0,
+                    max=4096,
+                    step=32,
+                    tooltip=(
+                        "Equivalent-square Qwen3-VL target from 256 to 3584. Values outside that range preserve "
+                        "the original image resolution. This is independent of VAE frame and reference sizing."
+                    ),
+                ),
                 io.Autogrow.Input(
                     "image_inputs",
                     template=autogrow_template,
@@ -3441,6 +3452,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
         visual_fusion_config=None,
         multiplier=1.0,
         ref_image_size="match",
+        vlm_resolution=384,
     ) -> io.NodeOutput:
         conditioning, latent = execute_advanced_minimax_h3_image_to_video(
             clip,
@@ -3455,6 +3467,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             visual_fusion_config,
             multiplier,
             ref_image_size,
+            vlm_resolution,
         )
         return io.NodeOutput(conditioning, latent)
 
@@ -3472,7 +3485,7 @@ class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):
                 ),
             ),
             names=reference_names,
-            min=1,
+            min=0,
         )
         return io.Schema(
             node_id="UC_MiniMaxH3FirstFrameReferences",
@@ -3537,8 +3550,9 @@ class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):
                 io.Autogrow.Input(
                     "reference_images",
                     template=reference_template,
+                    optional=True,
                     tooltip=(
-                        "One-based ordered references. Socket order is numeric and images inside a batch retain "
+                        "Optional one-based ordered references. Socket order is numeric and images inside a batch retain "
                         "batch order. reference_image_1 is Qwen <Picture 2>."
                     ),
                 ),
@@ -3563,7 +3577,7 @@ class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):
         height,
         length,
         ref_image_size,
-        reference_images: io.Autogrow.Type,
+        reference_images: io.Autogrow.Type = None,
         last_frame=None,
     ) -> io.NodeOutput:
         patched_model, conditioning, latent = execute_minimax_h3_first_frame_references(

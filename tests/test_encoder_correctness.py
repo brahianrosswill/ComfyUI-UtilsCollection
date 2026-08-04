@@ -409,6 +409,8 @@ def test_advanced_minimax_h3_node_schema_explains_positional_contract():
     assert inputs["ref_image_size"].options == ["match", "max"]
     assert inputs["ref_image_size"].default == "match"
     assert "only by reference images mode" in inputs["ref_image_size"].tooltip.lower()
+    assert inputs["vlm_resolution"].default == 384
+    assert "independent" in inputs["vlm_resolution"].tooltip.lower()
     assert "batched socket" in inputs["image_inputs"].tooltip.lower()
     serialized_widgets = [
         value.id
@@ -422,6 +424,7 @@ def test_advanced_minimax_h3_node_schema_explains_positional_contract():
             "length",
             "multiplier",
             "ref_image_size",
+            "vlm_resolution",
         }
     ]
     assert serialized_widgets == [
@@ -433,6 +436,7 @@ def test_advanced_minimax_h3_node_schema_explains_positional_contract():
         "length",
         "multiplier",
         "ref_image_size",
+        "vlm_resolution",
     ]
 
 
@@ -459,6 +463,8 @@ def test_combined_minimax_h3_node_schema_is_additive_and_one_based():
     assert inputs["reference_images"].template.names == [
         f"reference_image_{index}" for index in range(1, 17)
     ]
+    assert inputs["reference_images"].optional is True
+    assert inputs["reference_images"].template.min == 0
     assert inputs["ref_image_size"].options == ["match", "max"]
     assert inputs["ref_image_size"].default == "match"
     assert inputs["length"].default == 124
@@ -531,6 +537,42 @@ def test_combined_minimax_h3_native_order_metadata_and_model_patch():
     assert patched.get_wrappers(
         wrapper_type, "uc_minimax_h3_combined_visual_latents"
     ) == [encoder_helpers.minimax_h3_combined_payload_wrapper]
+
+
+def test_combined_minimax_h3_without_references_uses_native_keyframes():
+    model = _MiniMaxH3TestPatcher()
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    first = torch.full((1, 32, 64, 3), 0.125)
+    last = torch.full((1, 32, 64, 3), 0.875)
+
+    output_model, conditioning, _latent = UC_MiniMaxH3FirstFrameReferences.execute(
+        model,
+        clip,
+        vae,
+        first,
+        "subject",
+        64,
+        32,
+        5,
+        "match",
+        None,
+        last,
+    ).args
+
+    native_call = clip.tokenize_calls[-1]
+    assert native_call["minimax_ref_items"] is None
+    assert [float(image.mean()) for image in native_call["images"]] == pytest.approx(
+        [0.125, 0.875], abs=0.004
+    )
+    metadata = conditioning[0][1]
+    assert [item["resolved_frame_index"] for item in metadata["minimax_keyframes"]] == [0, 4]
+    assert [float(item["latent"].mean()) for item in metadata["minimax_keyframes"]] == pytest.approx(
+        [0.125, 0.875], abs=0.004
+    )
+    assert "minimax_refs" not in metadata
+    assert output_model is model
+    assert model.clone_calls == 0
 
 
 def test_combined_minimax_h3_wrapper_repairs_rows_without_mutation():
@@ -654,11 +696,6 @@ def test_combined_minimax_h3_rejects_invalid_clip_images_and_controls_before_clo
             model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image,
             "prompt", 32, 32, 5, "match", reference, image.repeat(2, 1, 1, 1),
         )
-    with pytest.raises(ValueError, match="at least one reference"):
-        UC_MiniMaxH3FirstFrameReferences.execute(
-            model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image, "prompt",
-            32, 32, 5, "match", {},
-        )
     with pytest.raises(ValueError, match="reference image 1"):
         UC_MiniMaxH3FirstFrameReferences.execute(
             model, _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), image, "prompt",
@@ -766,6 +803,7 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
         system_prompt="system",
         keyframe_mode="reference images",
         ref_image_size="match",
+        vlm_resolution=0,
         width=64,
         height=32,
         length=5,
@@ -788,7 +826,9 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
     assert native_call["minimax_ref_items"] is not None
     assert native_call["text"] == "system\nsubject"
     assert len(vae.images) == 3
-    assert all(torch.equal(qwen, encoded) for qwen, encoded in zip(qwen_images, vae.images))
+    assert [float(image.mean()) for image in vae.images] == pytest.approx(
+        [0.25, 0.5, 0.75], abs=0.004
+    )
 
     metadata = conditioning[0][1]
     references = metadata["minimax_refs"]
@@ -806,6 +846,33 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
     video, audio = latent["samples"].tensors
     assert video.shape == (1, 24, 2, 2, 4)
     assert audio.shape == (1, 32, 2, 8)
+
+
+def test_advanced_minimax_h3_vlm_resolution_is_independent_of_reference_size():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    image = torch.full((1, 32, 64, 3), 0.25)
+
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        system_prompt="",
+        keyframe_mode="reference images",
+        ref_image_size="match",
+        vlm_resolution=256,
+        width=64,
+        height=32,
+        length=5,
+        image_inputs={"image_1": image},
+    )
+
+    entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+    qwen_image = next(
+        entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)
+    )
+    assert qwen_image.shape[1:3] == encoder_helpers.vlm_target_dimensions(32, 64, 256)
+    assert vae.images[0].shape[1:3] == (32, 64)
 
 
 def test_advanced_minimax_h3_reference_mode_rejects_spatial_fusion_before_encoding():
@@ -854,6 +921,7 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
         prompt="subject",
         system_prompt="system",
         keyframe_mode="first + last frames",
+        vlm_resolution=0,
         width=64,
         height=32,
         length=22,
@@ -881,8 +949,10 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
     assert [float(image.mean()) for image in vae.images] == pytest.approx(
         [0.25, 0.5], abs=0.004
     )
-    assert torch.equal(vae.images[0], encoded_images[0][0])
-    assert torch.equal(vae.images[1], encoded_images[1][0])
+    assert encoded_images[0][0].shape[1:3] == (4, 6)
+    assert encoded_images[1][0].shape[1:3] == (4, 6)
+    assert vae.images[0].shape[1:3] == (32, 64)
+    assert vae.images[1].shape[1:3] == (32, 64)
     image_calls = [call for call in clip.tokenize_calls if call["images"]]
     assert image_calls
     assert all(call["minimax_ref_items"] is None for call in image_calls)

@@ -2224,6 +2224,7 @@ def execute_advanced_minimax_h3_image_to_video(
     visual_fusion_config=None,
     multiplier=1.0,
     ref_image_size="match",
+    vlm_resolution=384,
 ):
     """Build coordinated Qwen conditioning, H3 image controls, and AV latent."""
     if not is_minimax_h3_text_encoder(clip):
@@ -2269,6 +2270,7 @@ def execute_advanced_minimax_h3_image_to_video(
             )
             for index, image in enumerate(flat_images)
         ]
+    vlm_images = [prepare_vlm_image(image, vlm_resolution) for image in flat_images]
 
     config = dict(visual_fusion_config or {})
     visual_method = config.get("visual_fusion_method", "off")
@@ -2282,7 +2284,7 @@ def execute_advanced_minimax_h3_image_to_video(
 
     if fusion_active:
         branches = []
-        for index, image in enumerate(prepared_images):
+        for index, image in enumerate(vlm_images):
             tokenize_callback = lambda text, source=image: clip.tokenize(
                 text, images=[source]
             )
@@ -2327,14 +2329,14 @@ def execute_advanced_minimax_h3_image_to_video(
     else:
         if keyframe_mode == "reference_images":
             reference_items = [
-                {"type": "image", "data": image} for image in prepared_images
+                {"type": "image", "data": image} for image in vlm_images
             ]
             tokenize_callback = lambda text: clip.tokenize(
                 text, minimax_ref_items=reference_items
             )
         else:
             tokenize_callback = lambda text: clip.tokenize(
-                text, images=prepared_images
+                text, images=vlm_images
             )
         conditioning = encode_embedding_classical_scaled_bias(
             clip,
@@ -2451,8 +2453,6 @@ def execute_minimax_h3_first_frame_references(
         raise ValueError("MiniMax H3 width and height must be multiples of 32.")
 
     _, flat_references, _ = extract_and_flatten_images(reference_images)
-    if not flat_references:
-        raise ValueError("MiniMax H3 First Frame + References requires at least one reference image.")
     for index, image in enumerate(flat_references, start=1):
         if (
             not torch.is_tensor(image)
@@ -2485,12 +2485,18 @@ def execute_minimax_h3_first_frame_references(
     reference_items = [
         {"type": "image", "data": image} for image in presentation_images
     ]
+    if prepared_references:
+        tokenize_callback = lambda text: clip.tokenize(
+            text, minimax_ref_items=reference_items
+        )
+    else:
+        tokenize_callback = lambda text: clip.tokenize(
+            text, images=presentation_images
+        )
     conditioning = encode_embedding_classical_scaled_bias(
         clip,
         prompt,
-        tokenize_callback=lambda text: clip.tokenize(
-            text, minimax_ref_items=reference_items
-        ),
+        tokenize_callback=tokenize_callback,
         visual_encoder_path="grid-deepstack",
     )
     if len(conditioning) != 1:
@@ -2528,15 +2534,15 @@ def execute_minimax_h3_first_frame_references(
                 "latent": vae.encode(image),
             }
         )
-    conditioning = node_helpers.conditioning_set_values(
-        conditioning,
-        {
-            "minimax_keyframes": keyframes,
-            "minimax_frame_count": frame_count,
-            "minimax_refs": references,
-        },
-    )
-    return patch_minimax_h3_combined_model(model), conditioning, latent
+    metadata = {
+        "minimax_keyframes": keyframes,
+        "minimax_frame_count": frame_count,
+    }
+    if references:
+        metadata["minimax_refs"] = references
+    conditioning = node_helpers.conditioning_set_values(conditioning, metadata)
+    output_model = patch_minimax_h3_combined_model(model) if references else model
+    return output_model, conditioning, latent
 
 
 def execute_advanced_visual_consensus(
