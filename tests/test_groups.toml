@@ -10,7 +10,7 @@ frontend_tests = []
 
 [groups.textgen]
 paths = ["textgen_nodes.py", "text_nodes.py", "encoder_helpers.py"]
-python_tests = ["tests/test_textgen_formula.py"]
+python_tests = ["tests/test_textgen_formula.py", "tests/test_text_nodes.py"]
 frontend_tests = []
 
 [groups.composite]

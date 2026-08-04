@@ -134,6 +134,7 @@ class SamplingUtils(ComfyExtension):
             UC_UnWordJoiner,
             UC_JSONMinifyRepair,
             UC_StringUnescape,
+            UC_TextConcatenateAutogrow,
             AdjustedResolutionParameters,
             ResolutionSelectorExtended,
             ImageScaleAndResolutionPicker,

@@ -163,3 +163,47 @@ class UC_StringUnescape(io.ComfyNode):
         result = unescape_string(text)
         return io.NodeOutput(result)
 
+
+class UC_TextConcatenateAutogrow(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        text_template = io.Autogrow.TemplateNames(
+            io.AnyType.Input("text"),
+            names=[f"text_{index}" for index in range(1, 101)],
+            min=2,
+        )
+        return io.Schema(
+            node_id="UC_TextConcatenateAutogrow",
+            display_name="Concatenate Text (Autogrow)",
+            category="advanced/text",
+            inputs=[
+                io.AnyType.Input(
+                    "delimiter",
+                    tooltip="Value converted to text and inserted between each connected text input.",
+                ),
+                io.Autogrow.Input(
+                    "text_inputs",
+                    template=text_template,
+                    tooltip="Ordered values converted to text and joined with the delimiter.",
+                ),
+            ],
+            outputs=[
+                io.String.Output(display_name="concatenated_text"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        delimiter,
+        text_inputs: io.Autogrow.Type,
+    ) -> io.NodeOutput:
+        ordered_values = [
+            value
+            for _, value in sorted(
+                text_inputs.items(),
+                key=lambda item: int(item[0].removeprefix("text_")),
+            )
+        ]
+        return io.NodeOutput(str(delimiter).join(str(value) for value in ordered_values))
+
