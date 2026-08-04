@@ -283,7 +283,7 @@ class _MiniMaxH3TestClip:
                 else 1
             )
             tag_values.extend(
-                [0 if encoder_helpers.is_image_token(entry) else 1] * span
+                [0 if encoder_helpers.is_image_token(entry) or entry[0] in (151652, 151653) else 1] * span
             )
         length = len(tag_values)
         tags = torch.tensor(tag_values)
@@ -1119,6 +1119,26 @@ def test_krea2_mapping_rejects_unexplained_length_mismatch():
 
     with pytest.raises(ValueError, match="refusing to guess a visual range"):
         encoder_helpers.build_token_to_conditioning_map(tokens, conditioning)
+
+
+def test_minimax_visual_range_uses_core_modality_tags():
+    image = torch.zeros(1, 800, 832, 3)
+    tokens = {
+        "qwen3vl_32b": [[
+            (100, 1.0),
+            (151652, 1.0),
+            ({"type": "image", "data": image}, 1.0),
+            (151653, 1.0),
+            (101, 1.0),
+        ]],
+    }
+    conditioning = torch.zeros(1, 664, 5120)
+    tags = torch.ones(664, dtype=torch.long)
+    tags[5:657] = 0
+
+    assert encoder_helpers.find_visual_token_range(
+        tokens, conditioning, minimax_token_tags=tags
+    ) == (6, 656)
 
 
 def test_legacy_flat_visual_range_preserves_pre_refactor_spatial_mapping():

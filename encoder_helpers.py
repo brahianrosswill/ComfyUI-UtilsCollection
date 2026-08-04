@@ -1732,11 +1732,19 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
     return C_blended, P_blended
 
 
-def find_visual_token_range(tokens, cond_tensor, legacy_krea_spatial=False) -> tuple:
+def find_visual_token_range(tokens, cond_tensor, legacy_krea_spatial=False, minimax_token_tags=None) -> tuple:
     key_name = next(iter(tokens.keys()))
     token_list = tokens[key_name][0]
     if not any(is_image_token(token) for token in token_list):
         return 0, 0
+
+    if minimax_token_tags is not None:
+        if not torch.is_tensor(minimax_token_tags) or minimax_token_tags.ndim != 1 or minimax_token_tags.numel() != cond_tensor.shape[1]:
+            raise ValueError("MiniMax H3 modality tags do not match the conditioning sequence length.")
+        visual_block = torch.nonzero(minimax_token_tags == 0).flatten().tolist()
+        if len(visual_block) < 3 or len(visual_block) != visual_block[-1] - visual_block[0] + 1:
+            raise ValueError("MiniMax H3 visual fusion requires one contiguous visual block.")
+        return visual_block[0] + 1, visual_block[-1]
 
     if legacy_krea_spatial and cond_tensor.shape[-1] == 12 * 2560:
         image_indices = [index for index, token in enumerate(token_list) if is_image_token(token)]
@@ -2147,6 +2155,7 @@ def _encode_visual_consensus_source(
         tokens,
         tensor,
         legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+        minimax_token_tags=metadata.get("minimax_token_tags"),
     )
     return {
         "conditioning": [[tensor, metadata]],
@@ -2304,6 +2313,7 @@ def execute_advanced_minimax_h3_image_to_video(
                 tokens,
                 tensor,
                 legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                minimax_token_tags=metadata.get("minimax_token_tags"),
             )
             if visual_range == (0, 0):
                 raise ValueError(
@@ -2799,4 +2809,3 @@ def krea2_attn_forward_weight(self, x, freqs=None, mask=None, transformer_option
             mask = additive_mask + bias.to(device=mask.device, dtype=q.dtype)
     out = optimized_attention(q, k, v, self.heads, mask=mask, skip_reshape=True, transformer_options=transformer_options)
     return self.wo(out * torch.sigmoid(gate))
-
