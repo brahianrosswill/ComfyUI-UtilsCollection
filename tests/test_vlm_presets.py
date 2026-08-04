@@ -1,5 +1,6 @@
 import ast
 import pathlib
+import re
 import sys
 import types
 
@@ -60,6 +61,13 @@ STRUCTURED_VIDEO_PRESETS = (
     "video_struct_system_instruction",
     "video_8part_struct_system_instruction",
     "video_timeline_system_instruction",
+    "video_timeline_minimax_h3_base_system_instruction",
+    "video_timeline_minimax_h3_reference_system_instruction",
+)
+
+H3_TIMELINE_PRESETS = (
+    "video_timeline_minimax_h3_base_system_instruction",
+    "video_timeline_minimax_h3_reference_system_instruction",
 )
 
 
@@ -82,6 +90,12 @@ def test_structured_video_presets_are_independent_literal_values():
 
     assert vlm_presets.SystemInstructionsVLM.VIDTIMELINE.value == (
         "video_timeline_system_instruction"
+    )
+    assert vlm_presets.SystemInstructionsVLM.VIDTIMELINEH3BASE.value == (
+        "video_timeline_minimax_h3_base_system_instruction"
+    )
+    assert vlm_presets.SystemInstructionsVLM.VIDTIMELINEH3REF.value == (
+        "video_timeline_minimax_h3_reference_system_instruction"
     )
     for name in STRUCTURED_VIDEO_PRESETS:
         assert name in vlm_presets.system_instructions_vlm
@@ -138,3 +152,85 @@ def test_timeline_video_preset_uses_adaptive_contiguous_ranges():
     assert "Every range touches the next without a gap or overlap" in instruction
     assert "final range ends at the exact total duration" in instruction
     assert "no `Part N:` headings" in instruction
+
+
+def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():
+    for name in H3_TIMELINE_PRESETS:
+        instruction = vlm_presets.system_instructions_vlm[name]
+
+        assert "one or more **image inputs as ordered visual evidence for prompt generation**" in instruction
+        assert "Determine the prompt role of each image" in instruction
+        assert "must not depend on the downstream video model receiving the images" in instruction
+        assert "Fully specify the subjects" in instruction or "concrete written specifications" in instruction
+        assert "Use no fixed number of sections" in instruction
+        assert "Every range touches the next without a gap or overlap" in instruction
+        assert "final range ends at the exact total duration" in instruction
+        assert "[start-end]:" in instruction
+        assert "[SPEECH]:" in instruction
+        assert "<d>[Language]" in instruction
+        assert "The timestamp range remains the authoritative timing structure" in instruction
+
+
+def test_minimax_h3_base_timeline_field_order():
+    instruction = vlm_presets.system_instructions_vlm[
+        "video_timeline_minimax_h3_base_system_instruction"
+    ]
+    fields = (
+        "integrated_multimodal_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+
+    assert [instruction.index(field) for field in fields] == sorted(
+        instruction.index(field) for field in fields
+    )
+    assert "place `Timeline:` immediately beneath it" in instruction
+    assert "Analyze the VLM images in their supplied order" in instruction
+    assert "Do not require the user to predeclare these roles" not in instruction
+
+
+def test_minimax_h3_reference_timeline_field_and_label_contracts():
+    instruction = vlm_presets.system_instructions_vlm[
+        "video_timeline_minimax_h3_reference_system_instruction"
+    ]
+    fields = (
+        "subject_definitions:",
+        "summary:",
+        "retention_analysis:",
+        "detailed_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+
+    assert [instruction.index(field) for field in fields] == sorted(
+        instruction.index(field) for field in fields
+    )
+    assert "ComfyUI constructs and numbers the `<Picture N>`, `<Video N>`, and `<Audio N>`" in instruction
+    assert "Refer to those existing identifiers only" in instruction
+    assert "Never create or reproduce a media prefix declaration" in instruction
+    assert "assign a media number, or renumber an existing media identifier" in instruction
+    assert "Create and number `<Subject N>` aliases only" in instruction
+    assert "Assign `<Picture N>`" not in instruction
+    assert "Number each category independently" not in instruction
+    assert "<Subject N>" in instruction
+    assert "<Picture N>" in instruction
+    assert "<Video N>" in instruction
+    assert "<Audio N>" in instruction
+    assert "A label never replaces the full subject" in instruction
+    assert "Place `Timeline:` immediately beneath `detailed_description:`" in instruction
+
+
+def test_minimax_h3_timeline_presets_avoid_example_led_content_anchors():
+    forbidden = re.compile(
+        r"\be\.g\.|\bi\.e\.|\bexamples?\b|\bsuch as\b|\bincluding\b|"
+        r"\betc\b|\be621\b|\bdanbooru\b",
+        re.IGNORECASE,
+    )
+
+    for name in H3_TIMELINE_PRESETS:
+        assert forbidden.search(vlm_presets.system_instructions_vlm[name]) is None
+
+    assert not any(
+        re.search(r"\be621\b|\bdanbooru\b", instruction, re.IGNORECASE)
+        for instruction in vlm_presets.system_instructions_vlm.values()
+    )
