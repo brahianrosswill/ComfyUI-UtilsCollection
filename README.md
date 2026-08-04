@@ -220,6 +220,6 @@ adjustment.
 - `UC_MathOperation`
 - `UC_MathAspectRatio`
 
-These nodes replace the equivalent nodes from ComfyUI-LogicMath,
-ComfyUI_SigmoidOffsetScheduler, and ComfyUI_PowerShiftScheduler. Remove the
-standalone pack before accepting ComfyUI's workflow replacement prompt.
+These nodes replace the equivalent nodes from ComfyUI-LogicMath, ComfyUI_SigmoidOffsetScheduler,
+and ComfyUI_PowerShiftScheduler. Remove the standalone pack before accepting ComfyUI's workflow
+replacement prompt.
