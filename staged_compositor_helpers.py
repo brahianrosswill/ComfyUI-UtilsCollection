@@ -1,5 +1,7 @@
 from collections import OrderedDict
 from collections.abc import MutableMapping
+import hashlib
+import json
 import logging
 import os
 
@@ -33,6 +35,70 @@ _PAINT_LAYER_ENABLED = False
 
 
 _DEFAULT_CORNERS = ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
+
+_BACKGROUND_STAGE_OPTION_KEYS = (
+    "mask_threshold",
+    "border_cleanup_width",
+    "artifact_cleanup_radius",
+    "gap_fill_radius",
+    "mask_processing_resolution",
+    "mask_resize_method",
+)
+
+_FACE_STAGE_OPTION_KEYS = (
+    "detection_threshold",
+    "maximum_faces",
+    "bbox_expansion",
+    "mask_expansion",
+    "initial_face_scale",
+)
+
+
+def staged_foreground_fingerprint(
+    foreground_images,
+    model_identity,
+    background_options,
+    face_options=None,
+):
+    """Hash only inputs that determine retained cutout and mask objects."""
+    settings = {
+        "model": model_identity,
+        "background": {
+            key: background_options[key] for key in _BACKGROUND_STAGE_OPTION_KEYS
+        },
+    }
+    if face_options is not None:
+        settings["face"] = {
+            key: face_options[key] for key in _FACE_STAGE_OPTION_KEYS
+        }
+
+    digest = hashlib.sha256()
+    digest.update(
+        json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    for socket, image in _ordered_single_foregrounds(foreground_images):
+        if not torch.is_tensor(image):
+            raise ValueError(f"Foreground input {socket} must be an IMAGE tensor.")
+        pixels = image.detach().contiguous().to(device="cpu")
+        digest.update(socket.encode("utf-8"))
+        digest.update(str(pixels.dtype).encode("ascii"))
+        digest.update(
+            json.dumps(list(pixels.shape), separators=(",", ":")).encode("ascii")
+        )
+        digest.update(pixels.view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
+
+
+def resolve_retained_stage(cache, node_id, fingerprint, build_stage, force=False):
+    """Reuse a valid retained stage or build and retain a replacement."""
+    if not force and node_id in cache:
+        staged = cache[node_id]
+        if staged.get("_stage_fingerprint") == fingerprint:
+            return staged, True
+    staged = build_stage()
+    staged["_stage_fingerprint"] = fingerprint
+    cache[node_id] = staged
+    return cache[node_id], False
 
 
 def resize_paint_rgba(rgba, width, height):

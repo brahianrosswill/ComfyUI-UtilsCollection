@@ -14,9 +14,6 @@ from .composite_helpers import (
 from .staged_compositor_helpers import bounded_editor_preview, _stage_layered_foregrounds
 
 
-_FACE_MODEL_CACHE = {"path": None, "model": None}
-
-
 def load_face_model():
     import comfy.utils
     from comfy_extras.nodes_mediapipe import FaceLandmarkerModel
@@ -29,13 +26,10 @@ def load_face_model():
         f"detection/{filename}",
     )
     path = os.path.normcase(os.path.abspath(path))
-    if _FACE_MODEL_CACHE["path"] == path:
-        return _FACE_MODEL_CACHE["model"]
     try:
         model = FaceLandmarkerModel(comfy.utils.load_torch_file(path, safe_load=True))
     except Exception as exc:
         raise ValueError(f"Comfy Core could not load {filename} as a face detection model.") from exc
-    _FACE_MODEL_CACHE.update(path=path, model=model)
     return model
 
 

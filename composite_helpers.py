@@ -1,7 +1,6 @@
 import json
 import logging
 import math
-import os
 
 import torch
 import torch.nn.functional as F
@@ -35,9 +34,6 @@ _LUCIDA_IMAGE_MEAN = [0.485, 0.456, 0.406]
 
 _LUCIDA_IMAGE_STD = [0.229, 0.224, 0.225]
 
-_INTERNAL_BACKGROUND_REMOVAL_CACHE = {"key": None, "model": None}
-
-
 def _load_internal_background_removal_model(model_name):
     selected = str(model_name or "birefnet").lower()
     filename = _BACKGROUND_REMOVAL_MODEL_FILES.get(selected)
@@ -55,10 +51,6 @@ def _load_internal_background_removal_model(model_name):
         "Comfy-Org/BiRefNet",
         f"background_removal/{filename}",
     )
-
-    cache_key = (selected, os.path.normcase(os.path.abspath(model_path)))
-    if _INTERNAL_BACKGROUND_REMOVAL_CACHE["key"] == cache_key:
-        return _INTERNAL_BACKGROUND_REMOVAL_CACHE["model"]
 
     try:
         model = bg_removal_model.load(model_path)
@@ -84,8 +76,6 @@ def _load_internal_background_removal_model(model_name):
                 }
             )
 
-    _INTERNAL_BACKGROUND_REMOVAL_CACHE["key"] = cache_key
-    _INTERNAL_BACKGROUND_REMOVAL_CACHE["model"] = model
     return model
 
 

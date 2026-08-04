@@ -1412,20 +1412,17 @@ class UC_CompositeNodesGuide(io.ComfyNode):
             ),
             "staged_workflow": (
                 "## Staged Background Composite workflow\n\n"
-                "`execution_mode` accepts:\n\n"
-                "- `run_staging`: evaluate foreground inputs, remove their backgrounds, retain the cutouts, and return the staging preview.\n"
-                "- `run_staged`: composite the retained cutouts without evaluating foreground inputs or loading a removal model.\n"
-                "- `full_run`: refresh the retained cutouts from current inputs and composite them in the same execution.\n\n"
-                "Run Staging queues this output node and its upstream closure. A retained stage belongs to the node instance. `run_staged` reports an error if that instance has no retained stage.\n\n"
+                "Foreground pixels, the removal-model identity, and mask-generation settings form an automatic stage fingerprint. Matching fingerprints reuse retained cutout and mask tensors; changed or missing stages rebuild automatically. Background and placement-only changes recompose the retained objects without rerunning background removal.\n\n"
+                "The editor manages `execution_mode` internally. Ordinary queues validate and reuse the stage. Run Staging queues this output node and its upstream closure as an explicit forced preview refresh. A retained stage belongs to the node instance.\n\n"
                 "`Staged Composite Options` is optional. When disconnected, its defaults are used. `foreground_blend=1.0` keeps the layer fully foreground. `0.0` applies the implemented 50/50 normal blend only where an accumulated foreground or face mask already exists; background-only areas remain fully foreground."
             ),
             "staged_individual_workflow": (
                 "## Staged Individual Composites\n\n"
-                "A complete staged editor with its own retained cutouts and placement state. Each included foreground produces one full-background IMAGE, matching placement MASK, and bounding box; foregrounds are never stacked. `run_staging`, `run_staged`, and `full_run` behave like the ordinary staged compositor. `foreground_blend` is unused because every result contains one foreground."
+                "A complete staged editor with its own automatically validated cutouts and placement state. Each included foreground produces one full-background IMAGE, matching placement MASK, and bounding box; foregrounds are never stacked. Placement changes reuse retained image and mask tensors. `foreground_blend` is unused because every result contains one foreground."
             ),
             "staged_face_workflow": (
                 "## Staged Face Background Composite\n\n"
-                "During `run_staging` and `full_run`, each foreground is staged and MediaPipe detection is run on that foreground. Detected face layers are inserted immediately in front of their originating foreground. `run_staged` uses retained ordinary and face crops without loading either model.\n\n"
+                "Foreground pixels and face-aware staging settings are fingerprinted automatically. A changed or missing stage runs background removal and MediaPipe detection; placement-only changes reuse retained ordinary and face crops without loading either model. Detected face layers are inserted immediately in front of their originating foreground.\n\n"
                 "`Staged MediaPipe Face Options` defaults:\n\n"
                 "- `detection_threshold=0.55`\n"
                 "- `maximum_faces=16`\n"

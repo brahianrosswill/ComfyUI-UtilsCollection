@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildOutputClosure, buildStagingPrompt, updatePromptNodeInputs } from "../web/staged_queue.js";
+import {
+  buildEditorPromptInputs,
+  buildOutputClosure,
+  buildStagingPrompt,
+  updatePromptNodeInputs,
+} from "../web/staged_queue.js";
 
 test("staging prompt keeps only the target and recursive upstream closure", () => {
   const output = {
@@ -43,6 +48,16 @@ test("missing staging target fails clearly", () => {
     () => buildStagingPrompt({ output: {} }, "missing"),
     /prompt node missing is missing/,
   );
+});
+
+test("ordinary staged editor queues always request automatic retained composition", () => {
+  assert.deepEqual(buildEditorPromptInputs("placement", true), {
+    placement_data: "placement",
+    execution_mode: "run_staged",
+  });
+  assert.deepEqual(buildEditorPromptInputs("placement", false), {
+    placement_data: "placement",
+  });
 });
 
 test("paint upload revisions replace placement data in the already-built prompt", () => {

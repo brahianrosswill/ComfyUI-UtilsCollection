@@ -32,6 +32,13 @@ export function buildStagingPrompt(prompt, targetNodeId) {
   };
 }
 
+export function buildEditorPromptInputs(placementData, staged) {
+  return {
+    placement_data: placementData,
+    ...(staged ? { execution_mode: "run_staged" } : {}),
+  };
+}
+
 export function updatePromptNodeInputs(prompt, updates) {
   if (!prompt?.output || !updates?.length) return prompt;
   const output = { ...prompt.output };

@@ -50,6 +50,8 @@ from .staged_compositor_helpers import (
     _composite_staged_foregrounds,
     _preview_staged_foregrounds,
     _stage_layered_foregrounds,
+    resolve_retained_stage,
+    staged_foreground_fingerprint,
 )
 
 
@@ -809,6 +811,10 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
             node_id="UC_StagedMediaPipeFaceBackgroundComposite",
             display_name="Staged Face Background Composite",
             category="utils/image",
+            description=(
+                "Automatically retains face-aware foreground cutouts while source pixels and staging settings remain unchanged. "
+                "Placement edits reuse the retained images and masks without rerunning either model."
+            ),
             inputs=[
                 io.Image.Input("background"),
                 StagedBackgroundOptionsType.Input(
@@ -822,7 +828,9 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
                 io.Combo.Input(
                     "execution_mode",
                     options=["run_staging", "run_staged", "full_run"],
-                    default="full_run",
+                    default="run_staged",
+                    advanced=True,
+                    tooltip="Frontend-managed staging request; ordinary composition validates and reuses retained cutouts automatically.",
                 ),
                 io.String.Input(
                     "placement_data",
@@ -848,8 +856,6 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
 
     @classmethod
     def check_lazy_status(cls, execution_mode, foreground_images=None, **kwargs):
-        if execution_mode == "run_staged":
-            return []
         required = []
         for value in (foreground_images or {}).values():
             if (
@@ -877,18 +883,29 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
             background_options or {}
         )
         face_options = UC_StagedMediaPipeFaceOptions.DEFAULTS | (face_options or {})
-        if execution_mode == "run_staged":
-            if node_id not in cls._staged_by_node:
-                raise ValueError(
-                    "No retained face-aware stage is available. Run staging first."
-                )
-            staged, stage_mode = cls._staged_by_node[node_id], "retained"
-        elif execution_mode in ("run_staging", "full_run"):
+        if isinstance(execution_mode, bool):
+            execution_mode = "run_staged" if execution_mode else "run_staging"
+        if execution_mode not in ("run_staging", "run_staged", "full_run"):
+            raise ValueError(
+                f"Unsupported staged compositor execution mode: {execution_mode!r}."
+            )
+        fingerprint = staged_foreground_fingerprint(
+            foreground_images,
+            (
+                "internal",
+                str(background_removal_model_name or "birefnet").lower(),
+                "mediapipe_face_fp32",
+            ),
+            background_options,
+            face_options,
+        )
+
+        def build_stage():
             removal_model = _load_internal_background_removal_model(
                 background_removal_model_name
             )
             face_model = load_face_model()
-            staged = _stage_face_foregrounds(
+            fresh = _stage_face_foregrounds(
                 removal_model,
                 face_model,
                 foreground_images,
@@ -896,31 +913,34 @@ class UC_StagedMediaPipeFaceBackgroundComposite(io.ComfyNode):
                 face_options,
                 placement_data,
             )
-            staged["background_removal_model_name"] = str(
+            fresh["background_removal_model_name"] = str(
                 background_removal_model_name
             ).lower()
-            cls._staged_by_node[node_id] = staged
-            staged = cls._staged_by_node[node_id]
-            if execution_mode == "run_staging":
-                preview_stage = _apply_staged_layer_options(
-                    staged,
-                    background_options["foreground_blend"],
-                    face_options["face_blend"],
-                    face_options["face_feather_radius"],
-                )
-                return _preview_staged_foregrounds(
-                    background,
-                    preview_stage,
-                    background_options["feather_radius"],
-                    placement_data,
-                    background_options["image_resize_method"],
-                    background_options["mask_resize_method"],
-                )
-            stage_mode = "full_run"
-        else:
-            raise ValueError(
-                f"Unsupported staged compositor execution mode: {execution_mode!r}."
+            return fresh
+
+        staged, reused = resolve_retained_stage(
+            cls._staged_by_node,
+            node_id,
+            fingerprint,
+            build_stage,
+            force=execution_mode in ("run_staging", "full_run"),
+        )
+        if execution_mode == "run_staging":
+            preview_stage = _apply_staged_layer_options(
+                staged,
+                background_options["foreground_blend"],
+                face_options["face_blend"],
+                face_options["face_feather_radius"],
             )
+            return _preview_staged_foregrounds(
+                background,
+                preview_stage,
+                background_options["feather_radius"],
+                placement_data,
+                background_options["image_resize_method"],
+                background_options["mask_resize_method"],
+            )
+        stage_mode = "retained" if reused else "full_run"
         staged = _apply_staged_layer_options(
             staged,
             background_options["foreground_blend"],
@@ -957,9 +977,8 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             node_id="UC_StagedLayeredBackgroundComposite",
             display_name="Staged Background Composite",
             description=(
-                "Run only this node with execution_mode set to run_staging to stage foreground objects for placement. "
-                "After arranging them, use run_staged to composite the retained cutouts, or full_run to restage changed "
-                "inputs and composite them in one execution."
+                "Automatically rebuilds retained cutouts when foreground pixels or mask-generation settings change. "
+                "Background and placement edits reuse the retained images and masks without rerunning background removal."
             ),
             category="utils/image",
             inputs=[
@@ -988,11 +1007,11 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                 io.Combo.Input(
                     "execution_mode",
                     options=["run_staging", "run_staged", "full_run"],
-                    default="full_run",
+                    default="run_staged",
+                    advanced=True,
                     tooltip=(
-                        "run_staging: refresh retained cutouts and placement previews only. "
-                        "run_staged: composite the retained cutouts without evaluating foreground inputs. "
-                        "full_run: refresh cutouts from current inputs and composite them immediately."
+                        "Frontend-managed staging request. Ordinary composition fingerprints foregrounds and reuses valid cutouts; "
+                        "the editor's Run Staging action forces a preview refresh."
                     ),
                 ),
                 io.String.Input(
@@ -1034,8 +1053,6 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
         foreground_images=None,
         **kwargs,
     ):
-        if execution_mode is True or execution_mode == "run_staged":
-            return []
         required = []
         if background_removal_model is None:
             required.append("background_removal_model")
@@ -1069,26 +1086,32 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
             raise ValueError(
                 f"Unsupported staged compositor execution mode: {execution_mode!r}."
             )
-        if execution_mode == "run_staged":
-            if node_id not in cls._staged_by_node:
-                raise ValueError(
-                    "No retained foreground stage is available for this compositor. "
-                    "Run once with execution_mode set to run_staging or full_run."
-                )
-            staged = cls._staged_by_node[node_id]
-            stage_mode = "retained"
+        if background_removal_model is None:
+            model_identity = (
+                "internal",
+                str(background_removal_model_name or "birefnet").lower(),
+            )
         else:
+            model_identity = ("external", id(background_removal_model))
+        fingerprint = staged_foreground_fingerprint(
+            foreground_images,
+            model_identity,
+            background_options,
+        )
+
+        def build_stage():
             if background_removal_model is None:
-                background_removal_model = _load_internal_background_removal_model(
+                removal_model = _load_internal_background_removal_model(
                     background_removal_model_name
                 )
                 effective_model_name = str(
                     background_removal_model_name or "birefnet"
                 ).lower()
             else:
+                removal_model = background_removal_model
                 effective_model_name = "external"
-            staged = _stage_layered_foregrounds(
-                background_removal_model,
+            fresh = _stage_layered_foregrounds(
+                removal_model,
                 foreground_images,
                 background_options["mask_threshold"],
                 background_options["border_cleanup_width"],
@@ -1100,25 +1123,32 @@ class UC_StagedLayeredBackgroundComposite(io.ComfyNode):
                     "mask_processing_resolution"
                 ],
             )
-            staged["background_removal_model_name"] = effective_model_name
-            cls._staged_by_node[node_id] = staged
-            staged = cls._staged_by_node[node_id]
-            if execution_mode == "run_staging":
-                preview_stage = _apply_staged_layer_options(
-                    staged,
-                    background_options["foreground_blend"],
-                    1.0,
-                    0,
-                )
-                return _preview_staged_foregrounds(
-                    background,
-                    preview_stage,
-                    background_options["feather_radius"],
-                    placement_data,
-                    background_options["image_resize_method"],
-                    background_options["mask_resize_method"],
-                )
-            stage_mode = "full_run"
+            fresh["background_removal_model_name"] = effective_model_name
+            return fresh
+
+        staged, reused = resolve_retained_stage(
+            cls._staged_by_node,
+            node_id,
+            fingerprint,
+            build_stage,
+            force=execution_mode in ("run_staging", "full_run"),
+        )
+        if execution_mode == "run_staging":
+            preview_stage = _apply_staged_layer_options(
+                staged,
+                background_options["foreground_blend"],
+                1.0,
+                0,
+            )
+            return _preview_staged_foregrounds(
+                background,
+                preview_stage,
+                background_options["feather_radius"],
+                placement_data,
+                background_options["image_resize_method"],
+                background_options["mask_resize_method"],
+            )
+        stage_mode = "retained" if reused else "full_run"
         staged = _apply_staged_layer_options(
             staged,
             background_options["foreground_blend"],
@@ -1152,7 +1182,8 @@ class UC_StagedIndividualComposites(io.ComfyNode):
             display_name="Staged Individual Composites",
             category="utils/image",
             description=(
-                "Stages placements interactively and returns one full background composite per included foreground."
+                "Automatically retains foreground cutouts and returns one full background composite per included foreground. "
+                "Placement edits reuse cached images and masks."
             ),
             inputs=[
                 io.BackgroundRemoval.Input(
@@ -1171,7 +1202,9 @@ class UC_StagedIndividualComposites(io.ComfyNode):
                 io.Combo.Input(
                     "execution_mode",
                     options=["run_staging", "run_staged", "full_run"],
-                    default="full_run",
+                    default="run_staged",
+                    advanced=True,
+                    tooltip="Frontend-managed staging request; retained cutouts are validated automatically.",
                 ),
                 io.String.Input(
                     "placement_data",
@@ -1231,25 +1264,32 @@ class UC_StagedIndividualComposites(io.ComfyNode):
             raise ValueError(
                 f"Unsupported staged compositor execution mode: {execution_mode!r}."
             )
-        if execution_mode == "run_staged":
-            if node_id not in cls._staged_by_node:
-                raise ValueError(
-                    "No retained foreground stage is available for this compositor. Run staging first."
-                )
-            staged = cls._staged_by_node[node_id]
-            stage_mode = "retained"
+        if background_removal_model is None:
+            model_identity = (
+                "internal",
+                str(background_removal_model_name or "birefnet").lower(),
+            )
         else:
+            model_identity = ("external", id(background_removal_model))
+        fingerprint = staged_foreground_fingerprint(
+            foreground_images,
+            model_identity,
+            background_options,
+        )
+
+        def build_stage():
             if background_removal_model is None:
-                background_removal_model = _load_internal_background_removal_model(
+                removal_model = _load_internal_background_removal_model(
                     background_removal_model_name
                 )
                 effective_model_name = str(
                     background_removal_model_name or "birefnet"
                 ).lower()
             else:
+                removal_model = background_removal_model
                 effective_model_name = "external"
-            staged = _stage_layered_foregrounds(
-                background_removal_model,
+            fresh = _stage_layered_foregrounds(
+                removal_model,
                 foreground_images,
                 background_options["mask_threshold"],
                 background_options["border_cleanup_width"],
@@ -1261,24 +1301,32 @@ class UC_StagedIndividualComposites(io.ComfyNode):
                     "mask_processing_resolution"
                 ],
             )
-            staged["background_removal_model_name"] = effective_model_name
-            cls._staged_by_node[node_id] = staged
-            if execution_mode == "run_staging":
-                preview = _preview_staged_foregrounds(
-                    background,
-                    staged,
-                    background_options["feather_radius"],
-                    placement_data,
-                    background_options["image_resize_method"],
-                    background_options["mask_resize_method"],
-                )
-                return io.NodeOutput(
-                    preview.result[0],
-                    preview.result[3],
-                    preview.result[2],
-                    ui=preview.ui,
-                )
-            stage_mode = "full_run"
+            fresh["background_removal_model_name"] = effective_model_name
+            return fresh
+
+        staged, reused = resolve_retained_stage(
+            cls._staged_by_node,
+            node_id,
+            fingerprint,
+            build_stage,
+            force=execution_mode in ("run_staging", "full_run"),
+        )
+        if execution_mode == "run_staging":
+            preview = _preview_staged_foregrounds(
+                background,
+                staged,
+                background_options["feather_radius"],
+                placement_data,
+                background_options["image_resize_method"],
+                background_options["mask_resize_method"],
+            )
+            return io.NodeOutput(
+                preview.result[0],
+                preview.result[3],
+                preview.result[2],
+                ui=preview.ui,
+            )
+        stage_mode = "retained" if reused else "full_run"
         return _composite_staged_individual_foregrounds(
             background,
             staged,

@@ -1248,7 +1248,7 @@ def test_staged_compositor_uses_connected_background_options(monkeypatch):
     assert preview_stage["layers"][0]["blend_factor"] == 0.5
 
 
-def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
+def test_staged_compositor_automatically_reuses_and_refreshes_its_stage(monkeypatch):
     node = composite_nodes.UC_StagedLayeredBackgroundComposite
     schema = node.define_schema()
     model_input = next(
@@ -1268,9 +1268,10 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     )
     assert schema.is_output_node is True
     assert schema.display_name == "Staged Background Composite"
-    assert "Run only this node" in schema.description
+    assert "Automatically rebuilds retained cutouts" in schema.description
     assert execution_input.options == ["run_staging", "run_staged", "full_run"]
-    assert execution_input.default == "full_run"
+    assert execution_input.default == "run_staged"
+    assert execution_input.advanced is True
     assert model_input.lazy is True
     assert model_input.optional is True
     assert model_input.display_name == "background_removal_model_opt"
@@ -1312,7 +1313,10 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
         node.check_lazy_status(
             "run_staged", None, {"foreground_0": (None, "foreground_0")}
         )
-        == []
+        == ["background_removal_model", "foreground_0"]
+    )
+    model = _QueuedBackgroundModel(
+        [torch.ones(1, 4, 4), torch.ones(1, 4, 4)]
     )
     fresh = node.execute(
         background,
@@ -1324,15 +1328,29 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     )
     retained = node.execute(
         background,
-        {"foreground_0": None},
+        foregrounds,
         "run_staged",
-        '{"version":1,"layers":{}}',
+        '{"version":1,"layers":{"foreground_0":{"long_axis_shift":0.2}}}',
+        background_removal_model=model,
+        background_options=staging_options,
     )
 
     assert fresh.ui["uc_layered_scene_editor"][0]["stage_mode"] == "fresh"
     assert retained.ui["uc_layered_scene_editor"][0]["stage_mode"] == "retained"
     assert fresh.result[0].sum().item() == 0
     assert retained.result[0].sum().item() > 0
+    assert len(model.masks) == 1
+
+    refreshed = node.execute(
+        background,
+        {"foreground_0": foregrounds["foreground_0"] * 0.5},
+        "run_staged",
+        '{"version":1,"layers":{"foreground_0":{"long_axis_shift":0.2}}}',
+        background_removal_model=model,
+        background_options=staging_options,
+    )
+    assert refreshed.ui["uc_layered_scene_editor"][0]["stage_mode"] == "full_run"
+    assert len(model.masks) == 0
 
     updated_model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
     full = node.execute(
@@ -1348,13 +1366,17 @@ def test_staged_compositor_lazily_resumes_its_own_stage(monkeypatch):
     assert len(updated_model.masks) == 0
 
     monkeypatch.setattr(node, "hidden", types.SimpleNamespace(unique_id="compositor-b"))
-    with pytest.raises(ValueError, match="No retained foreground stage"):
-        node.execute(
-            background,
-            {"foreground_0": None},
-            "run_staged",
-            '{"version":1,"layers":{}}',
-        )
+    automatic_model = _QueuedBackgroundModel([torch.ones(1, 4, 4)])
+    automatic = node.execute(
+        background,
+        foregrounds,
+        "run_staged",
+        '{"version":1,"layers":{}}',
+        background_removal_model=automatic_model,
+        background_options=staging_options,
+    )
+    assert automatic.ui["uc_layered_scene_editor"][0]["stage_mode"] == "full_run"
+    assert len(automatic_model.masks) == 0
 
 
 def test_staged_compositor_rebuilds_serialized_layout_after_cache_loss(monkeypatch):
@@ -1412,7 +1434,7 @@ def test_staged_compositor_rebuilds_serialized_layout_after_cache_loss(monkeypat
     assert torch.equal(first.result[3], rebuilt.result[3])
 
 
-def test_internal_background_removal_loader_selects_exact_files_and_caches(
+def test_internal_background_removal_loader_selects_exact_files_without_retention(
     monkeypatch, tmp_path
 ):
     from comfy import bg_removal_model
@@ -1439,19 +1461,18 @@ def test_internal_background_removal_loader_selects_exact_files_and_caches(
         lambda category, filename, repo_id, repo_path: str(tmp_path / filename),
     )
     monkeypatch.setattr(bg_removal_model, "load", load)
-    composite_helpers._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
-
     birefnet = composite_helpers._load_internal_background_removal_model("birefnet")
-    assert (
-        composite_helpers._load_internal_background_removal_model("birefnet")
-        is birefnet
+    second_birefnet = composite_helpers._load_internal_background_removal_model(
+        "birefnet"
     )
     lucida = composite_helpers._load_internal_background_removal_model("lucida")
 
     assert [pathlib.Path(path).name for path in loaded] == [
         "birefnet.safetensors",
+        "birefnet.safetensors",
         "lucida.safetensors",
     ]
+    assert second_birefnet is not birefnet
     assert birefnet.image_mean == [0.0, 0.0, 0.0]
     assert lucida.image_size == 1024
     assert lucida.image_mean == [0.485, 0.456, 0.406]
@@ -1460,7 +1481,6 @@ def test_internal_background_removal_loader_selects_exact_files_and_caches(
 
 
 def test_internal_background_removal_loader_reports_missing_model(monkeypatch):
-    composite_helpers._INTERNAL_BACKGROUND_REMOVAL_CACHE.update(key=None, model=None)
     monkeypatch.setattr(
         composite_helpers,
         "require_huggingface_model",
@@ -1478,6 +1498,41 @@ def test_internal_background_removal_loader_reports_missing_model(monkeypatch):
         match=r"Comfy-Org/BiRefNet/blob/main/background_removal/lucida\.safetensors",
     ):
         composite_helpers._load_internal_background_removal_model("lucida")
+
+
+def test_internal_face_loader_constructs_each_model_without_retention(
+    monkeypatch, tmp_path
+):
+    import comfy.utils
+    from comfy_extras import nodes_mediapipe
+
+    path = tmp_path / "mediapipe_face_fp32.safetensors"
+    loaded = []
+    constructed = []
+
+    monkeypatch.setattr(
+        staged_face_helpers,
+        "require_huggingface_model",
+        lambda *_args: str(path),
+    )
+    monkeypatch.setattr(
+        comfy.utils,
+        "load_torch_file",
+        lambda loaded_path, safe_load=True: loaded.append(loaded_path) or {},
+    )
+    monkeypatch.setattr(
+        nodes_mediapipe,
+        "FaceLandmarkerModel",
+        lambda state: constructed.append(state) or object(),
+    )
+
+    first = staged_face_helpers.load_face_model()
+    second = staged_face_helpers.load_face_model()
+
+    assert first is not second
+    normalized_path = str(path).lower()
+    assert loaded == [normalized_path, normalized_path]
+    assert constructed == [{}, {}]
 
 
 def test_required_huggingface_model_reports_url_and_registered_locations(
@@ -2463,6 +2518,54 @@ def test_projective_transform_samples_rgb_and_alpha_once(monkeypatch):
     assert calls == [(1, 4, 9, 9)]
 
 
+def test_staged_fingerprint_tracks_only_stage_build_inputs():
+    foregrounds = {
+        "foreground_0": torch.arange(48, dtype=torch.float32).reshape(1, 4, 4, 3)
+    }
+    background_options = (
+        composite_nodes.UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS.copy()
+    )
+    face_options = composite_nodes.UC_StagedMediaPipeFaceOptions.DEFAULTS.copy()
+
+    original = staged_compositor_helpers.staged_foreground_fingerprint(
+        foregrounds,
+        ("internal", "birefnet"),
+        background_options,
+        face_options,
+    )
+    composition_only = staged_compositor_helpers.staged_foreground_fingerprint(
+        foregrounds,
+        ("internal", "birefnet"),
+        background_options | {"feather_radius": 19, "foreground_blend": 0.25},
+        face_options | {"face_feather_radius": 31, "face_blend": 0.5},
+    )
+    changed_foregrounds = {"foreground_0": foregrounds["foreground_0"].clone()}
+    changed_foregrounds["foreground_0"][0, 0, 0, 0] = 999.0
+    changed_pixels = staged_compositor_helpers.staged_foreground_fingerprint(
+        changed_foregrounds,
+        ("internal", "birefnet"),
+        background_options,
+        face_options,
+    )
+    changed_mask_setting = staged_compositor_helpers.staged_foreground_fingerprint(
+        foregrounds,
+        ("internal", "birefnet"),
+        background_options | {"mask_threshold": 0.75},
+        face_options,
+    )
+    changed_face_setting = staged_compositor_helpers.staged_foreground_fingerprint(
+        foregrounds,
+        ("internal", "birefnet"),
+        background_options,
+        face_options | {"detection_threshold": 0.8},
+    )
+
+    assert composition_only == original
+    assert changed_pixels != original
+    assert changed_mask_setting != original
+    assert changed_face_setting != original
+
+
 def test_retained_stage_cache_copies_crops_and_evicts_lru():
     source = torch.ones(1, 20, 20, 3)
     source_mask = torch.ones(1, 20, 20)
@@ -2658,12 +2761,13 @@ def test_staged_individual_node_owns_staging_and_outputs_aligned_results(monkeyp
         [torch.ones(1, 2, 2), torch.ones(1, 2, 2)]
     )
 
+    foregrounds = {
+        "foreground_0": torch.ones(1, 2, 2, 3),
+        "foreground_1": torch.full((1, 2, 2, 3), 0.5),
+    }
     output = node.execute(
         background=torch.zeros(1, 10, 10, 3),
-        foreground_images={
-            "foreground_0": torch.ones(1, 2, 2, 3),
-            "foreground_1": torch.full((1, 2, 2, 3), 0.5),
-        },
+        foreground_images=foregrounds,
         execution_mode="full_run",
         placement_data=json.dumps(
             {
@@ -2685,6 +2789,21 @@ def test_staged_individual_node_owns_staging_and_outputs_aligned_results(monkeyp
     assert len(output.result[2][0]) == 2
     assert "individual" in node._staged_by_node
 
+    retained = node.execute(
+        background=torch.zeros(1, 10, 10, 3),
+        foreground_images=foregrounds,
+        execution_mode="run_staged",
+        placement_data='{"version":3,"layers":{"foreground_0":{"center_x":0.7}}}',
+        background_removal_model=model,
+        background_options={
+            "border_cleanup_width": 0,
+            "artifact_cleanup_radius": 0,
+            "gap_fill_radius": 0,
+        },
+    )
+    assert retained.ui["uc_layered_scene_editor"][0]["stage_mode"] == "retained"
+    assert model.masks == []
+
 
 def test_face_run_staged_loads_no_models(monkeypatch):
     node = composite_nodes.UC_StagedMediaPipeFaceBackgroundComposite
@@ -2705,8 +2824,20 @@ def test_face_run_staged_loads_no_models(monkeypatch):
     monkeypatch.setattr(
         staged_compositor_helpers, "_save_editor_preview", lambda *args: None
     )
+    foregrounds = {"foreground_0": torch.ones(1, 4, 4, 3)}
+    background_options = (
+        composite_nodes.UC_StagedLayeredBackgroundCompositeOptions.DEFAULTS
+    )
+    face_options = composite_nodes.UC_StagedMediaPipeFaceOptions.DEFAULTS
+    fingerprint = staged_compositor_helpers.staged_foreground_fingerprint(
+        foregrounds,
+        ("internal", "birefnet", "mediapipe_face_fp32"),
+        background_options,
+        face_options,
+    )
     node._staged_by_node["retained-face"] = {
         "version": 1,
+        "_stage_fingerprint": fingerprint,
         "layers": [
             {
                 "socket": "foreground_0",
@@ -2719,7 +2850,7 @@ def test_face_run_staged_loads_no_models(monkeypatch):
 
     output = node.execute(
         background=torch.zeros(1, 12, 12, 3),
-        foreground_images={"foreground_0": None},
+        foreground_images=foregrounds,
         execution_mode="run_staged",
         placement_data='{"version":3,"layers":{}}',
     )

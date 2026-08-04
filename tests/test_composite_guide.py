@@ -60,13 +60,14 @@ def test_composite_guide_documents_optional_model_contract():
     assert "connected Lucida model" in markdown
 
 
-def test_composite_guide_documents_staged_modes_and_face_defaults():
+def test_composite_guide_documents_automatic_staging_and_face_defaults():
     staged = UC_CompositeNodesGuide.execute("staged_workflow").args[0]
     individual = UC_CompositeNodesGuide.execute("staged_individual_workflow").args[0]
     face = UC_CompositeNodesGuide.execute("staged_face_workflow").args[0]
 
-    assert all(mode in staged for mode in ("`run_staging`", "`run_staged`", "`full_run`"))
-    assert "`run_staged`" in face
+    assert "automatic stage fingerprint" in staged
+    assert "without rerunning background removal" in staged
+    assert "without loading either model" in face
     assert "`detection_threshold=0.55`" in face
     assert "`maximum_faces=16`" in face
     assert "never stacked" in individual

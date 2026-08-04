@@ -46,7 +46,11 @@ import {
   buildLayerContextActions,
   LayerContextMenu,
 } from "./layer_context_menu.js";
-import { buildStagingPrompt, updatePromptNodeInputs } from "./staged_queue.js";
+import {
+  buildEditorPromptInputs,
+  buildStagingPrompt,
+  updatePromptNodeInputs,
+} from "./staged_queue.js";
 import {
   backgroundModelAppearance,
   normalizeBackgroundModel,
@@ -74,7 +78,7 @@ api.queuePrompt = async function(index, prompt, ...args) {
   await Promise.all(relevantEditors.map((editor) => editor.flushPaint()));
   const currentPrompt = updatePromptNodeInputs(prompt, relevantEditors.map((editor) => ({
     nodeId: editor.node.id,
-    inputs: { placement_data: editor.placementWidget.value },
+    inputs: buildEditorPromptInputs(editor.placementWidget.value, editor.isStagedComposite()),
   })));
   const queuedPrompt = activeStagingQueue
     ? buildStagingPrompt(currentPrompt, activeStagingQueue.nodeId)
@@ -120,10 +124,11 @@ class LayeredPlacementEditor {
     if (this.modelWidget) this.modelWidget.value = normalizeBackgroundModel(this.modelWidget.value);
     this.modelSelectionStale = false;
     this.migrateLegacyWidgetOrder();
-    const executionWidget = node.widgets?.find((widget) => widget.name === "execution_mode");
-    if (typeof executionWidget?.value === "boolean") {
-      executionWidget.value = executionWidget.value ? "run_staged" : "run_staging";
+    this.executionWidget = node.widgets?.find((widget) => widget.name === "execution_mode");
+    if (typeof this.executionWidget?.value === "boolean") {
+      this.executionWidget.value = this.executionWidget.value ? "run_staged" : "run_staging";
     }
+    if (this.isStagedComposite() && this.executionWidget) this.executionWidget.value = "run_staged";
     this.data = parsePlacementData(this.placementWidget.value);
     this.selected = null;
     this.rotateLayer = null;
@@ -457,6 +462,10 @@ class LayeredPlacementEditor {
     if (this.modelWidget) {
       this.modelWidget.computeSize = () => [0, -4];
       this.modelWidget.draw = () => {};
+    }
+    if (this.executionWidget) {
+      this.executionWidget.computeSize = () => [0, -4];
+      this.executionWidget.draw = () => {};
     }
     const widget = this.node.addDOMWidget("layered_scene_editor", "uc_layered_scene_editor", this.root, {
       serialize: false,
@@ -1406,11 +1415,11 @@ class LayeredPlacementEditor {
     if (this.paintMode && this.paintCursor) this.drawPaintCursor(context);
     const pending = foregroundLayers.filter((key) => !this.layerMetadata(key)).length;
     if (this.isStagedComposite() && this.modelSelectionStale) {
-      this.status.textContent = "Removal model changed • use Run Staging to refresh previews";
+      this.status.textContent = "Removal model changed • next queue rebuilds stage • Run Staging refreshes previews now";
     } else if (this.isStagedComposite() && !layers.length) {
       this.status.textContent = this.usesRetainedStage()
-        ? "No retained stage • use Run Staging to refresh previews"
-        : "Use Run Staging to load a fresh foreground stage";
+        ? "No retained stage • next queue builds it • Run Staging refreshes previews now"
+        : "Run Staging refreshes foreground previews";
     } else if (pending) {
       this.status.textContent = `${pending} foreground${pending === 1 ? "" : "s"} pending removal pass`;
     } else {
