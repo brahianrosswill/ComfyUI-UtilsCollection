@@ -1732,7 +1732,13 @@ def blend_text_vectors(sequence_tensors: dict, blend_config: dict, pooled_tensor
     return C_blended, P_blended
 
 
-def find_visual_token_range(tokens, cond_tensor, legacy_krea_spatial=False, minimax_token_tags=None) -> tuple:
+def find_visual_token_range(
+    tokens,
+    cond_tensor,
+    legacy_krea_spatial=False,
+    minimax_token_tags=None,
+    minimax_visual_index=None,
+) -> tuple:
     key_name = next(iter(tokens.keys()))
     token_list = tokens[key_name][0]
     if not any(is_image_token(token) for token in token_list):
@@ -1741,9 +1747,33 @@ def find_visual_token_range(tokens, cond_tensor, legacy_krea_spatial=False, mini
     if minimax_token_tags is not None:
         if not torch.is_tensor(minimax_token_tags) or minimax_token_tags.ndim != 1 or minimax_token_tags.numel() != cond_tensor.shape[1]:
             raise ValueError("MiniMax H3 modality tags do not match the conditioning sequence length.")
-        visual_block = torch.nonzero(minimax_token_tags == 0).flatten().tolist()
-        if len(visual_block) < 3 or len(visual_block) != visual_block[-1] - visual_block[0] + 1:
-            raise ValueError("MiniMax H3 visual fusion requires one contiguous visual block.")
+        visual_positions = torch.nonzero(minimax_token_tags == 0).flatten().tolist()
+        visual_blocks = []
+        for position in visual_positions:
+            if not visual_blocks or position != visual_blocks[-1][-1] + 1:
+                visual_blocks.append([position])
+            else:
+                visual_blocks[-1].append(position)
+        image_count = sum(is_image_token(token) for token in token_list)
+        if len(visual_blocks) != image_count or any(
+            len(block) < 3 for block in visual_blocks
+        ):
+            raise ValueError(
+                "MiniMax H3 modality tags do not match the numbered visual blocks."
+            )
+        if minimax_visual_index is None:
+            if len(visual_blocks) != 1:
+                raise ValueError(
+                    "MiniMax H3 visual fusion requires a selected visual block."
+                )
+            visual_block = visual_blocks[0]
+        else:
+            try:
+                visual_block = visual_blocks[minimax_visual_index]
+            except (IndexError, TypeError) as exc:
+                raise ValueError(
+                    "MiniMax H3 visual fusion selected an unavailable visual block."
+                ) from exc
         return visual_block[0] + 1, visual_block[-1]
 
     if legacy_krea_spatial and cond_tensor.shape[-1] == 12 * 2560:
@@ -2224,12 +2254,13 @@ def execute_advanced_minimax_h3_image_to_video(
     clip,
     vae,
     prompt,
-    system_prompt,
-    keyframe_mode,
     width,
     height,
     length,
-    image_inputs,
+    first_frame=None,
+    last_frame=None,
+    reference_images=None,
+    fusion_images=None,
     visual_fusion_config=None,
     multiplier=1.0,
     ref_image_size="match",
@@ -2240,66 +2271,101 @@ def execute_advanced_minimax_h3_image_to_video(
         raise ValueError(
             "Advanced MiniMax H3 Image to Video requires the qwen3vl_32b text encoder."
         )
-    mode_aliases = {
-        "first frame": "first_frame",
-        "first + last frames": "first_and_last",
-        "reference images": "reference_images",
-        "first_frame": "first_frame",
-        "first_and_last": "first_and_last",
-        "reference_images": "reference_images",
-    }
-    requested_mode = keyframe_mode
-    keyframe_mode = mode_aliases.get(requested_mode)
-    if keyframe_mode is None:
-        raise ValueError(f"Unsupported MiniMax H3 keyframe mode: {requested_mode}")
-
-    _, flat_images, _ = extract_and_flatten_images(image_inputs)
-    required_images = 2 if keyframe_mode == "first_and_last" else 1
-    if len(flat_images) < required_images:
-        requirement = "two images" if required_images == 2 else "one image"
+    _, flat_references, _ = extract_and_flatten_images(reference_images)
+    _, flat_fusion_images, _ = extract_and_flatten_images(fusion_images)
+    keyframe_mode = first_frame is not None or last_frame is not None
+    if keyframe_mode and flat_references:
         raise ValueError(
-            f"MiniMax H3 {keyframe_mode} mode requires at least {requirement}."
+            "MiniMax H3 frame inputs cannot be combined with native reference images."
         )
+    if flat_references and flat_fusion_images:
+        raise ValueError(
+            "MiniMax H3 native reference images cannot be combined with fusion images."
+        )
+    native_reference_mode = bool(flat_references)
+    if native_reference_mode and ref_image_size not in ("match", "max"):
+        raise ValueError(f"Unsupported MiniMax H3 reference image size: {ref_image_size}")
+    visual_sources = []
+    if first_frame is not None:
+        visual_sources.append(("first frame", first_frame))
+    if last_frame is not None:
+        visual_sources.append(("last frame", last_frame))
+    visual_sources.extend(
+        (f"reference image {index}", image)
+        for index, image in enumerate(flat_references, start=1)
+    )
+    visual_sources.extend(
+        (f"fusion image {index}", image)
+        for index, image in enumerate(flat_fusion_images, start=1)
+    )
+    for label, image in visual_sources:
+        if (
+            not torch.is_tensor(image)
+            or image.ndim != 4
+            or image.shape[0] != 1
+            or image.shape[1] < 1
+            or image.shape[2] < 1
+            or image.shape[3] < 3
+        ):
+            raise ValueError(
+                f"MiniMax H3 {label} must contain exactly one BHWC image with at least three channels."
+            )
 
     latent, frame_count = minimax_h3_empty_av_latent(width, height, length)
-    if keyframe_mode == "reference_images":
-        prepared_images = [
-            prepare_minimax_h3_reference_image(
-                image, width, height, ref_image_size
-            )
-            for image in flat_images
-        ]
-    else:
-        prepared_images = [
-            prepare_minimax_h3_frame(
-                image,
-                width,
-                height,
-                "disabled" if index == 0 else "center",
-            )
-            for index, image in enumerate(flat_images)
-        ]
-    vlm_images = [prepare_vlm_image(image, vlm_resolution) for image in flat_images]
+    prepared_first = (
+        prepare_minimax_h3_frame(first_frame, width, height, "disabled")
+        if first_frame is not None
+        else None
+    )
+    prepared_last = (
+        prepare_minimax_h3_frame(last_frame, width, height, "center")
+        if last_frame is not None
+        else None
+    )
+    prepared_references = [
+        prepare_minimax_h3_reference_image(
+            image, width, height, ref_image_size
+        )
+        for image in flat_references
+    ] if native_reference_mode else []
+
+    base_vlm_images = []
+    if first_frame is not None:
+        base_vlm_images.append(prepare_vlm_image(first_frame, vlm_resolution))
+    if last_frame is not None:
+        base_vlm_images.append(prepare_vlm_image(last_frame, vlm_resolution))
+    base_vlm_images.extend(
+        prepare_vlm_image(image, vlm_resolution) for image in flat_references
+    )
+    fusion_vlm_images = [
+        prepare_vlm_image(image, vlm_resolution) for image in flat_fusion_images
+    ]
 
     config = dict(visual_fusion_config or {})
     visual_method = config.get("visual_fusion_method", "off")
-    fusion_active = visual_method != "off"
-    if keyframe_mode == "reference_images" and fusion_active:
-        raise ValueError(
-            "MiniMax H3 reference images do not support spatial fusion; disable fusion or use a keyframe mode."
-        )
+    fusion_active = visual_method != "off" and bool(fusion_vlm_images)
     visual_encoder_path = config.get("visual_encoder_path", "grid-deepstack")
-    full_prompt = f"{system_prompt}\n{prompt}" if system_prompt else prompt
+
+    def tokenize_presentation(text, images):
+        if native_reference_mode:
+            return clip.tokenize(
+                text,
+                minimax_ref_items=[
+                    {"type": "image", "data": image} for image in images
+                ],
+            )
+        return clip.tokenize(text, images=images)
 
     if fusion_active:
         branches = []
-        for index, image in enumerate(vlm_images):
-            tokenize_callback = lambda text, source=image: clip.tokenize(
-                text, images=[source]
+        for index, image in enumerate(fusion_vlm_images):
+            branch_images = [*base_vlm_images, image]
+            tokenize_callback = lambda text, images=branch_images: tokenize_presentation(
+                text, images
             )
             conditioning = encode_embedding_classical_scaled_bias(
                 clip,
-                full_prompt,
+                prompt,
                 tokenize_callback=tokenize_callback,
                 visual_encoder_path=visual_encoder_path,
             )
@@ -2308,16 +2374,17 @@ def execute_advanced_minimax_h3_image_to_video(
                     "MiniMax H3 visual fusion requires one conditioning schedule entry."
                 )
             tensor, metadata = conditioning[0]
-            tokens = tokenize_callback(full_prompt)
+            tokens = tokenize_callback(prompt)
             visual_range = find_visual_token_range(
                 tokens,
                 tensor,
                 legacy_krea_spatial=visual_encoder_path == "legacy-flat",
                 minimax_token_tags=metadata.get("minimax_token_tags"),
+                minimax_visual_index=len(branch_images) - 1,
             )
             if visual_range == (0, 0):
                 raise ValueError(
-                    f"Could not locate the MiniMax H3 visual span for image {index + 1}."
+                    f"Could not locate the MiniMax H3 visual span for fusion image {index + 1}."
                 )
             branches.append(
                 {
@@ -2337,20 +2404,13 @@ def execute_advanced_minimax_h3_image_to_video(
             branches, config, clip, allow_export=True
         )
     else:
-        if keyframe_mode == "reference_images":
-            reference_items = [
-                {"type": "image", "data": image} for image in vlm_images
-            ]
-            tokenize_callback = lambda text: clip.tokenize(
-                text, minimax_ref_items=reference_items
-            )
-        else:
-            tokenize_callback = lambda text: clip.tokenize(
-                text, images=vlm_images
-            )
+        presentation_images = [*base_vlm_images, *fusion_vlm_images]
+        tokenize_callback = lambda text: tokenize_presentation(
+            text, presentation_images
+        )
         conditioning = encode_embedding_classical_scaled_bias(
             clip,
-            full_prompt,
+            prompt,
             tokenize_callback=tokenize_callback,
             visual_encoder_path="grid-deepstack",
         )
@@ -2376,41 +2436,35 @@ def execute_advanced_minimax_h3_image_to_video(
             scaled.append([tensor * multiplier, metadata])
         conditioning = scaled
 
-    if keyframe_mode == "reference_images":
-        references = []
-        for image in prepared_images:
-            references.append(
-                {
-                    "kind": "image",
-                    "latent_h": image.shape[1] // 16,
-                    "latent_w": image.shape[2] // 16,
-                    "latent": vae.encode(image),
-                }
-            )
-        conditioning = node_helpers.conditioning_set_values(
-            conditioning, {"minimax_refs": references}
+    keyframes = []
+    if prepared_first is not None:
+        keyframes.append(
+            {"resolved_frame_index": 0, "latent": vae.encode(prepared_first)}
         )
-    else:
-        keyframes = [
+    if prepared_last is not None:
+        keyframes.append(
             {
-                "resolved_frame_index": 0,
-                "latent": vae.encode(prepared_images[0]),
+                "resolved_frame_index": frame_count - 1,
+                "latent": vae.encode(prepared_last),
             }
-        ]
-        if keyframe_mode == "first_and_last":
-            keyframes.append(
-                {
-                    "resolved_frame_index": frame_count - 1,
-                    "latent": vae.encode(prepared_images[1]),
-                }
-            )
-        conditioning = node_helpers.conditioning_set_values(
-            conditioning,
-            {
-                "minimax_keyframes": keyframes,
-                "minimax_frame_count": frame_count,
-            },
         )
+    references = [
+        {
+            "kind": "image",
+            "latent_h": image.shape[1] // 16,
+            "latent_w": image.shape[2] // 16,
+            "latent": vae.encode(image),
+        }
+        for image in prepared_references
+    ] if native_reference_mode else []
+    metadata = {}
+    if keyframes:
+        metadata["minimax_keyframes"] = keyframes
+        metadata["minimax_frame_count"] = frame_count
+    if references:
+        metadata["minimax_refs"] = references
+    if metadata:
+        conditioning = node_helpers.conditioning_set_values(conditioning, metadata)
     return conditioning, latent
 
 

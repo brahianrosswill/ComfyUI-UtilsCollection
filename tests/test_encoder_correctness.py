@@ -392,51 +392,47 @@ def test_advanced_visual_encoder_rejects_generic_minimax_reference_latents():
         )
 
 
-def test_advanced_minimax_h3_node_schema_explains_positional_contract():
+def test_advanced_minimax_h3_node_schema_separates_visual_roles():
     schema = UC_AdvancedMiniMaxH3ImageToVideo.define_schema()
     inputs = {value.id: value for value in schema.inputs}
 
     assert schema.node_id == "UC_AdvancedMiniMaxH3ImageToVideo"
     assert schema.display_name == "Advanced MiniMax H3 Image to Video"
-    assert len(schema.outputs) == 2
-    assert schema.outputs[0].display_name == "positive"
-    assert inputs["keyframe_mode"].options == [
-        "first frame",
-        "first + last frames",
-        "reference images",
-    ]
-    assert "image 1" in inputs["keyframe_mode"].tooltip.lower()
-    assert inputs["ref_image_size"].options == ["match", "max"]
-    assert inputs["ref_image_size"].default == "match"
-    assert "only by reference images mode" in inputs["ref_image_size"].tooltip.lower()
-    assert inputs["vlm_resolution"].default == 384
-    assert "independent" in inputs["vlm_resolution"].tooltip.lower()
-    assert "batched socket" in inputs["image_inputs"].tooltip.lower()
-    serialized_widgets = [
-        value.id
-        for value in schema.inputs
-        if value.id in {
-            "prompt",
-            "system_prompt",
-            "keyframe_mode",
-            "width",
-            "height",
-            "length",
-            "multiplier",
-            "ref_image_size",
-            "vlm_resolution",
-        }
-    ]
-    assert serialized_widgets == [
+    assert [value.id for value in schema.inputs] == [
+        "clip",
+        "vae",
+        "first_frame",
+        "last_frame",
         "prompt",
-        "system_prompt",
-        "keyframe_mode",
         "width",
         "height",
         "length",
+        "visual_fusion_config",
         "multiplier",
         "ref_image_size",
         "vlm_resolution",
+        "reference_images",
+        "fusion_images",
+    ]
+    assert inputs["first_frame"].optional is True
+    assert inputs["last_frame"].optional is True
+    assert "system_prompt" not in inputs
+    assert "keyframe_mode" not in inputs
+    assert inputs["reference_images"].template.names == [
+        f"reference_image_{index}" for index in range(1, 17)
+    ]
+    assert inputs["fusion_images"].template.names == [
+        f"fusion_image_{index}" for index in range(1, 17)
+    ]
+    assert inputs["reference_images"].template.min == 0
+    assert inputs["fusion_images"].template.min == 0
+    assert inputs["ref_image_size"].options == ["match", "max"]
+    assert inputs["ref_image_size"].default == "match"
+    assert inputs["vlm_resolution"].default == 384
+    assert "independent" in inputs["vlm_resolution"].tooltip.lower()
+    assert [output.display_name for output in schema.outputs] == [
+        "positive",
+        None,
     ]
 
 
@@ -800,16 +796,14 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
         clip,
         vae,
         prompt="subject",
-        system_prompt="system",
-        keyframe_mode="reference images",
         ref_image_size="match",
         vlm_resolution=0,
         width=64,
         height=32,
         length=5,
-        image_inputs={
-            "image_1": torch.cat([first, second], dim=0),
-            "image_2": third,
+        reference_images={
+            "reference_image_1": torch.cat([first, second], dim=0),
+            "reference_image_2": third,
         },
         visual_fusion_config=None,
     ).args
@@ -824,7 +818,7 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
     native_call = clip.tokenize_calls[-1]
     assert native_call["images"] is None
     assert native_call["minimax_ref_items"] is not None
-    assert native_call["text"] == "system\nsubject"
+    assert native_call["text"] == "subject"
     assert len(vae.images) == 3
     assert [float(image.mean()) for image in vae.images] == pytest.approx(
         [0.25, 0.5, 0.75], abs=0.004
@@ -848,64 +842,85 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
     assert audio.shape == (1, 32, 2, 8)
 
 
-def test_advanced_minimax_h3_vlm_resolution_is_independent_of_reference_size():
-    clip = _MiniMaxH3TestClip()
-    vae = _RecordingMiniMaxVAE()
-    image = torch.full((1, 32, 64, 3), 0.25)
+def test_advanced_minimax_h3_vlm_resolution_is_independent_for_every_role():
+    first = torch.full((1, 16, 32, 3), 0.125)
+    reference = torch.full((1, 32, 64, 3), 0.25)
+    fusion = torch.full((1, 64, 32, 3), 0.5)
 
+    keyframe_clip = _MiniMaxH3TestClip()
+    keyframe_vae = _RecordingMiniMaxVAE()
     UC_AdvancedMiniMaxH3ImageToVideo.execute(
-        clip,
-        vae,
+        keyframe_clip,
+        keyframe_vae,
         prompt="subject",
-        system_prompt="",
-        keyframe_mode="reference images",
+        first_frame=first,
+        vlm_resolution=256,
+        width=64,
+        height=32,
+        length=5,
+        fusion_images={"fusion_image_1": fusion},
+    )
+    keyframe_images = [
+        entry[0]["data"]
+        for entry in keyframe_clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+        if encoder_helpers.is_image_token(entry)
+    ]
+    assert [image.shape[1:3] for image in keyframe_images] == [
+        encoder_helpers.vlm_target_dimensions(16, 32, 256),
+        encoder_helpers.vlm_target_dimensions(64, 32, 256),
+    ]
+    assert [image.shape[1:3] for image in keyframe_vae.images] == [(32, 64)]
+
+    reference_clip = _MiniMaxH3TestClip()
+    reference_vae = _RecordingMiniMaxVAE()
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        reference_clip,
+        reference_vae,
+        prompt="subject",
         ref_image_size="match",
         vlm_resolution=256,
         width=64,
         height=32,
         length=5,
-        image_inputs={"image_1": image},
+        reference_images={"reference_image_1": reference},
     )
-
-    entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
-    qwen_image = next(
-        entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)
+    reference_qwen = next(
+        entry[0]["data"]
+        for entry in reference_clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+        if encoder_helpers.is_image_token(entry)
     )
-    assert qwen_image.shape[1:3] == encoder_helpers.vlm_target_dimensions(32, 64, 256)
-    assert vae.images[0].shape[1:3] == (32, 64)
-
-
-def test_advanced_minimax_h3_reference_mode_rejects_spatial_fusion_before_encoding():
-    clip = _MiniMaxH3TestClip()
-    vae = _RecordingMiniMaxVAE()
-    images = torch.stack(
-        [
-            torch.full((32, 64, 3), 0.25),
-            torch.full((32, 64, 3), 0.5),
-            torch.full((32, 64, 3), 0.75),
-        ]
+    assert reference_qwen.shape[1:3] == encoder_helpers.vlm_target_dimensions(
+        32, 64, 256
     )
+    assert [image.shape[1:3] for image in reference_vae.images] == [(32, 64)]
 
-    with pytest.raises(ValueError, match="reference images do not support spatial fusion"):
-        UC_AdvancedMiniMaxH3ImageToVideo.execute(
-            clip,
-            vae,
-            prompt="subject",
-            system_prompt="",
-            keyframe_mode="reference images",
-            ref_image_size="match",
-            width=64,
-            height=32,
-            length=5,
-            image_inputs={"image_1": images},
-            visual_fusion_config={
-                "visual_fusion_method": "linear",
-                "visual_encoder_path": "grid-deepstack",
+
+def test_advanced_minimax_h3_rejects_simultaneous_native_modes_before_encoding():
+    first = torch.full((1, 32, 64, 3), 0.125)
+    reference = torch.full((1, 32, 64, 3), 0.25)
+    fusion = torch.full((1, 32, 64, 3), 0.5)
+
+    for kwargs, message in [
+        (
+            {"first_frame": first, "reference_images": {"reference_image_1": reference}},
+            "frame inputs cannot be combined",
+        ),
+        (
+            {
+                "reference_images": {"reference_image_1": reference},
+                "fusion_images": {"fusion_image_1": fusion},
             },
-        )
-
-    assert clip.encoded_tokens == []
-    assert vae.images == []
+            "reference images cannot be combined",
+        ),
+    ]:
+        clip = _MiniMaxH3TestClip()
+        vae = _RecordingMiniMaxVAE()
+        with pytest.raises(ValueError, match=message):
+            UC_AdvancedMiniMaxH3ImageToVideo.execute(
+                clip, vae, "subject", 64, 32, 5, **kwargs
+            )
+        assert clip.encoded_tokens == []
+        assert vae.images == []
 
 
 def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
@@ -914,20 +929,20 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
     first = torch.full((1, 4, 6, 3), 0.25)
     second = torch.full((1, 4, 6, 3), 0.5)
     third = torch.full((1, 4, 6, 3), 0.75)
+    fourth = torch.full((1, 4, 6, 3), 1.0)
 
     output = UC_AdvancedMiniMaxH3ImageToVideo.execute(
         clip,
         vae,
         prompt="subject",
-        system_prompt="system",
-        keyframe_mode="first + last frames",
+        first_frame=first,
+        last_frame=second,
         vlm_resolution=0,
         width=64,
         height=32,
         length=22,
-        image_inputs={
-            "image_1": torch.cat([first, second], dim=0),
-            "image_2": third,
+        fusion_images={
+            "fusion_image_1": torch.cat([third, fourth], dim=0),
         },
         visual_fusion_config={
             "visual_fusion_method": "linear",
@@ -942,9 +957,12 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
         images = [entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)]
         if images:
             encoded_images.append(images)
-    assert len(encoded_images) == 3
-    assert [float(images[0].mean()) for images in encoded_images] == pytest.approx(
-        [0.25, 0.5, 0.75], abs=0.004
+    assert len(encoded_images) == 2
+    assert [len(images) for images in encoded_images] == [3, 3]
+    assert np.allclose(
+        [[float(image.mean()) for image in images] for images in encoded_images],
+        [[0.25, 0.5, 0.75], [0.25, 0.5, 1.0]],
+        atol=0.004,
     )
     assert [float(image.mean()) for image in vae.images] == pytest.approx(
         [0.25, 0.5], abs=0.004
@@ -956,7 +974,7 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
     image_calls = [call for call in clip.tokenize_calls if call["images"]]
     assert image_calls
     assert all(call["minimax_ref_items"] is None for call in image_calls)
-    assert all(call["text"] == "system\nsubject" for call in image_calls)
+    assert all(call["text"] == "subject" for call in image_calls)
 
     metadata = conditioning[0][1]
     assert metadata["minimax_frame_count"] == 22
@@ -978,27 +996,26 @@ def test_advanced_minimax_h3_fusion_off_keeps_all_images_as_separate_pictures():
         ]
     )
 
+    first = torch.full((1, 3, 5, 3), 0.125)
     conditioning, _latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
         clip,
         vae,
         prompt="subject",
-        system_prompt="",
-        keyframe_mode="first frame",
+        first_frame=first,
         width=64,
         height=32,
         length=5,
-        image_inputs={"image_1": images},
+        fusion_images={"fusion_image_1": images},
         visual_fusion_config=None,
-        ref_image_size="ignored outside reference mode",
     ).args
 
     entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
     qwen_images = [entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)]
     assert [float(image.mean()) for image in qwen_images] == pytest.approx(
-        [0.25, 0.5, 0.75], abs=0.004
+        [0.125, 0.25, 0.5, 0.75], abs=0.004
     )
     assert len(vae.images) == 1
-    assert float(vae.images[0].mean()) == pytest.approx(0.25, abs=0.004)
+    assert float(vae.images[0].mean()) == pytest.approx(0.125, abs=0.004)
     assert conditioning[0][1]["minimax_keyframes"][0]["resolved_frame_index"] == 0
     native_call = clip.tokenize_calls[-1]
     assert native_call["images"] is not None
@@ -1022,36 +1039,59 @@ def test_advanced_minimax_h3_keeps_placeholder_like_text_raw(monkeypatch):
         clip,
         _RecordingMiniMaxVAE(),
         prompt="image_input_fusion image_input_1 image_input_2",
-        system_prompt="system",
-        keyframe_mode="first frame",
+        first_frame=image,
         width=64,
         height=32,
         length=5,
-        image_inputs={"image_1": image},
     )
 
     native_call = clip.tokenize_calls[-1]
-    assert native_call["text"] == (
-        "system\nimage_input_fusion image_input_1 image_input_2"
-    )
+    assert native_call["text"] == "image_input_fusion image_input_1 image_input_2"
     assert native_call["images"] is not None
 
 
-def test_advanced_minimax_h3_validates_encoder_and_keyframe_count():
+def test_advanced_minimax_h3_validates_encoder():
     class WrongClip:
         tokenizer = types.SimpleNamespace(clip_name="qwen3vl_8b")
 
-    image = torch.ones(1, 4, 4, 3)
     with pytest.raises(ValueError, match="qwen3vl_32b"):
         UC_AdvancedMiniMaxH3ImageToVideo.execute(
-            WrongClip(), _RecordingMiniMaxVAE(), "prompt", "", "first frame",
-            64, 32, 5, {"image_1": image},
+            WrongClip(),
+            _RecordingMiniMaxVAE(),
+            "prompt",
+            64,
+            32,
+            5,
         )
-    with pytest.raises(ValueError, match="requires at least two images"):
-        UC_AdvancedMiniMaxH3ImageToVideo.execute(
-            _MiniMaxH3TestClip(), _RecordingMiniMaxVAE(), "prompt", "",
-            "first + last frames", 64, 32, 5, {"image_1": image},
-        )
+
+
+def test_advanced_minimax_h3_accepts_text_only_and_last_only():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+
+    conditioning, _latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip, vae, "subject", 64, 32, 5, multiplier=2.0
+    ).args
+
+    assert vae.images == []
+    assert torch.all(conditioning[0][0] == 2.0)
+    assert "minimax_keyframes" not in conditioning[0][1]
+    assert "minimax_refs" not in conditioning[0][1]
+    assert clip.tokenize_calls[-1]["images"] == []
+
+    last = torch.full((1, 32, 64, 3), 0.75)
+    conditioning, _latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        "subject",
+        64,
+        32,
+        5,
+        last_frame=last,
+    ).args
+
+    assert [item["resolved_frame_index"] for item in conditioning[0][1]["minimax_keyframes"]] == [4]
+    assert [float(image.mean()) for image in clip.tokenize_calls[-1]["images"]] == pytest.approx([0.75], abs=0.004)
 
 
 def test_embedding_output_cannot_escape_root(tmp_path):
@@ -1139,6 +1179,59 @@ def test_minimax_visual_range_uses_core_modality_tags():
     assert encoder_helpers.find_visual_token_range(
         tokens, conditioning, minimax_token_tags=tags
     ) == (6, 656)
+
+
+def test_minimax_visual_range_selects_one_numbered_block():
+    first = torch.zeros(1, 32, 32, 3)
+    second = torch.zeros(1, 32, 64, 3)
+    tokens = {
+        "qwen3vl_32b": [[
+            (100, 1.0),
+            (151652, 1.0),
+            ({"type": "image", "data": first}, 1.0),
+            (151653, 1.0),
+            (101, 1.0),
+            (151652, 1.0),
+            ({"type": "image", "data": second}, 1.0),
+            (151653, 1.0),
+            (102, 1.0),
+        ]],
+    }
+    conditioning = torch.zeros(1, 20, 5120)
+    tags = torch.ones(20, dtype=torch.long)
+    tags[2:6] = 0
+    tags[10:15] = 0
+
+    assert encoder_helpers.find_visual_token_range(
+        tokens,
+        conditioning,
+        minimax_token_tags=tags,
+        minimax_visual_index=1,
+    ) == (11, 14)
+    with pytest.raises(ValueError, match="requires a selected visual block"):
+        encoder_helpers.find_visual_token_range(
+            tokens, conditioning, minimax_token_tags=tags
+        )
+
+
+def test_minimax_visual_range_rejects_tag_run_count_mismatch():
+    image = torch.zeros(1, 32, 32, 3)
+    tokens = {
+        "qwen3vl_32b": [[
+            (151652, 1.0),
+            ({"type": "image", "data": image}, 1.0),
+            (151653, 1.0),
+        ]],
+    }
+    conditioning = torch.zeros(1, 12, 5120)
+    tags = torch.ones(12, dtype=torch.long)
+    tags[1:4] = 0
+    tags[7:10] = 0
+
+    with pytest.raises(ValueError, match="numbered visual blocks"):
+        encoder_helpers.find_visual_token_range(
+            tokens, conditioning, minimax_token_tags=tags
+        )
 
 
 def test_legacy_flat_visual_range_preserves_pre_refactor_spatial_mapping():

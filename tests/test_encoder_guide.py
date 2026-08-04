@@ -129,20 +129,19 @@ def test_encoder_guide_separates_flattened_sources_from_consensus_lanes():
     assert "Singleton image sockets broadcast into every batch lane" in images
 
 
-def test_encoder_guide_explains_dedicated_minimax_h3_keyframe_contract():
+def test_encoder_guide_explains_advanced_minimax_h3_role_contract():
     catalog = UC_EncoderNodesGuide.execute("node_catalog").args[0]
     images = UC_EncoderNodesGuide.execute("image_inputs_and_placeholders").args[0]
 
     assert "`UC_AdvancedMiniMaxH3ImageToVideo`" in catalog
-    assert "In `first frame` mode the first connected source is the VAE first frame" in images
-    assert "the second connected source is also the VAE last frame" in images
-    assert "Every flattened source participates in native H3 Qwen conditioning" in images
-    assert "`reference images` mode" in images
-    assert "identical pixels to Qwen through native `minimax_ref_items` and to the VAE" in images
-    assert "separate ordered `minimax_refs` entry" in images
+    assert "Connected `first_frame` or `last_frame` inputs select the keyframe path" in images
+    assert "`reference_images` autogrow selects native-reference mode" in images
+    assert "`fusion_images` autogrow is Qwen-only" in images
+    assert "cannot be combined with frame or fusion inputs" in images
     assert "`ref_image_size`" in images
-    assert "Spatial fusion must be disabled in this mode" in images
-    assert "ignored by the two keyframe modes" in images
+    assert "`vlm_resolution` independently prepares every Qwen copy" in images
+    assert "passed directly to the native H3 tokenizer without a system template" in images
+    assert "Use `UC_MiniMaxH3FirstFrameReferences` when keyframes and native references must coexist" in images
     assert "Qwen-only visual conditioning" in images
     assert "do not create `minimax_keyframes` or an H3 latent" in images
 

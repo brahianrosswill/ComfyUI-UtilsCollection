@@ -3322,23 +3322,29 @@ class UC_AdvancedVisualConditioningEncode(TextEncodeKrea2SystemEditScaledAdv):
 class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
     @classmethod
     def define_schema(cls):
-        autogrow_template = io.Autogrow.TemplatePrefix(
+        reference_template = io.Autogrow.TemplateNames(
             io.Image.Input(
-                "image",
-                optional=True,
-                tooltip="Visual source. Input order assigns VAE keyframes; every connected image still participates in Qwen visual conditioning.",
+                "reference_image",
+                tooltip="Ordered native H3 image reference and separately numbered Qwen picture.",
             ),
-            prefix="image",
-            min=1,
-            max=16,
+            names=[f"reference_image_{index}" for index in range(1, 17)],
+            min=0,
+        )
+        fusion_template = io.Autogrow.TemplateNames(
+            io.Image.Input(
+                "fusion_image",
+                tooltip="Ordered Qwen-only visual source. Active fusion combines only this group.",
+            ),
+            names=[f"fusion_image_{index}" for index in range(1, 17)],
+            min=0,
         )
         return io.Schema(
             node_id="UC_AdvancedMiniMaxH3ImageToVideo",
             display_name="Advanced MiniMax H3 Image to Video",
             category="advanced/conditioning",
             description=(
-                "Creates coordinated MiniMax H3 Qwen visual conditioning, positional VAE keyframes or ordered "
-                "image references, and the matching joint video/audio latent without resolution consensus."
+                "Creates coordinated MiniMax H3 Qwen conditioning from independent frame, reference, and fusion "
+                "inputs together with native visual controls and the matching joint video/audio latent."
             ),
             inputs=[
                 io.Clip.Input(
@@ -3347,30 +3353,23 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 ),
                 io.Vae.Input(
                     "vae",
-                    tooltip="MiniMax H3 video VAE used for positional keyframes or every ordered image reference.",
+                    tooltip="MiniMax H3 video VAE used for connected frame anchors and native image references.",
+                ),
+                io.Image.Input(
+                    "first_frame",
+                    optional=True,
+                    tooltip="Optional frame-zero VAE anchor and the first numbered Qwen picture.",
+                ),
+                io.Image.Input(
+                    "last_frame",
+                    optional=True,
+                    tooltip="Optional final-frame VAE anchor and the next numbered Qwen picture.",
                 ),
                 io.String.Input(
                     "prompt",
                     multiline=True,
                     dynamic_prompts=True,
-                    tooltip="Main MiniMax H3 prompt. Images are presented through the selected native H3 mode, not prompt placeholders.",
-                ),
-                io.String.Input(
-                    "system_prompt",
-                    multiline=True,
-                    dynamic_prompts=True,
-                    default="",
-                    tooltip="Optional plain-text instruction placed before the prompt in MiniMax H3 presentation.",
-                ),
-                io.Combo.Input(
-                    "keyframe_mode",
-                    options=["first frame", "first + last frames", "reference images"],
-                    default="first frame",
-                    tooltip=(
-                        "First frame: image 1 is the VAE first frame. First + last: image 1 is the VAE first frame "
-                        "and image 2 is the VAE last frame. Reference images: every image becomes an ordered H3 "
-                        "structural reference. All images remain Qwen visual sources."
-                    ),
+                    tooltip="Raw MiniMax H3 prompt. Picture labels are supplied by Core from the connected image roles.",
                 ),
                 io.Int.Input("width", default=1344, min=32, max=nodes.MAX_RESOLUTION, step=32),
                 io.Int.Input("height", default=768, min=32, max=nodes.MAX_RESOLUTION, step=32),
@@ -3387,8 +3386,8 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     display_name="Fusion Config",
                     optional=True,
                     tooltip=(
-                        "Optional spatial fusion for first-frame and first-plus-last modes. Reference-images mode requires "
-                        "fusion to be disabled so every native H3 reference remains separate and ordered."
+                        "Optional spatial method for fusion_images only. Disconnected or off keeps those images as "
+                        "separate numbered Qwen pictures. Native reference mode does not use fusion."
                     ),
                 ),
                 io.Float.Input(
@@ -3404,7 +3403,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     options=["match", "max"],
                     default="match",
                     tooltip=(
-                        "Used only by reference images mode. Match limits each reference to the generation pixel area; "
+                        "Used only by reference_images. Match limits each reference to the generation pixel area; "
                         "max limits its short edge to 2048 pixels. Both preserve aspect ratio; final 32-pixel alignment "
                         "can marginally enlarge a dimension."
                     ),
@@ -3421,12 +3420,21 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     ),
                 ),
                 io.Autogrow.Input(
-                    "image_inputs",
-                    template=autogrow_template,
+                    "reference_images",
+                    template=reference_template,
+                    optional=True,
                     tooltip=(
-                        "Ordered visual sources. A batched socket is flattened exactly as if its images were connected separately. "
-                        "Image 1 supplies the first VAE frame; in first + last mode image 2 supplies the last; in reference "
-                        "images mode every flattened image is sent through both Qwen and the VAE."
+                        "Ordered native H3 references and numbered Qwen pictures. This mode cannot be combined with "
+                        "frame or fusion inputs."
+                    ),
+                ),
+                io.Autogrow.Input(
+                    "fusion_images",
+                    template=fusion_template,
+                    optional=True,
+                    tooltip=(
+                        "Ordered Qwen-only images. Fusion off keeps them separate; an active method combines this group "
+                        "into one final numbered picture without changing frames or references."
                     ),
                 ),
             ],
@@ -3443,12 +3451,13 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
         clip,
         vae,
         prompt,
-        system_prompt,
-        keyframe_mode,
         width,
         height,
         length,
-        image_inputs: io.Autogrow.Type,
+        first_frame=None,
+        last_frame=None,
+        reference_images: io.Autogrow.Type = None,
+        fusion_images: io.Autogrow.Type = None,
         visual_fusion_config=None,
         multiplier=1.0,
         ref_image_size="match",
@@ -3458,16 +3467,17 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             clip,
             vae,
             prompt,
-            system_prompt,
-            keyframe_mode,
             width,
             height,
             length,
-            image_inputs,
-            visual_fusion_config,
-            multiplier,
-            ref_image_size,
-            vlm_resolution,
+            first_frame=first_frame,
+            last_frame=last_frame,
+            reference_images=reference_images,
+            fusion_images=fusion_images,
+            visual_fusion_config=visual_fusion_config,
+            multiplier=multiplier,
+            ref_image_size=ref_image_size,
+            vlm_resolution=vlm_resolution,
         )
         return io.NodeOutput(conditioning, latent)
 
