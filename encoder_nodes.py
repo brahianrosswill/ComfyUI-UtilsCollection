@@ -3557,6 +3557,17 @@ class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):
                         "to 2048 pixels. Both preserve aspect ratio and align to 32 pixels."
                     ),
                 ),
+                io.Int.Input(
+                    "vlm_resolution",
+                    default=384,
+                    min=0,
+                    max=4096,
+                    step=32,
+                    tooltip=(
+                        "Equivalent-square Qwen3-VL target from 256 to 3584. Values outside that range preserve "
+                        "the original image resolution. This is independent of VAE frame and reference sizing."
+                    ),
+                ),
                 io.Autogrow.Input(
                     "reference_images",
                     template=reference_template,
@@ -3589,6 +3600,7 @@ class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):
         ref_image_size,
         reference_images: io.Autogrow.Type = None,
         last_frame=None,
+        vlm_resolution=384,
     ) -> io.NodeOutput:
         patched_model, conditioning, latent = execute_minimax_h3_first_frame_references(
             model,
@@ -3602,6 +3614,7 @@ class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):
             length,
             ref_image_size,
             reference_images,
+            vlm_resolution,
         )
         return io.NodeOutput(patched_model, conditioning, latent)
 

@@ -2480,6 +2480,7 @@ def execute_minimax_h3_first_frame_references(
     length,
     ref_image_size,
     reference_images,
+    vlm_resolution=384,
 ):
     """Build native combined H3 keyframe/reference conditioning and patched model."""
     validate_minimax_h3_model_patcher(model)
@@ -2542,10 +2543,12 @@ def execute_minimax_h3_first_frame_references(
         prepare_minimax_h3_reference_image(image, width, height, ref_image_size)
         for image in flat_references
     ]
-    presentation_images = [prepared_first]
-    if prepared_last is not None:
-        presentation_images.append(prepared_last)
-    presentation_images.extend(prepared_references)
+    presentation_images = [prepare_vlm_image(first_frame, vlm_resolution)]
+    if last_frame is not None:
+        presentation_images.append(prepare_vlm_image(last_frame, vlm_resolution))
+    presentation_images.extend(
+        prepare_vlm_image(image, vlm_resolution) for image in flat_references
+    )
     reference_items = [
         {"type": "image", "data": image} for image in presentation_images
     ]

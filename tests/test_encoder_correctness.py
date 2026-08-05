@@ -454,6 +454,7 @@ def test_combined_minimax_h3_node_schema_is_additive_and_one_based():
         "height",
         "length",
         "ref_image_size",
+        "vlm_resolution",
         "reference_images",
     ]
     assert inputs["reference_images"].template.names == [
@@ -463,6 +464,8 @@ def test_combined_minimax_h3_node_schema_is_additive_and_one_based():
     assert inputs["reference_images"].template.min == 0
     assert inputs["ref_image_size"].options == ["match", "max"]
     assert inputs["ref_image_size"].default == "match"
+    assert inputs["vlm_resolution"].default == 384
+    assert "independent" in inputs["vlm_resolution"].tooltip.lower()
     assert inputs["length"].default == 124
     assert [output.display_name for output in schema.outputs] == [
         "model",
@@ -499,6 +502,7 @@ def test_combined_minimax_h3_native_order_metadata_and_model_patch():
             "reference_image_1": torch.cat([second, third], dim=0),
         },
         last,
+        256,
     ).args
 
     native_call = clip.tokenize_calls[-1]
@@ -509,14 +513,18 @@ def test_combined_minimax_h3_native_order_metadata_and_model_patch():
         [0.125, 0.875, 0.25, 0.5, 0.75], abs=0.004
     )
     assert len(vae.images) == 5
-    assert all(qwen is encoded for qwen, encoded in zip(presented, vae.images))
+    assert [image.shape[1:3] for image in presented] == [
+        encoder_helpers.vlm_target_dimensions(image.shape[1], image.shape[2], 256)
+        for image in [first, last, second, third, fourth]
+    ]
+    assert all(qwen is not encoded for qwen, encoded in zip(presented, vae.images))
 
     tensor, metadata = conditioning[0]
     assert torch.all(tensor == 1.0)
     assert metadata["minimax_frame_count"] == 5
     assert [item["resolved_frame_index"] for item in metadata["minimax_keyframes"]] == [0, 4]
     assert float(metadata["minimax_keyframes"][0]["latent"].mean()) == pytest.approx(
-        float(presented[0].mean())
+        float(vae.images[0].mean())
     )
     assert [float(item["latent"].mean()) for item in metadata["minimax_refs"]] == pytest.approx(
         [0.25, 0.5, 0.75], abs=0.004
