@@ -144,6 +144,9 @@ def test_base_mode_has_only_base_output_structure():
     assert "not supplied to downstream MiniMax H3 Base mode" in instruction
     assert "Translate all relevant visual evidence into explicit text" in instruction
     assert "No image is supplied to the VLM" not in instruction
+    assert "Inside integrated_multimodal_description, enforce the same operational rule" in instruction
+    assert "rewrite any unresolved action" in instruction
+    assert "rewrite abstract mood, narrative-purpose, or emotional-function language" in instruction
 
 
 def test_first_last_mode_is_reference_analysis_plus_base_body():
@@ -176,6 +179,13 @@ def test_first_last_mode_is_reference_analysis_plus_base_body():
     assert "Picture 2 (from Shot N) aligns with the S.SS-second mark" in instruction
     assert "Replace N with the actual final shot number" in instruction
     assert "Never output N or S.SS as literal placeholders" in instruction
+    assert "write exactly one label definition per line" in instruction
+    assert "write exactly one entry per line" in instruction
+    assert "write no entry for undefined or unlabeled content" in instruction
+    assert "If the second image is mirrored" in instruction
+    assert "Do not end with a bare claim that the exact final composition is reached" in instruction
+    assert "Reject and rewrite merged label definitions" in instruction
+    assert "Do not return the prompt until every check passes" in instruction
     for marker in RETENTION_MARKERS:
         assert marker in instruction
 
@@ -200,9 +210,16 @@ def test_reference_mode_uses_ordered_multi_keyframe_structure():
     assert "temporal, shot-planning, or composition role" in instruction
     assert SUBJECT_PICTURE_PROVENANCE_REQUIREMENT in instruction
     assert "[keyframe completion]" in instruction
-    assert "one line for every defined <Picture N> and <Subject N>" in instruction
+    assert "write exactly one entry per line for every defined <Picture N> and <Subject N>" in instruction
     assert "target 350 to 500 English words" in instruction
     assert "<Picture M+1>" in instruction
+    assert "write exactly one label definition per line" in instruction
+    assert "write exactly one entry per line" in instruction
+    assert "write no entry for undefined or unlabeled content" in instruction
+    assert "For every adjacent keyframe pair" in instruction
+    assert "Inside detailed_description, enforce the operational action rule again" in instruction
+    assert "Reject and rewrite merged label definitions" in instruction
+    assert "Do not return the prompt until every check passes" in instruction
     for marker in RETENTION_MARKERS:
         assert marker in instruction
 
