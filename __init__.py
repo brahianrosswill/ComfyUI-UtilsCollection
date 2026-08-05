@@ -15,6 +15,7 @@ from .text_nodes import *
 from .textgen_nodes import *
 from .composite_nodes import *
 from .logic_math_nodes import *
+from .patcher_nodes import *
 
 from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
@@ -115,6 +116,7 @@ class SamplingUtils(ComfyExtension):
             UC_RandIntRange,
             UC_TextConsensusBlendConfig,
             UC_VisualFusionConfig,
+            UC_MiniMaxH3Cache,
             UC_ConditioningConsensusBlend,
             UC_TextGenerate,
             UC_TextGenerateQwen35SystemPrompt,

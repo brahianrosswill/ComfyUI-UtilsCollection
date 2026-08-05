@@ -10,6 +10,11 @@ python_tests = [
 ]
 frontend_tests = []
 
+[groups.patcher]
+paths = ["patcher_helpers.py", "patcher_nodes.py"]
+python_tests = ["tests/test_patcher_nodes.py"]
+frontend_tests = []
+
 [groups.textgen]
 paths = ["textgen_nodes.py", "text_nodes.py", "encoder_helpers.py"]
 python_tests = ["tests/test_textgen_formula.py", "tests/test_text_nodes.py"]
