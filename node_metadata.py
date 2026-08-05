@@ -49,6 +49,8 @@ DESCRIPTIONS = {
     "UC_VLMSysInstrAdvPresets": "Provides advanced system instruction presets for vision-language models.",
     "UC_QwenVLMSysInstrPresets": "Provides compact system instruction presets for smaller Qwen vision-language models.",
     "UC_QwenVLMSysInstrAdvPresets": "Provides compact Qwen system instructions with explicit user and system overrides.",
+    "UC_MiniMaxH3VLMSysInstrPresets": "Provides dedicated Base, First/Last Frame, and Reference VLM instructions for MiniMax H3.",
+    "UC_MiniMaxH3VLMSysInstrAdvPresets": "Provides MiniMax H3 VLM instructions with explicit user and system overrides.",
     "UC_AttentionBiasTextEncode": "Encodes text while applying token-level attention bias controls.",
     "UC_TextConsensusBlendConfig": "Configures consensus-based blending of multiple text conditioning tensors.",
     "UC_VisualFusionConfig": "Configures grid-aware fusion of visual token embeddings from multiple images.",
