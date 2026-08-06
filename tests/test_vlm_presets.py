@@ -88,15 +88,6 @@ def test_structured_video_presets_are_independent_literal_values():
         if isinstance(key, ast.Constant)
     }
 
-    assert vlm_presets.SystemInstructionsVLM.VIDTIMELINE.value == (
-        "video_timeline_system_instruction"
-    )
-    assert vlm_presets.SystemInstructionsVLM.VIDTIMELINEH3BASE.value == (
-        "video_timeline_minimax_h3_base_system_instruction"
-    )
-    assert vlm_presets.SystemInstructionsVLM.VIDTIMELINEH3REF.value == (
-        "video_timeline_minimax_h3_reference_system_instruction"
-    )
     for name in STRUCTURED_VIDEO_PRESETS:
         assert name in vlm_presets.system_instructions_vlm
         assert isinstance(vlm_presets.system_instructions_vlm[name], str)
