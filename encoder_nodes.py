@@ -3400,12 +3400,13 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 ),
                 io.Combo.Input(
                     "ref_image_size",
-                    options=["match", "max"],
+                    options=["match", "max", "none"],
                     default="match",
                     tooltip=(
-                        "Used only by reference_images. Match limits each reference to the generation pixel area; "
-                        "max limits its short edge to 2048 pixels. Both preserve aspect ratio; final 32-pixel alignment "
-                        "can marginally enlarge a dimension."
+                        "Match limits each native reference to the generation pixel area; max limits its short edge to "
+                        "2048 pixels. None keeps frame inputs as Qwen pictures but skips their VAE keyframes; native "
+                        "reference_images resolve None to Match. All image sizing preserves aspect ratio; final 32-pixel "
+                        "alignment can marginally enlarge a dimension."
                     ),
                 ),
                 io.Int.Input(

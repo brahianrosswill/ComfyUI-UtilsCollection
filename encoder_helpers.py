@@ -2283,8 +2283,12 @@ def execute_advanced_minimax_h3_image_to_video(
             "MiniMax H3 native reference images cannot be combined with fusion images."
         )
     native_reference_mode = bool(flat_references)
-    if native_reference_mode and ref_image_size not in ("match", "max"):
+    if native_reference_mode and ref_image_size not in ("match", "max", "none"):
         raise ValueError(f"Unsupported MiniMax H3 reference image size: {ref_image_size}")
+    effective_reference_image_size = (
+        "match" if native_reference_mode and ref_image_size == "none" else ref_image_size
+    )
+    frame_vae_enabled = ref_image_size != "none"
     visual_sources = []
     if first_frame is not None:
         visual_sources.append(("first frame", first_frame))
@@ -2314,17 +2318,17 @@ def execute_advanced_minimax_h3_image_to_video(
     latent, frame_count = minimax_h3_empty_av_latent(width, height, length)
     prepared_first = (
         prepare_minimax_h3_frame(first_frame, width, height, "disabled")
-        if first_frame is not None
+        if first_frame is not None and frame_vae_enabled
         else None
     )
     prepared_last = (
         prepare_minimax_h3_frame(last_frame, width, height, "center")
-        if last_frame is not None
+        if last_frame is not None and frame_vae_enabled
         else None
     )
     prepared_references = [
         prepare_minimax_h3_reference_image(
-            image, width, height, ref_image_size
+            image, width, height, effective_reference_image_size
         )
         for image in flat_references
     ] if native_reference_mode else []

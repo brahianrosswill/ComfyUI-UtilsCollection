@@ -426,7 +426,7 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
     ]
     assert inputs["reference_images"].template.min == 0
     assert inputs["fusion_images"].template.min == 0
-    assert inputs["ref_image_size"].options == ["match", "max"]
+    assert inputs["ref_image_size"].options == ["match", "max", "none"]
     assert inputs["ref_image_size"].default == "match"
     assert inputs["vlm_resolution"].default == 384
     assert "independent" in inputs["vlm_resolution"].tooltip.lower()
@@ -848,6 +848,61 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
     video, audio = latent["samples"].tensors
     assert video.shape == (1, 24, 2, 2, 4)
     assert audio.shape == (1, 32, 2, 8)
+
+
+def test_advanced_minimax_h3_none_keeps_frame_pictures_without_vae_keyframes():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    first = torch.full((1, 32, 64, 3), 0.25)
+    last = torch.full((1, 32, 64, 3), 0.75)
+
+    conditioning, _latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        first_frame=first,
+        last_frame=last,
+        ref_image_size="none",
+        width=64,
+        height=32,
+        length=5,
+    ).args
+
+    qwen_images = [
+        entry[0]["data"]
+        for entry in clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+        if encoder_helpers.is_image_token(entry)
+    ]
+    assert [float(image.mean()) for image in qwen_images] == pytest.approx(
+        [0.25, 0.75], abs=0.004
+    )
+    assert vae.images == []
+    metadata = conditioning[0][1]
+    assert "minimax_keyframes" not in metadata
+    assert "minimax_frame_count" not in metadata
+
+
+def test_advanced_minimax_h3_reference_none_defaults_to_match():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    reference = torch.full((1, 32, 64, 3), 0.25)
+
+    conditioning, _latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        ref_image_size="none",
+        width=64,
+        height=32,
+        length=5,
+        reference_images={"reference_image_1": reference},
+    ).args
+
+    assert [image.shape[1:3] for image in vae.images] == [(32, 64)]
+    assert [float(image.mean()) for image in vae.images] == pytest.approx(
+        [0.25], abs=0.004
+    )
+    assert len(conditioning[0][1]["minimax_refs"]) == 1
 
 
 def test_advanced_minimax_h3_vlm_resolution_is_independent_for_every_role():
