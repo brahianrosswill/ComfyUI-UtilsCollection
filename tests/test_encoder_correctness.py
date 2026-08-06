@@ -986,7 +986,7 @@ def test_advanced_minimax_h3_rejects_simultaneous_native_modes_before_encoding()
         assert vae.images == []
 
 
-def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
+def test_advanced_minimax_h3_frame_fusion_targets_matching_picture_slots():
     clip = _MiniMaxH3TestClip()
     vae = _RecordingMiniMaxVAE()
     first = torch.full((1, 4, 6, 3), 0.25)
@@ -1020,11 +1020,11 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
         images = [entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)]
         if images:
             encoded_images.append(images)
-    assert len(encoded_images) == 2
-    assert [len(images) for images in encoded_images] == [3, 3]
+    assert len(encoded_images) == 3
+    assert [len(images) for images in encoded_images] == [2, 2, 2]
     assert np.allclose(
         [[float(image.mean()) for image in images] for images in encoded_images],
-        [[0.25, 0.5, 0.75], [0.25, 0.5, 1.0]],
+        [[0.25, 0.5], [0.75, 0.5], [1.0, 0.5]],
         atol=0.004,
     )
     assert [float(image.mean()) for image in vae.images] == pytest.approx(
@@ -1046,6 +1046,113 @@ def test_advanced_minimax_h3_flattened_sources_fuse_while_first_two_feed_vae():
     video, audio = latent["samples"].tensors
     assert video.shape == (1, 24, 7, 2, 4)
     assert audio.shape == (1, 32, 2, 37)
+
+
+def test_advanced_minimax_h3_first_frame_fusion_uses_only_picture_one():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    first = torch.full((1, 4, 6, 3), 0.25)
+    fusion = torch.full((1, 4, 6, 3), 0.75)
+
+    conditioning, _latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        first_frame=first,
+        width=64,
+        height=32,
+        length=5,
+        fusion_images={"fusion_image_1": fusion},
+        visual_fusion_config={"visual_fusion_method": "linear"},
+    ).args
+
+    encoded_images = [
+        [entry[0]["data"] for entry in tokens["qwen3vl_32b"][0] if encoder_helpers.is_image_token(entry)]
+        for tokens in clip.encoded_tokens
+    ]
+    assert [[float(image.mean()) for image in images] for images in encoded_images] == [
+        [0.25],
+        [0.75],
+    ]
+    assert [item["resolved_frame_index"] for item in conditioning[0][1]["minimax_keyframes"]] == [0]
+    assert [float(image.mean()) for image in vae.images] == pytest.approx([0.25], abs=0.004)
+
+
+def test_advanced_minimax_h3_fusion_batches_stay_on_their_socket_slots():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    first = torch.full((1, 4, 6, 3), 0.25)
+    last = torch.full((1, 4, 6, 3), 0.5)
+    first_fusion = torch.cat(
+        [
+            torch.full((1, 4, 6, 3), 0.75),
+            torch.full((1, 4, 6, 3), 1.0),
+        ]
+    )
+    last_fusion = torch.cat(
+        [
+            torch.full((1, 4, 6, 3), 0.125),
+            torch.full((1, 4, 6, 3), 0.375),
+        ]
+    )
+
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        first_frame=first,
+        last_frame=last,
+        width=64,
+        height=32,
+        length=5,
+        fusion_images={
+            "fusion_image_1": first_fusion,
+            "fusion_image_2": last_fusion,
+        },
+        visual_fusion_config={"visual_fusion_method": "linear"},
+    )
+
+    encoded_images = [
+        [entry[0]["data"] for entry in tokens["qwen3vl_32b"][0] if encoder_helpers.is_image_token(entry)]
+        for tokens in clip.encoded_tokens
+    ]
+    assert np.allclose(
+        [[float(image.mean()) for image in images] for images in encoded_images],
+        [
+            [0.25, 0.5],
+            [0.75, 0.5],
+            [1.0, 0.5],
+            [0.25, 0.125],
+            [0.25, 0.375],
+        ],
+        atol=0.004,
+    )
+    assert [float(image.mean()) for image in vae.images] == pytest.approx([0.25, 0.5], abs=0.004)
+
+
+def test_advanced_minimax_h3_rejects_unpaired_frame_fusion_input():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    first = torch.full((1, 4, 6, 3), 0.25)
+    fusion = torch.full((1, 4, 6, 3), 0.75)
+
+    with pytest.raises(ValueError, match="without a matching picture slot"):
+        UC_AdvancedMiniMaxH3ImageToVideo.execute(
+            clip,
+            vae,
+            prompt="subject",
+            first_frame=first,
+            width=64,
+            height=32,
+            length=5,
+            fusion_images={
+                "fusion_image_1": fusion,
+                "fusion_image_2": fusion,
+            },
+            visual_fusion_config={"visual_fusion_method": "linear"},
+        )
+    assert clip.encoded_tokens == []
+    assert vae.images == []
 
 
 def test_advanced_minimax_h3_fusion_off_keeps_all_images_as_separate_pictures():

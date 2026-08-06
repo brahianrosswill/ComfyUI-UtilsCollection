@@ -1977,16 +1977,16 @@ def extract_and_flatten_images(image_inputs) -> tuple:
     return raw_images, flat_images, is_zero_indexed
 
 
-def build_visual_consensus_batch_lanes(image_inputs):
-    """Keep visual sources and index-aligned execution batches as separate axes."""
+def extract_image_socket_batches(image_inputs) -> list[tuple[int, list]]:
+    """Expand image batches while retaining each numbered input socket."""
     if not image_inputs:
-        return [], []
+        return []
 
     def socket_number(name):
         digits = re.findall(r"\d+", name)
         return int(digits[0]) if digits else 0
 
-    sockets = []
+    socket_batches = []
     for name in sorted(image_inputs, key=socket_number):
         value = image_inputs[name]
         if value is None:
@@ -1998,7 +1998,16 @@ def build_visual_consensus_batch_lanes(image_inputs):
                 raise ValueError("Every visual input must be a BHWC IMAGE tensor.")
             expanded.extend(tensor[index:index + 1] for index in range(tensor.shape[0]))
         if expanded:
-            sockets.append(expanded)
+            socket_batches.append((socket_number(name), expanded))
+    return socket_batches
+
+
+def build_visual_consensus_batch_lanes(image_inputs):
+    """Keep visual sources and index-aligned execution batches as separate axes."""
+    if not image_inputs:
+        return [], []
+
+    sockets = [images for _, images in extract_image_socket_batches(image_inputs)]
 
     if not sockets:
         return [], []
@@ -2273,6 +2282,7 @@ def execute_advanced_minimax_h3_image_to_video(
         )
     _, flat_references, _ = extract_and_flatten_images(reference_images)
     _, flat_fusion_images, _ = extract_and_flatten_images(fusion_images)
+    fusion_socket_batches = extract_image_socket_batches(fusion_images)
     keyframe_mode = first_frame is not None or last_frame is not None
     if keyframe_mode and flat_references:
         raise ValueError(
@@ -2360,7 +2370,97 @@ def execute_advanced_minimax_h3_image_to_video(
             )
         return clip.tokenize(text, images=images)
 
-    if fusion_active:
+    if fusion_active and keyframe_mode:
+        if any(
+            socket_number < 1 or socket_number > len(base_vlm_images)
+            for socket_number, _ in fusion_socket_batches
+        ):
+            raise ValueError(
+                "MiniMax H3 frame fusion has a fusion image without a matching picture slot."
+            )
+
+        tokenize_callback = lambda text: tokenize_presentation(text, base_vlm_images)
+        conditioning = encode_embedding_classical_scaled_bias(
+            clip,
+            prompt,
+            tokenize_callback=tokenize_callback,
+            visual_encoder_path=visual_encoder_path,
+        )
+        if len(conditioning) != 1:
+            raise ValueError(
+                "MiniMax H3 visual conditioning requires one schedule entry."
+            )
+
+        base_tensor, base_metadata = conditioning[0]
+        base_tokens = tokenize_callback(prompt)
+        fused_tensor = base_tensor.clone()
+        for socket_number, socket_images in fusion_socket_batches:
+            visual_index = socket_number - 1
+            branches = []
+            branch_sources = [
+                (
+                    base_vlm_images[visual_index],
+                    base_tensor,
+                    base_metadata,
+                    base_tokens,
+                )
+            ]
+            for fusion_image in socket_images:
+                branch_images = list(base_vlm_images)
+                branch_images[visual_index] = fusion_image
+                branch_callback = lambda text, images=branch_images: tokenize_presentation(
+                    text, images
+                )
+                branch_conditioning = encode_embedding_classical_scaled_bias(
+                    clip,
+                    prompt,
+                    tokenize_callback=branch_callback,
+                    visual_encoder_path=visual_encoder_path,
+                )
+                if len(branch_conditioning) != 1:
+                    raise ValueError(
+                        "MiniMax H3 visual fusion requires one conditioning schedule entry."
+                    )
+                branch_tensor, branch_metadata = branch_conditioning[0]
+                branch_sources.append(
+                    (fusion_image, branch_tensor, branch_metadata, branch_callback(prompt))
+                )
+            for image, tensor, metadata, tokens in branch_sources:
+                visual_range = find_visual_token_range(
+                    tokens,
+                    tensor,
+                    legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                    minimax_token_tags=metadata.get("minimax_token_tags"),
+                    minimax_visual_index=visual_index,
+                )
+                if visual_range == (0, 0):
+                    raise ValueError(
+                        f"Could not locate MiniMax H3 picture {visual_index + 1} for fusion."
+                    )
+                branches.append(
+                    {
+                        "tensor": tensor,
+                        "pooled": metadata.get("pooled_output"),
+                        "metadata": metadata,
+                        "tokens": tokens,
+                        "visual_range": visual_range,
+                        "grid": visual_fusion_grid(
+                            image,
+                            visual_range[1] - visual_range[0],
+                            visual_encoder_path == "legacy-flat",
+                        ),
+                    }
+                )
+            slot_conditioning = _spatially_fuse_visual_consensus_sources(
+                branches, config, clip, allow_export=True
+            )
+            slot_tensor = slot_conditioning[0][0]
+            base_range = branches[0]["visual_range"]
+            fused_tensor[:, base_range[0]:base_range[1], :] = slot_tensor[
+                :, base_range[0]:base_range[1], :
+            ]
+        conditioning = [[fused_tensor, base_metadata]]
+    elif fusion_active:
         branches = []
         for index, image in enumerate(fusion_vlm_images):
             branch_images = [*base_vlm_images, image]

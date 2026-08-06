@@ -3386,8 +3386,9 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     display_name="Fusion Config",
                     optional=True,
                     tooltip=(
-                        "Optional spatial method for fusion_images only. Disconnected or off keeps those images as "
-                        "separate numbered Qwen pictures. Native reference mode does not use fusion."
+                        "Optional spatial method. With frame inputs, fusion_image_1 targets Picture 1 and "
+                        "fusion_image_2 targets Picture 2; disconnected or off keeps fusion images as separate "
+                        "numbered Qwen pictures. Native reference mode does not use fusion."
                     ),
                 ),
                 io.Float.Input(
@@ -3434,8 +3435,9 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     template=fusion_template,
                     optional=True,
                     tooltip=(
-                        "Ordered Qwen-only images. Fusion off keeps them separate; an active method combines this group "
-                        "into one final numbered picture without changing frames or references."
+                        "Ordered Qwen-only images. With frame inputs, each numbered socket fuses into its matching picture "
+                        "and every batch item on that socket is an additional fusion source; fusion off keeps them separate. "
+                        "Without frames, an active method combines this group into Picture 1."
                     ),
                 ),
             ],
