@@ -179,6 +179,7 @@ class UC_TextConcatenateAutogrow(io.ComfyNode):
             inputs=[
                 io.AnyType.Input(
                     "delimiter",
+                    optional=True,
                     tooltip="Value converted to text and inserted between each connected text input.",
                 ),
                 io.Autogrow.Input(
@@ -195,8 +196,8 @@ class UC_TextConcatenateAutogrow(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        delimiter,
         text_inputs: io.Autogrow.Type,
+        delimiter="",
     ) -> io.NodeOutput:
         ordered_values = [
             value

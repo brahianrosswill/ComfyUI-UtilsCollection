@@ -21,6 +21,7 @@ def test_text_concatenate_autogrow_schema_uses_wildcard_links():
     assert schema.display_name == "Concatenate Text (Autogrow)"
     assert schema.category == "advanced/text"
     assert inputs["delimiter"].get_io_type() == "*"
+    assert inputs["delimiter"].optional is True
     assert text_inputs.template.input.get_io_type() == "*"
     assert text_inputs.template.names == [
         f"text_{index}" for index in range(1, 101)
@@ -68,3 +69,11 @@ def test_text_concatenate_autogrow_supports_empty_and_newline_delimiters():
 
     assert compact.args == ("alphabeta",)
     assert multiline.args == ("alpha\nbeta",)
+
+
+def test_text_concatenate_autogrow_uses_empty_delimiter_when_disconnected():
+    output = text_nodes.UC_TextConcatenateAutogrow.execute(
+        text_inputs={"text_1": "alpha", "text_2": "beta"},
+    )
+
+    assert output.args == ("alphabeta",)
