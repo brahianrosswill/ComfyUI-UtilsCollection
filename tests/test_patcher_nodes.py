@@ -194,6 +194,65 @@ def test_block_runner_preserves_double_block_replacements(monkeypatch):
     assert prefetch_events == [blocks[0], blocks[1], None]
 
 
+def test_cached_forward_matches_current_core_audio_output_contract(monkeypatch):
+    layout = types.SimpleNamespace(
+        signature=(1, 1, 2, 2, 1),
+        segments=[(0, 1, "text"), (1, 3, "audio"), (3, 4, "video")],
+        img_update=torch.ones(1, dtype=torch.bool),
+        audio_update=torch.ones(2, dtype=torch.bool),
+        seq_len=4,
+        position_ids=torch.zeros((4, 3)),
+    )
+    video_result = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+    audio_result = torch.arange(1.0, 9.0).reshape(2, 4)
+    model = types.SimpleNamespace(
+        patch_size=(1, 2, 2),
+        sigma_shift_video=1.0,
+        sigma_shift_audio=1.0,
+        hidden_size=4,
+        use_adaln_curves=False,
+        blocks=[],
+        latents_dim=1,
+        video_patch_proj=lambda rows: rows,
+        audio_patch_proj=lambda rows: rows,
+        _cond_video_rows=lambda payload, device: None,
+        _cond_audio_rows=lambda payload, device: None,
+        time_embedder=lambda values: values[:, None].expand(-1, 4),
+        rope_freqs=lambda position_ids, device: torch.zeros((1, 1)),
+        final_layer=lambda hidden, t_emb, video_seg, audio_seg: (
+            video_result,
+            audio_result,
+        ),
+    )
+    monkeypatch.setattr(
+        patcher_helpers.minimax_model,
+        "rope_rotation_table",
+        lambda frequencies, dtype: frequencies,
+    )
+
+    video = torch.zeros((1, 1, 1, 2, 2), dtype=torch.float16)
+    audio = torch.zeros((1, 4, 2, 1), dtype=torch.float16)
+    context = torch.zeros((1, 1, 4), dtype=torch.float32)
+
+    assert not hasattr(patcher_helpers.minimax_model, "time_shift_slope")
+    output = patcher_helpers.minimax_h3_cache_forward(
+        model,
+        [video, audio],
+        torch.tensor([500.0]),
+        context,
+        minimax_payload={"layout": layout},
+    )
+
+    expected_video = -patcher_helpers.minimax_model.unpatchify_video(
+        video_result, 1, 1, 1, 1, (1, 2, 2)
+    ).to(video.dtype)
+    expected_audio = -patcher_helpers.minimax_model.unpack_audio(audio_result).to(
+        audio.dtype
+    )
+    assert torch.equal(output[0], expected_video)
+    assert torch.equal(output[1], expected_audio)
+
+
 def test_model_helper_adds_only_reversible_instance_patch(monkeypatch):
     class FakeH3:
         def _forward(self):

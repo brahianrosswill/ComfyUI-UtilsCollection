@@ -509,12 +509,9 @@ def minimax_h3_cache_forward(
     )
     video_out = video_out[:, :, :orig_t, :orig_h, :orig_w]
     audio_out = minimax_model.unpack_audio(audio_result)
-    slope_a = minimax_model.time_shift_slope(sigma_v, shift_v, shift_a).to(
-        audio_out.dtype
-    )
     return [
         -video_out.to(video_x.dtype),
-        (-slope_a) * audio_out.to(audio_x.dtype),
+        -audio_out.to(audio_x.dtype),
     ]
 
 
