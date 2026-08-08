@@ -251,8 +251,8 @@ class UC_ImageToVideoPrompt(io.ComfyNode):
             display_name="Image Prompt to Video Prompt",
             category="advanced/text",
             description=(
-                "Converts static image-oriented prompt wording into motion-oriented video wording "
-                "using the repository's established replacement rules."
+                "Converts image-editing prompt language into role-aware video generation "
+                "instructions while preserving visual style, identity, and content requirements."
             ),
             inputs=[
                 io.String.Input(
@@ -260,15 +260,24 @@ class UC_ImageToVideoPrompt(io.ComfyNode):
                     multiline=True,
                     dynamic_prompts=True,
                     default="",
-                    tooltip="Any text to transform with the image-to-video prompt replacement rules.",
+                    tooltip="Image-oriented prompt text to convert into video-oriented guidance.",
+                ),
+                io.Combo.Input(
+                    "prompt_role",
+                    options=["general", "system", "instruction", "bonus"],
+                    default="general",
+                    tooltip=(
+                        "Selects general, system, instruction, or bonus conversion behavior "
+                        "without changing the node interface."
+                    ),
                 ),
             ],
             outputs=[io.String.Output("text", display_name="text")],
         )
 
     @classmethod
-    def execute(cls, text: str) -> io.NodeOutput:
-        return io.NodeOutput(to_video_prompt(text))
+    def execute(cls, text: str, prompt_role="general") -> io.NodeOutput:
+        return io.NodeOutput(to_video_prompt(text, role=prompt_role))
 
 
 class UC_TagNormalizeCombine(io.ComfyNode):

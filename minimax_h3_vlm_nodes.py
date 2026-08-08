@@ -49,17 +49,31 @@ class UC_MiniMaxH3VLMSysInstrAdvPresets(io.ComfyNode):
                 io.String.Input("system_query", multiline=True, default=""),
                 io.String.Input("user_query", multiline=True, default=""),
                 io.Boolean.Input("jailbreak", default=False),
+                io.String.Input(
+                    "system_query_additional",
+                    multiline=True,
+                    default="",
+                ),
             ],
             outputs=[io.String.Output(display_name="system_instruction")],
         )
 
     @classmethod
-    def execute(cls, preset, system_query, user_query, jailbreak=False) -> io.NodeOutput:
+    def execute(
+        cls,
+        preset,
+        system_query,
+        user_query,
+        jailbreak=False,
+        system_query_additional="",
+    ) -> io.NodeOutput:
         result = minimax_h3_system_instructions_vlm.get(preset, "")
         if jailbreak:
             result = minimax_h3_vlm_jailbreak_prefix + "\n\n" + result
         if user_query and user_query.strip():
             result += "\n\nRequested target-video requirements:\n" + user_query.strip()
+        if system_query_additional and system_query_additional.strip():
+            result += "\n\n" + system_query_additional.strip()
         if jailbreak:
             result += "\n\n" + minimax_h3_vlm_jailbreak_suffix
         if system_query and system_query.strip():

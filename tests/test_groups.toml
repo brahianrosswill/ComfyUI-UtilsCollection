@@ -53,6 +53,7 @@ python_tests = [
   "tests/test_parameter_nodes.py",
   "tests/test_prevalent_colors.py",
   "tests/test_textgen_formula.py",
+  "tests/test_video_prompt_conversion.py",
 ]
 frontend_tests = []
 
@@ -76,6 +77,7 @@ paths = ["preset_nodes.py", "presets_collection.py"]
 python_tests = [
   "tests/test_photography_presets.py",
   "tests/test_preset_parentheses.py",
+  "tests/test_video_prompt_conversion.py",
   "tests/test_vlm_presets.py",
 ]
 frontend_tests = []
@@ -87,6 +89,7 @@ python_tests = [
   "tests/test_encoder_guide.py",
   "tests/test_high_resolution_tiling_guide.py",
   "tests/test_markdown_preview.py",
+  "tests/test_video_prompt_conversion.py",
 ]
 frontend_tests = []
 

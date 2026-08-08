@@ -50,6 +50,53 @@ def test_qwen_query_variants_use_plain_request_delimiters():
         assert suffix == ""
 
 
+def test_h3_query_presets_are_paired_and_wrap_the_request_once():
+    presets = vlm_presets.system_query_additional_vlm
+    base_names = {
+        key.removesuffix("_prefix").removesuffix("_suffix") for key in presets
+    }
+    assert {"h3_fl2va", "h3_ref2va"} <= base_names
+
+    request = "Make the subjects cross the clearing."
+    for name in ("h3_fl2va", "h3_ref2va"):
+        prefix = presets[f"{name}_prefix"]
+        suffix = presets[f"{name}_suffix"]
+        wrapped = f"{prefix}{request}{suffix}"
+
+        assert prefix.endswith("BEGIN VIDEO REQUEST:\n")
+        assert suffix.startswith("\nEND VIDEO REQUEST.")
+        assert wrapped.count(request) == 1
+        assert "ComfyUI has already assigned" in prefix
+        assert "Do not create, reproduce, or renumber" in prefix
+        assert "Do not output the upstream media-prefix declaration" in suffix
+
+
+def test_h3_fl2va_query_preset_enforces_available_boundary_pictures():
+    presets = vlm_presets.system_query_additional_vlm
+    prefix = presets["h3_fl2va_prefix"]
+    suffix = presets["h3_fl2va_suffix"]
+
+    assert "Treat `<Picture 1>` as the fixed first frame" in prefix
+    assert (
+        "If and only if a second image was supplied, treat `<Picture 2>` as the fixed final frame"
+        in prefix
+    )
+    assert "When only one image was supplied, do not mention `<Picture 2>`" in prefix
+    assert "use `<Picture 2>` as the fixed ending only when it exists" in suffix
+
+
+def test_h3_ref2va_query_preset_uses_only_supplied_reference_roles():
+    presets = vlm_presets.system_query_additional_vlm
+    prefix = presets["h3_ref2va_prefix"]
+    suffix = presets["h3_ref2va_suffix"]
+
+    assert "use only identifiers that exist" in prefix
+    assert "Do not automatically classify any picture as the first or final frame" in prefix
+    assert "Use every supplied picture deliberately" in prefix
+    assert "never mention an unsupplied `<Picture N>`" in suffix
+    assert "Do not assign first-frame or final-frame status" in suffix
+
+
 def test_style_presets_receive_no_qwen_variants():
     assert not any(
         "style" in name.lower() and name.endswith("_qwen")
@@ -66,6 +113,13 @@ STRUCTURED_VIDEO_PRESETS = (
 )
 
 H3_TIMELINE_PRESETS = (
+    "video_timeline_minimax_h3_base_system_instruction",
+    "video_timeline_minimax_h3_reference_system_instruction",
+)
+
+TIMELINE_CHANNEL_BALANCE_PRESETS = (
+    "video_timeline_system_instruction",
+    "video_timeline_system_instruction_crude",
     "video_timeline_minimax_h3_base_system_instruction",
     "video_timeline_minimax_h3_reference_system_instruction",
 )
@@ -100,7 +154,7 @@ def test_structured_video_presets_share_audio_and_motion_contracts():
 
         assert "nonverbal creature noise" in instruction
         assert "belong under [SOUNDS], never [SPEECH]" in instruction
-        assert "omit the entire [SPEECH] line" in instruction
+        assert "omit the entire [speech] line" in instruction.lower()
         assert "Maintain concrete, descriptive visual-motion language throughout" in instruction
 
 
@@ -143,6 +197,26 @@ def test_timeline_video_preset_uses_adaptive_contiguous_ranges():
     assert "Every range touches the next without a gap or overlap" in instruction
     assert "final range ends at the exact total duration" in instruction
     assert "no `Part N:` headings" in instruction
+
+
+def test_timeline_presets_create_requested_dialogue_and_balance_channels():
+    for name in TIMELINE_CHANNEL_BALANCE_PRESETS:
+        instruction = vlm_presets.system_instructions_vlm[name]
+
+        assert "**Requested Dialogue Creation:**" in instruction
+        assert "`Add dialogue` or another direct user request" in instruction
+        assert "not as a request to detect speech already present" in instruction
+        assert "The user does not need to provide wording or timestamps" in instruction
+        assert "do not force dialogue into every block" in instruction
+        assert "**Foreground Priority and Segment Load:**" in instruction
+        assert "one primary foreground event" in instruction
+        assert "Never make dialogue or lyrics, loud music, dense effects, and heavy action compete" in instruction
+        assert "**Dialogue and Vocal Mixing:**" in instruction
+        assert "duck any music" in instruction
+        assert "**Pacing and Flow:**" in instruction
+        assert "quieter breathing room" in instruction
+        assert "only inside a timestamp block containing intelligible spoken dialogue" not in instruction
+        assert "synchronized effects intensify with the movement" not in instruction
 
 
 def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():

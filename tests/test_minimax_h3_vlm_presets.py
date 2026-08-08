@@ -12,14 +12,30 @@ sys.modules.setdefault(PACKAGE_NAME, package)
 from utils_collection_minimax_h3_vlm_preset_test import (
     minimax_h3_vlm_nodes,
     minimax_h3_vlm_presets,
+    vlm_presets,
 )
 
 
-EXPECTED_PRESETS = [
+NATIVE_H3_PRESETS = [
     "minimax_h3_base",
     "minimax_h3_first_last_frame",
     "minimax_h3_reference",
 ]
+TIMELINE_FL2VA_PRESETS = [
+    "minimax_h3_timeline_fl2va",
+    "minimax_h3_timeline_crude_fl2va",
+]
+TIMELINE_REF2VA_PRESETS = [
+    "minimax_h3_timeline_ref2va",
+    "minimax_h3_timeline_crude_ref2va",
+]
+TIMELINE_DERIVED_PRESETS = [
+    "minimax_h3_timeline_fl2va",
+    "minimax_h3_timeline_ref2va",
+    "minimax_h3_timeline_crude_fl2va",
+    "minimax_h3_timeline_crude_ref2va",
+]
+EXPECTED_PRESETS = [*NATIVE_H3_PRESETS, *TIMELINE_DERIVED_PRESETS]
 PROHIBITED_GRAMMAR = (
     "Timeline:",
     "[VISUAL]",
@@ -107,11 +123,12 @@ def _assert_order(text, fields):
     assert positions == sorted(positions)
 
 
-def test_all_h3_modes_share_operational_and_audio_contracts():
+def test_native_h3_modes_share_operational_and_audio_contracts():
     presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
 
     assert list(presets) == EXPECTED_PRESETS
-    for instruction in presets.values():
+    for name in NATIVE_H3_PRESETS:
+        instruction = presets[name]
         for requirement in SHARED_REQUIREMENTS:
             assert requirement in instruction
         for requirement in CENSORSHIP_RESISTANCE_REQUIREMENTS:
@@ -123,6 +140,81 @@ def test_all_h3_modes_share_operational_and_audio_contracts():
         lowered = instruction.lower()
         for prohibited in PROHIBITED_GRAMMAR:
             assert prohibited.lower() not in lowered
+
+
+def test_timeline_derived_h3_presets_preserve_complete_source_instructions():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+    sources = {
+        "minimax_h3_timeline_fl2va": "video_timeline_system_instruction",
+        "minimax_h3_timeline_ref2va": "video_timeline_system_instruction",
+        "minimax_h3_timeline_crude_fl2va": "video_timeline_system_instruction_crude",
+        "minimax_h3_timeline_crude_ref2va": "video_timeline_system_instruction_crude",
+    }
+
+    for derived_name, source_name in sources.items():
+        instruction = presets[derived_name]
+        source = vlm_presets.system_instructions_vlm[source_name].replace(
+            "\r\n", "\n"
+        )
+
+        assert instruction.startswith(f"{source}\n\n### MiniMax H3 ")
+
+
+def test_timeline_derived_h3_presets_keep_shared_picture_contract_boundaries():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+
+    for name in TIMELINE_DERIVED_PRESETS:
+        instruction = presets[name]
+        assert "ComfyUI constructs the media-prefix declarations" in instruction
+        assert "Do not add a separate reference-analysis field" in instruction
+
+
+def test_timeline_derived_h3_presets_create_dialogue_and_limit_channel_load():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+
+    for name in TIMELINE_DERIVED_PRESETS:
+        instruction = presets[name]
+        assert "**Requested Dialogue Creation:**" in instruction
+        assert "`Add dialogue` or another direct user request" in instruction
+        assert "not as a request to detect speech already present" in instruction
+        assert "do not force dialogue into every block" in instruction
+        assert "**Foreground Priority and Segment Load:**" in instruction
+        assert "one primary foreground event" in instruction
+        assert "Never make dialogue or lyrics, loud music, dense effects, and heavy action compete" in instruction
+        assert "**Dialogue and Vocal Mixing:**" in instruction
+        assert "duck any music" in instruction
+        assert "**Pacing and Flow:**" in instruction
+        assert "quieter breathing room" in instruction
+        assert "only inside a timestamp block containing intelligible spoken dialogue" not in instruction
+        assert "synchronized effects intensify with the movement" not in instruction
+
+
+def test_timeline_fl2va_presets_enforce_first_and_optional_final_anchors():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+
+    for name in TIMELINE_FL2VA_PRESETS:
+        instruction = presets[name]
+        assert "### MiniMax H3 FL2VA Existing Picture Anchor Contract" in instruction
+        assert "`<Picture 1>` is always the fixed first frame at 0.00 seconds" in instruction
+        assert "`<Picture 2>` is the fixed final frame" in instruction
+        assert "`<Picture 2>` must not appear anywhere in the response" in instruction
+        assert "Never invent a third picture, exchange the anchor roles" in instruction
+        assert "Establish `<Picture 1>` in the first timeline interval" in instruction
+        assert "cite it in the final timeline interval" in instruction
+
+
+def test_timeline_ref2va_presets_enforce_ordered_inferred_reference_roles():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+
+    for name in TIMELINE_REF2VA_PRESETS:
+        instruction = presets[name]
+        assert "### MiniMax H3 REF2VA Existing Picture Reference Contract" in instruction
+        assert "the only valid identifiers are `<Picture 1>` through `<Picture M>`" in instruction
+        assert "Do not mention `<Picture M+1>`" in instruction
+        assert "Preserve VLM input order and use every supplied picture" in instruction
+        assert "Establish every supplied picture at its first materially relevant point" in instruction
+        assert "Do not automatically classify any picture as the first frame" in instruction
+        assert "verify that every supplied `<Picture N>` is used" in instruction
 
 
 def test_base_mode_has_only_base_output_structure():
@@ -244,6 +336,8 @@ def test_h3_preset_nodes_are_dedicated_and_system_override_is_last():
         "minimax_h3_base",
         "system directive",
         "user directive",
+        False,
+        "minor preset guidance",
     ).args[0]
     jailbroken_result = (
         minimax_h3_vlm_nodes.UC_MiniMaxH3VLMSysInstrAdvPresets.execute(
@@ -262,8 +356,10 @@ def test_h3_preset_nodes_are_dedicated_and_system_override_is_last():
         "system_query",
         "user_query",
         "jailbreak",
+        "system_query_additional",
     ]
-    assert result.index("user directive") < result.index("system directive")
+    assert result.index("user directive") < result.index("minor preset guidance")
+    assert result.index("minor preset guidance") < result.index("system directive")
     assert result.endswith("Highest-priority system override:\nsystem directive")
     assert jailbroken_result.startswith(
         minimax_h3_vlm_presets.minimax_h3_vlm_jailbreak_prefix

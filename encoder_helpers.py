@@ -2295,9 +2295,6 @@ def execute_advanced_minimax_h3_image_to_video(
     native_reference_mode = bool(flat_references)
     if native_reference_mode and ref_image_size not in ("match", "max", "none"):
         raise ValueError(f"Unsupported MiniMax H3 reference image size: {ref_image_size}")
-    effective_reference_image_size = (
-        "match" if native_reference_mode and ref_image_size == "none" else ref_image_size
-    )
     frame_vae_enabled = ref_image_size != "none"
     visual_sources = []
     if first_frame is not None:
@@ -2336,12 +2333,16 @@ def execute_advanced_minimax_h3_image_to_video(
         if last_frame is not None and frame_vae_enabled
         else None
     )
-    prepared_references = [
-        prepare_minimax_h3_reference_image(
-            image, width, height, effective_reference_image_size
-        )
-        for image in flat_references
-    ] if native_reference_mode else []
+    prepared_references = (
+        [
+            prepare_minimax_h3_reference_image(
+                image, width, height, ref_image_size
+            )
+            for image in flat_references
+        ]
+        if native_reference_mode and frame_vae_enabled
+        else []
+    )
 
     base_vlm_images = []
     if first_frame is not None:

@@ -41,6 +41,21 @@ def test_preset_parenthesis_escaping_is_optional_and_idempotent():
     assert preset_nodes.escape_prompt_parentheses(text, True) == r"PBR \(metal\), already \(glass\)"
 
 
+@pytest.mark.parametrize(
+    "node",
+    (
+        preset_nodes.UC_SystemMessageVideoPresets,
+        preset_nodes.UC_InstructPromptVideoPresets,
+        preset_nodes.UC_BonusPromptVideoPresets,
+    ),
+)
+def test_video_preset_node_input_order_remains_compatible(node):
+    assert [value.id for value in node.define_schema().inputs] == [
+        "preset",
+        "escape_parentheses",
+    ]
+
+
 @pytest.mark.parametrize("node", [preset_nodes.UC_SystemMessagePresets, preset_nodes.UC_SystemMessageVideoPresets])
 def test_style_3d_pbr_parentheses_are_escaped(node):
     plain = node.execute("STYLE_3D", False).args[0]
