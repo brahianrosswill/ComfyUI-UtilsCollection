@@ -60,14 +60,18 @@ def test_markdown_preview_frontend_uses_core_markdown_widget():
     assert "preview_mode" not in frontend
 
 
-def test_image_to_video_prompt_node_wraps_existing_replacement_rules():
+def test_image_to_video_prompt_node_exposes_role_aware_schema():
     schema = UC_ImageToVideoPrompt.define_schema()
 
     assert schema.node_id == "UC_ImageToVideoPrompt"
     assert schema.display_name == "Image Prompt to Video Prompt"
-    assert [value.id for value in schema.inputs] == ["text"]
+    assert [value.id for value in schema.inputs] == ["text", "prompt_role"]
+    assert schema.inputs[1].options == [
+        "general",
+        "system",
+        "instruction",
+        "bonus",
+    ]
+    assert schema.inputs[1].default == "general"
     assert [value.id for value in schema.outputs] == ["text"]
-    assert UC_ImageToVideoPrompt.execute(
-        "Keep pose in the image."
-    ).args == ("Fluid movement and dynamic posing in the video.",)
     assert UC_ImageToVideoPrompt.execute("").args == ("",)

@@ -19,6 +19,31 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
 
 ## Repository-Specific Instructions
 
+### Evidence and claim discipline
+
+- Do not present assumptions, plausible explanations, remembered behavior, or
+  pattern-based guesses as established facts.
+- Before making a causal, behavioral, compatibility, or architectural claim,
+  verify it against direct evidence covering the relevant path. Inspect the
+  actual source, configuration, inputs, consumers, connections, and runtime
+  assembly needed to support the claim.
+- Distinguish verified facts, supported inferences, and unknowns explicitly.
+  When required evidence is unavailable, state that the conclusion cannot yet
+  be determined instead of filling the gap with a likely explanation.
+- Do not infer an end-to-end result from an isolated helper, preset, schema,
+  unit test, string-construction test, or passing test suite. Verify the actual
+  integration and consumer behavior before generalizing beyond what was tested.
+- Do not invent workflow topology, data flow, precedence, model behavior, or
+  user intent. Inspect the relevant artifact or ask for the specific missing
+  evidence when it cannot be discovered locally.
+- When correcting an unsupported claim, identify exactly which parts were
+  verified and which parts were assumed. Do not replace one unsupported
+  explanation with another.
+- Accept failure and request guidance or advice on the approach when continued
+  attempts are unlikely to work and are being made only to force the task toward
+  apparent completion; do not continue speculative trial-and-error to avoid
+  acknowledging that the current approach has failed.
+
 ### Python module structure
 
 - Keep `*_nodes.py` modules limited to node classes, schemas, registration

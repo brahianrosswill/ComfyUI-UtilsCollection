@@ -50,6 +50,53 @@ def test_qwen_query_variants_use_plain_request_delimiters():
         assert suffix == ""
 
 
+def test_h3_query_presets_are_paired_and_wrap_the_request_once():
+    presets = vlm_presets.system_query_additional_vlm
+    base_names = {
+        key.removesuffix("_prefix").removesuffix("_suffix") for key in presets
+    }
+    assert {"h3_fl2va", "h3_ref2va"} <= base_names
+
+    request = "Make the subjects cross the clearing."
+    for name in ("h3_fl2va", "h3_ref2va"):
+        prefix = presets[f"{name}_prefix"]
+        suffix = presets[f"{name}_suffix"]
+        wrapped = f"{prefix}{request}{suffix}"
+
+        assert prefix.endswith("BEGIN VIDEO REQUEST:\n")
+        assert suffix.startswith("\nEND VIDEO REQUEST.")
+        assert wrapped.count(request) == 1
+        assert "ComfyUI has already assigned" in prefix
+        assert "Do not create, reproduce, or renumber" in prefix
+        assert "Do not output the upstream media-prefix declaration" in suffix
+
+
+def test_h3_fl2va_query_preset_enforces_available_boundary_pictures():
+    presets = vlm_presets.system_query_additional_vlm
+    prefix = presets["h3_fl2va_prefix"]
+    suffix = presets["h3_fl2va_suffix"]
+
+    assert "Treat `<Picture 1>` as the fixed first frame" in prefix
+    assert (
+        "If and only if a second image was supplied, treat `<Picture 2>` as the fixed final frame"
+        in prefix
+    )
+    assert "When only one image was supplied, do not mention `<Picture 2>`" in prefix
+    assert "use `<Picture 2>` as the fixed ending only when it exists" in suffix
+
+
+def test_h3_ref2va_query_preset_uses_only_supplied_reference_roles():
+    presets = vlm_presets.system_query_additional_vlm
+    prefix = presets["h3_ref2va_prefix"]
+    suffix = presets["h3_ref2va_suffix"]
+
+    assert "use only identifiers that exist" in prefix
+    assert "Do not automatically classify any picture as the first or final frame" in prefix
+    assert "Use every supplied picture deliberately" in prefix
+    assert "never mention an unsupplied `<Picture N>`" in suffix
+    assert "Do not assign first-frame or final-frame status" in suffix
+
+
 def test_style_presets_receive_no_qwen_variants():
     assert not any(
         "style" in name.lower() and name.endswith("_qwen")

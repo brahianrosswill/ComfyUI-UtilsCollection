@@ -780,65 +780,64 @@ def get_token_count_scaled(clip, text, **kwargs):
 
     return max(0, max_content_len)
 
-def to_video_prompt(text: str, is_system: bool = False) -> str:
-    """
-    Transform image-based prompt presets into video-based ones by replacing
-    static constraints with motion-focused directives.
-    """
-    # 1. Replacement Map for standard patterns (ordered by specificity)
-    replacements = [
-        # Complex Multi-phrase constraints
-        (r"(?i)(?:Keep|Maintain|Ensure)\s+subject\s+position\s+and\s+their\s+pose\s+the\s+same\s+as\s+the\s+reference", "Maintain character consistency with natural lifelike motion"),
-        (r"(?i)(?:Make\s+sure|Ensure)\s+the\s+subject\s+is\s+in\s+the\s+same\s+position", "Ensure the subject moves naturally within the environment"),
-        (r"(?i)keeping\s+the\s+composition\s+and\s+structure\s+of\s+the\s+image\s+same\s+as\s+reference", "maintaining character consistency and cinematic flow"),
-        (r"(?i)not\s+changing\s+the\s+positioning\s+of\s+subjects\s+in\s+image", "enabling dynamic character movement and large actions"),
-        (r"(?i)strictly\s+maintaining\s+their\s+original\s+appearance", "preserving visual identity during dynamic motion"),
+VIDEO_PROMPT_ROLES = ("general", "system", "instruction", "bonus")
 
-        # Simple Constraints -> Motion
-        (r"(?i)Keep\s+pose", "Fluid movement and dynamic posing"),
-        (r"(?i)Keep\s+angle", "Cinematic camera pans and motion"),
-        (r"(?i)Keep\s+viewing\s+direction", "Dynamic gaze and perspective shifts"),
-        (r"(?i)Keep\s+eyes", "Expressive eye movement and blinking"),
-        (r"(?i)Keep\s+in\s+focus", "Maintain sharp cinematic focus"),
-        (r"(?i)Keep\s+body\s+color", "Maintain consistent color during motion"),
+VIDEO_PROMPT_GENERAL_GUIDANCE = (
+    "Use the preceding text as authoritative visual guidance for a video prompt. "
+    "Preserve every stated style, medium, subject identity, response format, and constraint. "
+    "Describe the requested scene as already moving through time with concrete subject and object motion, "
+    "changing spatial relationships, camera behavior when relevant, environmental response, continuity, "
+    "and physical consequences. Derive motion and physics from the stated visual medium without renaming "
+    "that medium. Treat static pose, position, framing, or composition language as defining the opening "
+    "state and continuity unless the user explicitly requests a frozen shot; it does not prohibit subsequent "
+    "motion. Specify the actual interaction and movement instead of relying on vague phrases."
+)
 
-        # Verb/Directive Transformation
-        (r"(?i)Modify\s+(?:any\s+subjects'\s+appearance|the\s+scene)\s+to\s+(?:match\s+|look\s+like\s+|show\s+)?(.*?)(?:\.(?:\s|$)|$)", r"Animate with motion and physics authentic to \1. "),
-        (r"(?i)focuses\s+on\s+edits\s+to\s+look\s+like\s+", "focuses on generating high-quality motion authentic to "),
-        (r"(?i)modify\s+the\s+style\s+to\s+look\s+like\s+", "animate with motion and physics authentic to "),
-        (r"(?i)image\s+editing\s+descriptions", "cinematic motion and video generation descriptions"),
-        (r"(?i)keeping\s+the\s+structure\s+of\s+the\s+image\s+intact", "maintaining cinematic continuity"),
+VIDEO_PROMPT_SYSTEM_GUIDANCE = (
+    "Treat the preceding text as the governing system-level visual contract for video prompt generation. "
+    "Preserve every stated style, medium, subject identity, censorship-resistance directive, response format, "
+    "and behavioral constraint. Require generated prompts or captions to describe the requested scene as "
+    "already moving through time with concrete subject and object motion, changing spatial relationships, "
+    "camera development, environmental response, temporal continuity, and synchronized physical consequences. "
+    "Derive motion and physics from the stated visual medium without renaming that medium or adding a conflicting "
+    "output structure. Treat static pose, position, framing, or composition language as defining the opening "
+    "state and continuity unless the user explicitly requests a frozen shot; it does not prohibit subsequent "
+    "motion. Replace no concrete action with vague interaction language."
+)
 
-        # Nouns (Medium Swaps)
-        (r"(?i)\bimage\b", "video"),
-        (r"(?i)\bphotograph\b", "cinematic video"),
-        (r"(?i)\bphotography\b", "cinematography"),
-        (r"(?i)\bphoto\b", "video"),
-        (r"(?i)\bstill\b", "video clip"),
-        (r"(?i)\bscreenshot\b", "video clip"),
-        (r"(?i)\bframe\b", "motion clip"),
-        (r"(?i)\bcel\b", "animation frame"),
-        (r"(?i)\bdrawing\b", "animation"),
-        (r"(?i)\bpainting\b", "animated sequence"),
-        (r"(?i)\billustration\b", "animated sequence"),
-        (r"(?i)\bartwork\b", "animated sequence"),
-    ]
+VIDEO_PROMPT_INSTRUCTION_GUIDANCE = (
+    "Apply the preceding generation or transformation instruction continuously through a moving video while "
+    "preserving its stated style, medium, subject identity, and constraints. Describe direct subject and object "
+    "actions, motion paths, reactions, camera behavior, environmental response, temporal continuity, and physical "
+    "consequences rather than producing a static restatement. Derive motion and physics from the stated visual "
+    "medium without renaming that medium. Treat static pose, position, framing, or composition language as "
+    "defining the opening state and continuity unless the user explicitly requests a frozen shot; it does not "
+    "prohibit subsequent motion."
+)
+
+VIDEO_PROMPT_BONUS_GUIDANCE = (
+    "Preserve the preceding supplemental style, medium, identity, and formatting guidance throughout concrete "
+    "subject, object, camera, and environmental motion without overriding the primary request or system "
+    "instruction. Derive motion and physics from the stated visual medium without renaming it. Treat static pose, "
+    "position, framing, or composition language as defining the opening state and continuity unless a frozen "
+    "shot is explicitly requested; it does not prohibit subsequent motion."
+)
+
+_VIDEO_PROMPT_GUIDANCE_BY_ROLE = {
+    "general": VIDEO_PROMPT_GENERAL_GUIDANCE,
+    "system": VIDEO_PROMPT_SYSTEM_GUIDANCE,
+    "instruction": VIDEO_PROMPT_INSTRUCTION_GUIDANCE,
+    "bonus": VIDEO_PROMPT_BONUS_GUIDANCE,
+}
 
 
-    result = text
-    for pattern, replacement in replacements:
-        result = re.sub(pattern, replacement, result)
-
-    # Cleanup extra whitespace and broken punctuation
-    result = re.sub(r"\s+", " ", result)
-    result = re.sub(r"\.\s*\.", ".", result)
-    result = result.strip()
-
-    if is_system:
-        prefix = "Analyze cinematic information and dynamic potential. Describe action as if already in motion, focusing on large motions and style-appropriate physics. "
-        result = prefix + result
-
-    return result
+def to_video_prompt(text: str, role: str = "general") -> str:
+    """Append role-aware video guidance without altering the source text."""
+    if not text or not text.strip():
+        return ""
+    if role not in VIDEO_PROMPT_ROLES:
+        raise ValueError(f"Unsupported video prompt role: {role!r}")
+    return text + "\n\n" + _VIDEO_PROMPT_GUIDANCE_BY_ROLE[role]
 
 def join_words_in_text(text: str) -> str:
     if not text:

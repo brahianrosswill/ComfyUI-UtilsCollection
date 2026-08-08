@@ -882,27 +882,46 @@ def test_advanced_minimax_h3_none_keeps_frame_pictures_without_vae_keyframes():
     assert "minimax_frame_count" not in metadata
 
 
-def test_advanced_minimax_h3_reference_none_defaults_to_match():
+def test_advanced_minimax_h3_reference_none_is_ordered_vlm_only():
     clip = _MiniMaxH3TestClip()
     vae = _RecordingMiniMaxVAE()
-    reference = torch.full((1, 32, 64, 3), 0.25)
+    first = torch.full((1, 32, 64, 3), 0.25)
+    second = torch.full((1, 32, 64, 3), 0.5)
+    third = torch.full((1, 64, 32, 3), 0.75)
 
     conditioning, _latent = UC_AdvancedMiniMaxH3ImageToVideo.execute(
         clip,
         vae,
         prompt="subject",
         ref_image_size="none",
+        vlm_resolution=256,
         width=64,
         height=32,
         length=5,
-        reference_images={"reference_image_1": reference},
+        reference_images={
+            "reference_image_1": torch.cat([first, second], dim=0),
+            "reference_image_2": third,
+        },
     ).args
 
-    assert [image.shape[1:3] for image in vae.images] == [(32, 64)]
-    assert [float(image.mean()) for image in vae.images] == pytest.approx(
-        [0.25], abs=0.004
+    native_call = clip.tokenize_calls[-1]
+    assert native_call["images"] is None
+    assert native_call["minimax_ref_items"] is not None
+    assert len(native_call["minimax_ref_items"]) == 3
+    qwen_images = [item["data"] for item in native_call["minimax_ref_items"]]
+    assert [float(image.mean()) for image in qwen_images] == pytest.approx(
+        [0.25, 0.5, 0.75], abs=0.004
     )
-    assert len(conditioning[0][1]["minimax_refs"]) == 1
+    assert [image.shape[1:3] for image in qwen_images] == [
+        encoder_helpers.vlm_target_dimensions(32, 64, 256),
+        encoder_helpers.vlm_target_dimensions(32, 64, 256),
+        encoder_helpers.vlm_target_dimensions(64, 32, 256),
+    ]
+    assert vae.images == []
+    metadata = conditioning[0][1]
+    assert "minimax_refs" not in metadata
+    assert "minimax_keyframes" not in metadata
+    assert "minimax_frame_count" not in metadata
 
 
 def test_advanced_minimax_h3_vlm_resolution_is_independent_for_every_role():

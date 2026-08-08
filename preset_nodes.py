@@ -203,7 +203,11 @@ class UC_SystemMessageVideoPresets(io.ComfyNode):
     def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         system_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(escape_prompt_parentheses(to_video_prompt(system_prompt, is_system=True), escape_parentheses))
+        return io.NodeOutput(
+            escape_prompt_parentheses(
+                to_video_prompt(system_prompt, role="system"), escape_parentheses
+            )
+        )
 
 
 class UC_InstructPromptVideoPresets(io.ComfyNode):
@@ -236,7 +240,12 @@ class UC_InstructPromptVideoPresets(io.ComfyNode):
     def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         instruct_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(escape_prompt_parentheses(to_video_prompt(instruct_prompt), escape_parentheses))
+        return io.NodeOutput(
+            escape_prompt_parentheses(
+                to_video_prompt(instruct_prompt, role="instruction"),
+                escape_parentheses,
+            )
+        )
 
 
 class UC_BonusPromptVideoPresets(io.ComfyNode):
@@ -269,7 +278,11 @@ class UC_BonusPromptVideoPresets(io.ComfyNode):
     def execute(cls, preset, escape_parentheses=False) -> io.NodeOutput:
         presets_dict = cls.get_presets()
         bonus_prompt = presets_dict.get(preset, "")
-        return io.NodeOutput(escape_prompt_parentheses(to_video_prompt(bonus_prompt), escape_parentheses))
+        return io.NodeOutput(
+            escape_prompt_parentheses(
+                to_video_prompt(bonus_prompt, role="bonus"), escape_parentheses
+            )
+        )
 
 
 class UC_EditTargetPresets(io.ComfyNode):
