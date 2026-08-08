@@ -4,7 +4,6 @@ from .encoder_nodes import *
 from .image_nodes import *
 from .preset_nodes import *
 from .vlm_nodes import *
-from .qwen_vlm_nodes import *
 from .minimax_h3_vlm_nodes import *
 from .parameter_nodes import *
 from .utils_nodes import *
@@ -85,8 +84,6 @@ class SamplingUtils(ComfyExtension):
             UC_VLMSysInstrPresets,
             UC_VLMSysQueryAddPresets,
             UC_VLMSysInstrAdvPresets,
-            UC_QwenVLMSysInstrPresets,
-            UC_QwenVLMSysInstrAdvPresets,
             UC_MiniMaxH3VLMSysInstrPresets,
             UC_MiniMaxH3VLMSysInstrAdvPresets,
             UC_LegacyPromptPresets,
