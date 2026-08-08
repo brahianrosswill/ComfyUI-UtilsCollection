@@ -22,11 +22,13 @@ def test_text_concatenate_autogrow_schema_uses_wildcard_links():
     assert schema.category == "advanced/text"
     assert inputs["delimiter"].get_io_type() == "*"
     assert inputs["delimiter"].optional is True
+    assert text_inputs.optional is True
     assert text_inputs.template.input.get_io_type() == "*"
+    assert text_inputs.template.input.optional is True
     assert text_inputs.template.names == [
         f"text_{index}" for index in range(1, 101)
     ]
-    assert text_inputs.template.min == 2
+    assert text_inputs.template.min == 0
     assert schema.outputs[0].get_io_type() == "STRING"
     assert schema.outputs[0].display_name == "concatenated_text"
 
@@ -77,3 +79,20 @@ def test_text_concatenate_autogrow_uses_empty_delimiter_when_disconnected():
     )
 
     assert output.args == ("alphabeta",)
+
+
+def test_text_concatenate_autogrow_accepts_no_inputs():
+    output = text_nodes.UC_TextConcatenateAutogrow.execute()
+
+    assert output.args == ("",)
+
+
+def test_newline_node_has_no_inputs_and_outputs_one_newline():
+    schema = text_nodes.UC_Newline.define_schema()
+
+    assert schema.node_id == "UC_Newline"
+    assert schema.display_name == r"\n"
+    assert schema.inputs == []
+    assert schema.outputs[0].get_io_type() == "STRING"
+    assert schema.outputs[0].display_name == r"\n"
+    assert text_nodes.UC_Newline.execute().args == ("\n",)

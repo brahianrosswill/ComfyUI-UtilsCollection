@@ -93,12 +93,14 @@ DESCRIPTIONS = {
     "UC_JSONMinifyRepair": "Repairs common JSON formatting issues and returns compact JSON text.",
     "UC_StringUnescape": "Converts escaped character sequences into their literal string values.",
     "UC_TextConcatenateAutogrow": "Converts ordered wildcard inputs to text and joins them with a connected delimiter.",
+    "UC_Newline": "Outputs one newline character.",
     "Ideogram4SchedulerPreset": "Provides scheduler and sampling parameters tuned for Ideogram 4 workflows.",
 }
 
 
 EXTRA_ALIASES = {
     "UC_TextConcatenateAutogrow": ["concatenate", "text concat", "join text", "merge text", "combine strings", "autogrow"],
+    "UC_Newline": ["newline", "new line", "line break", r"\n"],
     "UC_StaticInt": ["primitive integer", "number", "shared integer", "constant int"],
     "UC_StaticFloat": ["primitive float", "number", "decimal", "megapixel", "shared value", "constant float"],
     "UC_GetJsonValue": ["json", "value", "random value", "key value", "configuration"],
