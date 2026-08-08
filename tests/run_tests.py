@@ -38,8 +38,8 @@ class Selection:
     unmapped: set[str] = field(default_factory=set)
 
 
-def load_groups(path: Path = MANIFEST_PATH) -> dict[str, TestGroup]:
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+def _parse_groups(text: str) -> dict[str, TestGroup]:
+    data = tomllib.loads(text)
     groups = {}
     for name, values in data.get("groups", {}).items():
         groups[name] = TestGroup(
@@ -49,6 +49,22 @@ def load_groups(path: Path = MANIFEST_PATH) -> dict[str, TestGroup]:
             frontend_tests=tuple(values.get("frontend_tests", ())),
         )
     return groups
+
+
+def load_groups(path: Path = MANIFEST_PATH) -> dict[str, TestGroup]:
+    return _parse_groups(path.read_text(encoding="utf-8"))
+
+
+def load_groups_from_revision(revision: str) -> dict[str, TestGroup]:
+    manifest = MANIFEST_PATH.relative_to(REPOSITORY_ROOT).as_posix()
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{manifest}"],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return _parse_groups(result.stdout) if result.returncode == 0 else {}
 
 
 def git_lines(*args: str) -> set[str]:
@@ -84,8 +100,28 @@ def _add_group(selection: Selection, group: TestGroup, reason: str) -> None:
     selection.reasons.setdefault(group.name, set()).add(reason)
 
 
+def _path_matches_group(path: str, group: TestGroup) -> bool:
+    return any(fnmatch.fnmatchcase(path, pattern) for pattern in group.paths)
+
+
+def _existing_group(group: TestGroup) -> TestGroup:
+    return TestGroup(
+        name=group.name,
+        paths=group.paths,
+        python_tests=tuple(
+            path for path in group.python_tests if (REPOSITORY_ROOT / path).is_file()
+        ),
+        frontend_tests=tuple(
+            path for path in group.frontend_tests if (REPOSITORY_ROOT / path).is_file()
+        ),
+    )
+
+
 def select_tests(
-    paths: set[str], groups: dict[str, TestGroup], explicit_groups: tuple[str, ...] = ()
+    paths: set[str],
+    groups: dict[str, TestGroup],
+    explicit_groups: tuple[str, ...] = (),
+    historical_groups: tuple[dict[str, TestGroup], ...] = (),
 ) -> Selection:
     selection = Selection()
     for name in explicit_groups:
@@ -95,7 +131,9 @@ def select_tests(
 
     for raw_path in sorted(paths):
         path = raw_path.replace("\\", "/")
-        if path.startswith("tests/test_"):
+        if path.startswith("tests/test_") and path.endswith((".py", ".mjs")):
+            if not (REPOSITORY_ROOT / path).is_file():
+                continue
             if path.endswith(".py"):
                 selection.python_tests.add(path)
             elif path.endswith(".mjs"):
@@ -105,24 +143,31 @@ def select_tests(
 
         matched = False
         for group in groups.values():
-            if any(fnmatch.fnmatchcase(path, pattern) for pattern in group.paths):
+            if _path_matches_group(path, group):
                 _add_group(selection, group, path)
                 matched = True
-        if not matched and is_production_source(path):
+        if not matched and not (REPOSITORY_ROOT / path).exists():
+            for historical in historical_groups:
+                for historical_group in historical.values():
+                    if not _path_matches_group(path, historical_group):
+                        continue
+                    active_group = groups.get(historical_group.name)
+                    _add_group(
+                        selection,
+                        active_group or _existing_group(historical_group),
+                        f"{path} (deleted)",
+                    )
+                    matched = True
+        if not matched and is_production_source(path) and (REPOSITORY_ROOT / path).exists():
             selection.unmapped.add(path)
     return selection
 
 
-def tracked_final_tests(
-    groups: dict[str, TestGroup] | None = None,
-) -> tuple[set[str], set[str]]:
+def tracked_final_tests() -> tuple[set[str], set[str]]:
     tracked = git_lines("ls-files", "tests/test_*.py", "tests/test_*.mjs")
-    configured = groups or load_groups()
-    python_tests = {path for path in tracked if path.endswith(".py")}
-    frontend_tests = {path for path in tracked if path.endswith(".mjs")}
-    for group in configured.values():
-        python_tests.update(group.python_tests)
-        frontend_tests.update(group.frontend_tests)
+    existing = {path for path in tracked if (REPOSITORY_ROOT / path).is_file()}
+    python_tests = {path for path in existing if path.endswith(".py")}
+    frontend_tests = {path for path in existing if path.endswith(".mjs")}
     return (
         python_tests,
         frontend_tests,
@@ -207,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.final:
-        python_tests, frontend_tests = tracked_final_tests(groups)
+        python_tests, frontend_tests = tracked_final_tests()
         selection = Selection(
             groups={"final"},
             python_tests=python_tests,
@@ -216,7 +261,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         paths = changed_paths(args.base) if args.changed or args.base or not args.group else set()
-        selection = select_tests(paths, groups, tuple(args.group))
+        historical_groups = ()
+        if paths:
+            revisions = ["HEAD"]
+            if args.base:
+                revisions.append(args.base)
+            historical_groups = tuple(load_groups_from_revision(revision) for revision in revisions)
+        selection = select_tests(paths, groups, tuple(args.group), historical_groups)
 
     if selection.unmapped:
         print("Unmapped production source files:", file=sys.stderr)

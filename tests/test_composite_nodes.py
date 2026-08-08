@@ -2662,6 +2662,16 @@ def test_purpose_specific_background_node_schemas():
     individual_schema = composite_nodes.UC_StagedIndividualComposites.define_schema()
 
     assert alpha_schema.display_name == "Background Removal (Preserve Alpha)"
+    assert [value.id for value in alpha_schema.inputs] == [
+        "background_removal_model",
+        "image",
+        "background_removal_model_name",
+        "background_options",
+    ]
+    background_options = alpha_schema.inputs[-1]
+    assert background_options.io_type == "UC_STAGED_LAYERED_BACKGROUND_OPTIONS"
+    assert background_options.optional is True
+    assert background_options.display_name == "Background Options"
     assert individual_schema.display_name == "Staged Individual Composites"
     assert [output.io_type for output in alpha_schema.outputs] == ["IMAGE", "MASK"]
     assert [output.io_type for output in individual_schema.outputs] == [
@@ -2689,10 +2699,89 @@ def test_background_removal_preserve_alpha_uses_soft_model_mask():
 def test_background_removal_preserve_alpha_bypasses_model_for_rgba():
     image = torch.rand(2, 5, 7, 4)
 
-    rgba, alpha = composite_helpers.background_removal_with_alpha(image, None)
+    rgba, alpha = composite_helpers.background_removal_with_alpha(
+        image,
+        None,
+        {
+            "mask_threshold": 0.9,
+            "border_cleanup_width": 12,
+            "artifact_cleanup_radius": 12,
+            "gap_fill_radius": 12,
+            "mask_processing_resolution": 4,
+            "feather_radius": 12,
+        },
+    )
 
     assert torch.equal(rgba, image)
     assert torch.equal(alpha, image[..., 3])
+
+
+def test_background_removal_options_control_processing_and_refinement(monkeypatch):
+    image = torch.rand(1, 8, 12, 3)
+    captured = {}
+
+    class Model:
+        image_size = 4
+
+        def encode_image(self, value):
+            captured["input_shape"] = tuple(value.shape)
+            mask = value.new_zeros((1, value.shape[1], value.shape[2]))
+            mask[:, 1:3, 2:4] = 0.75
+            return mask
+
+    original_refine = composite_helpers._refine_foreground_mask
+
+    def capture_refine(mask, threshold, border, artifact, gap):
+        captured["refine"] = (threshold, border, artifact, gap)
+        return original_refine(mask, threshold, border, artifact, gap)
+
+    monkeypatch.setattr(
+        composite_helpers, "_refine_foreground_mask", capture_refine
+    )
+
+    rgba, alpha = composite_helpers.background_removal_with_alpha(
+        image,
+        Model(),
+        {
+            "mask_threshold": 0.7,
+            "border_cleanup_width": 0,
+            "artifact_cleanup_radius": 0,
+            "gap_fill_radius": 0,
+            "mask_processing_resolution": 6,
+            "feather_radius": 0,
+            "mask_resize_method": "nearest-exact",
+        },
+    )
+
+    assert captured["input_shape"] == (1, 4, 6, 3)
+    assert captured["refine"] == (0.7, 0, 0, 0)
+    assert rgba.shape == (1, 8, 12, 4)
+    assert alpha.shape == (1, 8, 12)
+    assert torch.equal(rgba[..., :3], image)
+    assert set(alpha.unique().tolist()) <= {0.0, 1.0}
+
+
+def test_background_removal_options_apply_inward_feather():
+    image = torch.rand(1, 9, 9, 3)
+    raw_mask = torch.zeros(1, 9, 9)
+    raw_mask[:, 2:7, 2:7] = 1.0
+
+    _, alpha = composite_helpers.background_removal_with_alpha(
+        image,
+        _QueuedBackgroundModel([raw_mask]),
+        {
+            "mask_threshold": 0.5,
+            "border_cleanup_width": 0,
+            "artifact_cleanup_radius": 0,
+            "gap_fill_radius": 0,
+            "mask_processing_resolution": 0,
+            "feather_radius": 2,
+            "mask_resize_method": "auto",
+        },
+    )
+
+    assert torch.any((alpha > 0) & (alpha < 1))
+    assert torch.all(alpha <= raw_mask)
 
 
 def test_existing_staged_nodes_keep_original_four_outputs():

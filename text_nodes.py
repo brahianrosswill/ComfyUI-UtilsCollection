@@ -168,9 +168,9 @@ class UC_TextConcatenateAutogrow(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         text_template = io.Autogrow.TemplateNames(
-            io.AnyType.Input("text"),
+            io.AnyType.Input("text", optional=True),
             names=[f"text_{index}" for index in range(1, 101)],
-            min=2,
+            min=0,
         )
         return io.Schema(
             node_id="UC_TextConcatenateAutogrow",
@@ -185,6 +185,7 @@ class UC_TextConcatenateAutogrow(io.ComfyNode):
                 io.Autogrow.Input(
                     "text_inputs",
                     template=text_template,
+                    optional=True,
                     tooltip="Ordered values converted to text and joined with the delimiter.",
                 ),
             ],
@@ -196,9 +197,10 @@ class UC_TextConcatenateAutogrow(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        text_inputs: io.Autogrow.Type,
+        text_inputs: io.Autogrow.Type | None = None,
         delimiter="",
     ) -> io.NodeOutput:
+        text_inputs = text_inputs or {}
         ordered_values = [
             value
             for _, value in sorted(
@@ -207,4 +209,20 @@ class UC_TextConcatenateAutogrow(io.ComfyNode):
             )
         ]
         return io.NodeOutput(str(delimiter).join(str(value) for value in ordered_values))
+
+
+class UC_Newline(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_Newline",
+            display_name=r"\n",
+            category="advanced/text",
+            inputs=[],
+            outputs=[io.String.Output(display_name=r"\n")],
+        )
+
+    @classmethod
+    def execute(cls) -> io.NodeOutput:
+        return io.NodeOutput("\n")
 

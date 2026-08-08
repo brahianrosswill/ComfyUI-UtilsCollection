@@ -12,6 +12,7 @@ from .composite_helpers import (
     _DEFAULT_LAYER_PLACEMENT,
     _DEFAULT_LAYER_PLACEMENT_V2,
     _RESIZE_METHODS,
+    _STAGED_BACKGROUND_OPTION_DEFAULTS,
     _blur_mask,
     _broadcast_batch,
     _crop_bounds,
@@ -340,6 +341,17 @@ class UC_BackgroundRemovalPreserveAlpha(io.ComfyNode):
                         "Internal model used when background_removal_model_opt is disconnected."
                     ),
                 ),
+                StagedBackgroundOptionsType.Input(
+                    "background_options",
+                    display_name="Background Options",
+                    optional=True,
+                    tooltip=(
+                        "Optional staged-compositor mask settings. Applies threshold, "
+                        "processing resolution, border cleanup, artifact cleanup, gap "
+                        "fill, feather, and mask resizing. RGBA inputs still preserve "
+                        "their embedded alpha exactly."
+                    ),
+                ),
             ],
             outputs=[
                 io.Image.Output("image", display_name="RGBA Image"),
@@ -366,6 +378,7 @@ class UC_BackgroundRemovalPreserveAlpha(io.ComfyNode):
         image,
         background_removal_model_name="birefnet",
         background_removal_model=None,
+        background_options=None,
     ):
         if not torch.is_tensor(image) or image.ndim != 4:
             raise ValueError("Background Removal (Preserve Alpha) requires a batched IMAGE.")
@@ -376,7 +389,9 @@ class UC_BackgroundRemovalPreserveAlpha(io.ComfyNode):
                 )
             )
         return io.NodeOutput(
-            *background_removal_with_alpha(image, background_removal_model)
+            *background_removal_with_alpha(
+                image, background_removal_model, background_options
+            )
         )
 
 
@@ -679,17 +694,7 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
 
 
 class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
-    DEFAULTS = {
-        "mask_threshold": 0.5,
-        "border_cleanup_width": 2,
-        "artifact_cleanup_radius": 2,
-        "gap_fill_radius": 2,
-        "mask_processing_resolution": 0,
-        "feather_radius": 2,
-        "image_resize_method": "auto",
-        "mask_resize_method": "auto",
-        "foreground_blend": 1.0,
-    }
+    DEFAULTS = _STAGED_BACKGROUND_OPTION_DEFAULTS
 
     @classmethod
     def define_schema(cls):

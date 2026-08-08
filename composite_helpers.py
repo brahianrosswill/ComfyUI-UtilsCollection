@@ -15,6 +15,18 @@ _RESIZE_METHODS = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
 
 _COMPOSITE_RESIZE_METHODS = ["auto", *_RESIZE_METHODS]
 
+_STAGED_BACKGROUND_OPTION_DEFAULTS = {
+    "mask_threshold": 0.5,
+    "border_cleanup_width": 2,
+    "artifact_cleanup_radius": 2,
+    "gap_fill_radius": 2,
+    "mask_processing_resolution": 0,
+    "feather_radius": 2,
+    "image_resize_method": "auto",
+    "mask_resize_method": "auto",
+    "foreground_blend": 1.0,
+}
+
 _PAINT_LAYER_KEY = "__uc_paint__"
 
 _DEFAULT_LAYER_PLACEMENT = {
@@ -84,7 +96,7 @@ def resolve_background_removal_model(model=None):
     return model if model is not None else _load_internal_background_removal_model("birefnet")
 
 
-def background_removal_with_alpha(image, model):
+def background_removal_with_alpha(image, model, background_options=None):
     """Return source-resolution straight RGBA and its exact alpha mask."""
     if not torch.is_tensor(image) or image.ndim != 4:
         raise ValueError("Background Removal (Preserve Alpha) requires a batched IMAGE.")
@@ -94,7 +106,31 @@ def background_removal_with_alpha(image, model):
     if image.shape[-1] >= 4:
         alpha = image[..., 3].to(rgb).clamp(0.0, 1.0)
     else:
-        raw_mask = model.encode_image(rgb)
+        if model is None:
+            raise ValueError("RGB background removal requires a removal model.")
+        if background_options is not None and not isinstance(background_options, dict):
+            raise ValueError("Background Options must be a dictionary.")
+        options = (
+            None
+            if background_options is None
+            else _STAGED_BACKGROUND_OPTION_DEFAULTS | background_options
+        )
+        mask_input = rgb
+        if options is not None:
+            requested_size = max(0, int(options["mask_processing_resolution"]))
+            model_size = int(getattr(model, "image_size", 0) or 0)
+            processing_size = requested_size or model_size
+            source_height, source_width = rgb.shape[1:3]
+            if processing_size > 0 and max(source_height, source_width) > processing_size:
+                scale = processing_size / max(source_height, source_width)
+                mask_input = _resize_composite_image(
+                    rgb,
+                    max(1, round(source_width * scale)),
+                    max(1, round(source_height * scale)),
+                    "auto",
+                )
+
+        raw_mask = model.encode_image(mask_input)
         if not torch.is_tensor(raw_mask):
             raise ValueError("Background removal returned an invalid mask.")
         if raw_mask.ndim == 4 and raw_mask.shape[1] == 1:
@@ -105,11 +141,41 @@ def background_removal_with_alpha(image, model):
             raise ValueError(
                 "Background removal must return one [batch, height, width] mask per image."
             )
-        if raw_mask.shape[-2:] != rgb.shape[1:3]:
-            raw_mask = _resize_mask(
-                raw_mask, rgb.shape[2], rgb.shape[1], "bilinear"
+        if raw_mask.shape[-2:] != mask_input.shape[1:3]:
+            raw_mask = _resize_composite_mask(
+                raw_mask,
+                mask_input.shape[2],
+                mask_input.shape[1],
+                "bilinear" if options is None else options["mask_resize_method"],
             )
-        alpha = raw_mask.to(rgb).clamp(0.0, 1.0)
+        raw_mask = raw_mask.to(rgb).clamp(0.0, 1.0)
+        if options is None:
+            alpha = raw_mask
+        else:
+            alpha = torch.stack(
+                [
+                    _refine_foreground_mask(
+                        mask,
+                        float(options["mask_threshold"]),
+                        options["border_cleanup_width"],
+                        options["artifact_cleanup_radius"],
+                        options["gap_fill_radius"],
+                    )
+                    for mask in raw_mask
+                ]
+            )
+            if alpha.shape[-2:] != rgb.shape[1:3]:
+                alpha = _resize_composite_mask(
+                    alpha,
+                    rgb.shape[2],
+                    rgb.shape[1],
+                    options["mask_resize_method"],
+                )
+            feather_radius = max(0, int(options["feather_radius"]))
+            if feather_radius:
+                alpha = torch.stack(
+                    [_feather_mask(mask, -feather_radius) for mask in alpha]
+                )
     return torch.cat((rgb, alpha.unsqueeze(-1)), dim=-1), alpha
 
 

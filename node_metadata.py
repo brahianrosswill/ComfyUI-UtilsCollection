@@ -47,8 +47,6 @@ DESCRIPTIONS = {
     "UC_VLMSysInstrPresets": "Provides system instruction presets for vision-language models.",
     "UC_VLMSysQueryAddPresets": "Provides supplemental query presets for vision-language models.",
     "UC_VLMSysInstrAdvPresets": "Provides advanced system instruction presets for vision-language models.",
-    "UC_QwenVLMSysInstrPresets": "Provides compact system instruction presets for smaller Qwen vision-language models.",
-    "UC_QwenVLMSysInstrAdvPresets": "Provides compact Qwen system instructions with explicit user and system overrides.",
     "UC_MiniMaxH3VLMSysInstrPresets": "Provides dedicated Base, First/Last Frame, and Reference VLM instructions for MiniMax H3.",
     "UC_MiniMaxH3VLMSysInstrAdvPresets": "Provides MiniMax H3 VLM instructions with explicit user and system overrides.",
     "UC_AttentionBiasTextEncode": "Encodes text while applying token-level attention bias controls.",
@@ -95,12 +93,14 @@ DESCRIPTIONS = {
     "UC_JSONMinifyRepair": "Repairs common JSON formatting issues and returns compact JSON text.",
     "UC_StringUnescape": "Converts escaped character sequences into their literal string values.",
     "UC_TextConcatenateAutogrow": "Converts ordered wildcard inputs to text and joins them with a connected delimiter.",
+    "UC_Newline": "Outputs one newline character.",
     "Ideogram4SchedulerPreset": "Provides scheduler and sampling parameters tuned for Ideogram 4 workflows.",
 }
 
 
 EXTRA_ALIASES = {
     "UC_TextConcatenateAutogrow": ["concatenate", "text concat", "join text", "merge text", "combine strings", "autogrow"],
+    "UC_Newline": ["newline", "new line", "line break", r"\n"],
     "UC_StaticInt": ["primitive integer", "number", "shared integer", "constant int"],
     "UC_StaticFloat": ["primitive float", "number", "decimal", "megapixel", "shared value", "constant float"],
     "UC_GetJsonValue": ["json", "value", "random value", "key value", "configuration"],

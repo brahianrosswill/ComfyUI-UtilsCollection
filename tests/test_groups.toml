@@ -1,11 +1,10 @@
 [groups.encoder]
-paths = ["encoder_helpers.py", "encoder_nodes.py", "vlm_nodes.py", "vlm_presets.py", "qwen_vlm_nodes.py", "qwen_vlm_presets.py", "minimax_h3_vlm_nodes.py", "minimax_h3_vlm_presets.py"]
+paths = ["encoder_helpers.py", "encoder_nodes.py", "vlm_nodes.py", "vlm_presets.py", "minimax_h3_vlm_nodes.py", "minimax_h3_vlm_presets.py"]
 python_tests = [
   "tests/test_advanced_visual_consensus.py",
   "tests/test_encoder_correctness.py",
   "tests/test_visual_fusion.py",
   "tests/test_vlm_presets.py",
-  "tests/test_qwen_vlm_presets.py",
   "tests/test_minimax_h3_vlm_presets.py",
 ]
 frontend_tests = []
@@ -143,6 +142,11 @@ frontend_tests = [
 paths = ["web/background_model_selection.js"]
 python_tests = []
 frontend_tests = ["tests/test_background_model_selection.mjs"]
+
+[groups.load_image_alpha_frontend]
+paths = ["web/load_image_alpha.js", "web/load_image_alpha_extension.js"]
+python_tests = []
+frontend_tests = ["tests/test_load_image_alpha.mjs"]
 
 [groups.markdown_frontend]
 paths = ["web/markdown_preview.js"]
