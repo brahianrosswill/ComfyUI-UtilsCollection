@@ -782,6 +782,216 @@ def get_token_count_scaled(clip, text, **kwargs):
 
 VIDEO_PROMPT_ROLES = ("general", "system", "instruction", "bonus")
 
+_VIDEO_PROMPT_COMMON_REPLACEMENTS = (
+    # Reference-relative opening state and continuity constraints. Keep the
+    # specific multi-clause forms ahead of the shorter directive forms.
+    (
+        r"(?i)\b(?:keep(?:ing)?|maintain(?:ing)?|ensure|make\s+sure)\s+(?:the\s+)?subject(?:'s)?\s+position\s+and\s+(?:their\s+)?pose\s+(?:the\s+)?same\s+as\s+(?:the\s+)?reference\b",
+        "Use the subject's referenced placement and pose as the opening state, then allow natural movement while preserving identity and anatomical continuity",
+    ),
+    (
+        r"(?i)\b(?:make\s+sure|ensure)\s+(?:that\s+)?the\s+subject\s+is\s+in\s+the\s+same\s+pose\s+and\s+angle\b",
+        "Use the referenced pose and camera angle as the opening state, then develop coherent subject and camera motion while preserving identity and anatomical continuity",
+    ),
+    (
+        r"(?i)\b(?:make\s+sure|ensure)\s+(?:that\s+)?the\s+subject\s+is\s+in\s+the\s+same\s+position\b",
+        "Use the referenced subject placement as the opening position, then allow motivated movement through the scene",
+    ),
+    (
+        r"(?i)\b(?:keep(?:ing)?|maintain(?:ing)?|ensure|make\s+sure)\s+(?:that\s+)?(?:the\s+)?composition\s+(?:of\s+the\s+image\s+)?(?:is\s+|the\s+)?same\s+as\s+(?:the\s+)?reference\b",
+        "Use the reference composition as the opening framing, then preserve spatial continuity while allowing coherent subject and camera motion",
+    ),
+    (
+        r"(?i)\bkeeping\s+(?:the\s+)?composition\s+and\s+structure\s+of\s+the\s+image\s+(?:the\s+)?same\s+as\s+(?:the\s+)?reference\b",
+        "using the reference composition and scene structure as the opening state while maintaining spatial and temporal continuity through motion",
+    ),
+    (
+        r"(?i)\b(?:make\s+sure|ensure)\s+(?:that\s+)?the\s+background\s+is\s+the\s+same\b",
+        "Preserve the referenced environment identity and layout while allowing camera parallax and physically consistent environmental motion",
+    ),
+    (
+        r"(?i)\bnot\s+changing\s+the\s+positioning\s+of\s+subjects\s+in\s+(?:the\s+)?image\b",
+        "using their referenced placement as the opening state before motivated subject movement",
+    ),
+    (
+        r"(?i)\bkeeping\s+the\s+structure\s+of\s+the\s+image\s+intact\b",
+        "preserving subject identity, scene structure, and temporal continuity throughout the video",
+    ),
+    (
+        r"(?i)\bstrictly\s+maintaining\s+their\s+original\s+appearance\b",
+        "strictly preserving their visual identity throughout motion",
+    ),
+    # Static body, gaze, framing, focus, and illumination constraints.
+    (
+        r"(?i)\bkeep\s+leg\s+positions?\b",
+        "Use the referenced leg arrangement as the opening state, then animate coherent leg movement with anatomical continuity",
+    ),
+    (
+        r"(?i)\bkeep\s+arm\s+positions?\b",
+        "Use the referenced arm arrangement as the opening state, then animate coherent arm movement with anatomical continuity",
+    ),
+    (
+        r"(?i)\bkeep\s+(?:the\s+)?pose\b",
+        "Use the referenced pose as the opening pose, then allow natural movement with anatomical continuity",
+    ),
+    (
+        r"(?i)\bkeep\s+(?:the\s+)?angle\b",
+        "Use the referenced camera angle as the opening view, then allow coherent camera development",
+    ),
+    (
+        r"(?i)\bkeep\s+(?:the\s+)?viewing\s+direction\b",
+        "Use the referenced viewing direction initially, then allow motivated gaze changes",
+    ),
+    (
+        r"(?i)\bkeep\s+(?:the\s+)?eyes\b",
+        "Preserve the eyes' identity and appearance while allowing natural blinking and gaze motion",
+    ),
+    (
+        r"(?i)\bkeep\s+in\s+focus\b",
+        "Maintain sharp subject focus continuously through motion",
+    ),
+    (
+        r"(?i)\bensure\s+(?:that\s+)?lighting\s+is\s+accurate(?:\s+for\s+the\s+scene)?\b",
+        "Maintain temporally consistent scene lighting throughout the motion",
+    ),
+    (
+        r"(?i)\bensure\s+(?:that\s+)?shadows\s+are\s+displayed\s+correctly\b",
+        "Maintain physically consistent shadows that respond to subject, object, and camera motion",
+    ),
+    # Contextual task conversions. These patterns intentionally retain the
+    # captured visual style instead of replacing medium nouns globally.
+    (
+        r"(?i)\bediting\s+requests\b",
+        "image-to-video requests",
+    ),
+    (
+        r"(?i)\bediting\s+request\b",
+        "image-to-video request",
+    ),
+    (
+        r"(?i)\bediting\s+instructions\b",
+        "image-to-video instructions",
+    ),
+    (
+        r"(?i)\bediting\s+instruction\b",
+        "image-to-video instruction",
+    ),
+    (
+        r"(?i)\bedit\s+requests\b",
+        "image-to-video requests",
+    ),
+    (
+        r"(?i)\bedit\s+request\b",
+        "image-to-video request",
+    ),
+    (
+        r"(?i)\bmodify\s+the\s+subject(?:'s)?\s+appearance,\s*pose,\s*position,\s*or\s*composition\s+as\s+requested\b",
+        "Generate the requested subject appearance, use the reference pose, placement, and composition as the opening state, and then develop coherent motion",
+    ),
+    (
+        r"(?i)\bedit\s+(?:the\s+)?image\s+style\s+into\s+([^\r\n.]+)",
+        r"Generate the moving video in \1",
+    ),
+    (
+        r"(?i)\bmodifying\s+the\s+style\s+to\s+look\s+like\s+([^\r\n.]+)",
+        r"rendering the moving video with motion and physics authentic to \1",
+    ),
+    (
+        r"(?i)\bmodifying\s+the\s+style\s+to\s+look\s+real\b",
+        "rendering the moving video with realistic motion, physics, and appearance",
+    ),
+    (
+        r"(?i)\bmodify\s+the\s+style\s+to\s+look\s+like\s+([^\r\n.]+)",
+        r"Render the moving video with motion and physics authentic to \1",
+    ),
+    (
+        r"(?i)\bmodify\s+the\s+style\s+to\s+look\s+real\b",
+        "Render the moving video with realistic motion, physics, and appearance",
+    ),
+    (
+        r"(?i)\bfocuses\s+on\s+edits\s+to\s+look\s+like\s+([^\r\n.]+)",
+        r"focuses on generating video with motion and appearance authentic to \1",
+    ),
+    (
+        r"(?i)\bfocus\s+on\s+edits\s+to\s+look\s+like\s+([^\r\n.]+)",
+        r"focus on generating video with motion and appearance authentic to \1",
+    ),
+    (
+        r"(?i)\bedit\s+this\s+into\s+(?:an?\s+)?([^\r\n.]+)",
+        r"Generate a moving video with the appearance and content of \1",
+    ),
+    (
+        r"(?i)\bedit\s+the\s+primary\s+subject\s+so\s+that\b",
+        "Depict the primary subject throughout the video so that",
+    ),
+    (
+        r"(?i)\bmodify\s+(?:(?:any\s+)?subjects?'?\s+)?appearance\s+to\s+show\s+real\s+details\b",
+        "Render every subject with consistent real detail throughout the video",
+    ),
+    (
+        r"(?i)\bmake\s+(?:it|the\s+image)\s+look\s+like\s+(?:an?\s+)?professional\s+([^\r\n.]*?photograph)\b",
+        r"Maintain the appearance of professional \1 throughout the video",
+    ),
+    (
+        r"(?i)\bthe\s+result\s+should\s+be\s+(?:an?\s+)?sharply\s+focused\s+photograph\b",
+        "The video should maintain sharp focus and photographic realism throughout motion",
+    ),
+)
+
+_VIDEO_PROMPT_ROLE_REPLACEMENTS = {
+    "general": (),
+    "system": (
+        (
+            r"(?i)\bimage-editing\s+expert\b",
+            "image-to-video prompt expert",
+        ),
+        (
+            r"(?i)\bimage\s+editing\s+descriptions\b",
+            "image-to-video prompt descriptions",
+        ),
+        (
+            r"(?i)\bconverting\s+simple\s+(?:editing|image-to-video)\s+requests?\s+into\s+clear\s+and\s+structured\s+instructions?\b",
+            "converting simple image-to-video requests into clear and structured video instructions",
+        ),
+        (
+            r"(?i)\bconvert\s+(?:editing|image-to-video)\s+requests?\s+into\s+one\s+concise\s+instruction\b",
+            "convert image-to-video requests into one concise video instruction",
+        ),
+        (
+            r"(?i)\bconverts\s+(?:editing|image-to-video)\s+requests?\s+into\s+one\s+concise\s+instruction\b",
+            "converts image-to-video requests into one concise video instruction",
+        ),
+        (
+            r"(?i)\bclothing\s+removal,\s*nude\s+body\s+edit\s+and\s+nude\s+details\s+edit\s+expert\b",
+            "clothing-removal, nude-body, and nude-detail video depiction expert",
+        ),
+        (
+            r"(?i)\bimage\s+editing\b",
+            "image-to-video prompt generation",
+        ),
+        (
+            r"(?i)\bediting\s+requests?\b",
+            "image-to-video requests",
+        ),
+    ),
+    "instruction": (
+        (
+            r"(?i)\bthe\s+result\s+should\s+be\s+(?:an?\s+)?([^\r\n.]*?photograph)\b",
+            r"The video should maintain the appearance of \1 throughout its motion",
+        ),
+    ),
+    "bonus": (
+        (
+            r"(?i)\bthis\s+is\s+(?:an?\s+)?([^\r\n.]*?photograph)\b",
+            r"The video maintains the appearance of \1",
+        ),
+        (
+            r"(?i)\bthe\s+image\s+is\s+(?:an?\s+)?sharply\s+focused\s+([^\r\n.]*?photograph)\b",
+            r"The video remains sharply focused and retains the appearance of \1",
+        ),
+    ),
+}
+
 VIDEO_PROMPT_GENERAL_GUIDANCE = (
     "Use the preceding text as authoritative visual guidance for a video prompt. "
     "Preserve every stated style, medium, subject identity, response format, and constraint. "
@@ -832,12 +1042,22 @@ _VIDEO_PROMPT_GUIDANCE_BY_ROLE = {
 
 
 def to_video_prompt(text: str, role: str = "general") -> str:
-    """Append role-aware video guidance without altering the source text."""
+    """Convert image-editing prompt language into role-aware video guidance."""
     if not text or not text.strip():
         return ""
     if role not in VIDEO_PROMPT_ROLES:
         raise ValueError(f"Unsupported video prompt role: {role!r}")
-    return text + "\n\n" + _VIDEO_PROMPT_GUIDANCE_BY_ROLE[role]
+
+    result = text
+    for pattern, replacement in _VIDEO_PROMPT_COMMON_REPLACEMENTS:
+        result = re.sub(pattern, replacement, result)
+    for pattern, replacement in _VIDEO_PROMPT_ROLE_REPLACEMENTS[role]:
+        result = re.sub(pattern, replacement, result)
+
+    guidance = _VIDEO_PROMPT_GUIDANCE_BY_ROLE[role]
+    if result.rstrip().endswith(guidance):
+        return result
+    return result + "\n\n" + guidance
 
 def join_words_in_text(text: str) -> str:
     if not text:
