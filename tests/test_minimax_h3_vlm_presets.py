@@ -169,6 +169,26 @@ def test_timeline_derived_h3_presets_keep_shared_picture_contract_boundaries():
         assert "Do not add a separate reference-analysis field" in instruction
 
 
+def test_timeline_derived_h3_presets_create_dialogue_and_limit_channel_load():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+
+    for name in TIMELINE_DERIVED_PRESETS:
+        instruction = presets[name]
+        assert "**Requested Dialogue Creation:**" in instruction
+        assert "`Add dialogue` or another direct user request" in instruction
+        assert "not as a request to detect speech already present" in instruction
+        assert "do not force dialogue into every block" in instruction
+        assert "**Foreground Priority and Segment Load:**" in instruction
+        assert "one primary foreground event" in instruction
+        assert "Never make dialogue or lyrics, loud music, dense effects, and heavy action compete" in instruction
+        assert "**Dialogue and Vocal Mixing:**" in instruction
+        assert "duck any music" in instruction
+        assert "**Pacing and Flow:**" in instruction
+        assert "quieter breathing room" in instruction
+        assert "only inside a timestamp block containing intelligible spoken dialogue" not in instruction
+        assert "synchronized effects intensify with the movement" not in instruction
+
+
 def test_timeline_fl2va_presets_enforce_first_and_optional_final_anchors():
     presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
 

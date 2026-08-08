@@ -117,6 +117,13 @@ H3_TIMELINE_PRESETS = (
     "video_timeline_minimax_h3_reference_system_instruction",
 )
 
+TIMELINE_CHANNEL_BALANCE_PRESETS = (
+    "video_timeline_system_instruction",
+    "video_timeline_system_instruction_crude",
+    "video_timeline_minimax_h3_base_system_instruction",
+    "video_timeline_minimax_h3_reference_system_instruction",
+)
+
 
 def test_structured_video_presets_are_independent_literal_values():
     source = ast.parse((CUSTOM_NODE_ROOT / "vlm_presets.py").read_text(encoding="utf-8"))
@@ -147,7 +154,7 @@ def test_structured_video_presets_share_audio_and_motion_contracts():
 
         assert "nonverbal creature noise" in instruction
         assert "belong under [SOUNDS], never [SPEECH]" in instruction
-        assert "omit the entire [SPEECH] line" in instruction
+        assert "omit the entire [speech] line" in instruction.lower()
         assert "Maintain concrete, descriptive visual-motion language throughout" in instruction
 
 
@@ -190,6 +197,26 @@ def test_timeline_video_preset_uses_adaptive_contiguous_ranges():
     assert "Every range touches the next without a gap or overlap" in instruction
     assert "final range ends at the exact total duration" in instruction
     assert "no `Part N:` headings" in instruction
+
+
+def test_timeline_presets_create_requested_dialogue_and_balance_channels():
+    for name in TIMELINE_CHANNEL_BALANCE_PRESETS:
+        instruction = vlm_presets.system_instructions_vlm[name]
+
+        assert "**Requested Dialogue Creation:**" in instruction
+        assert "`Add dialogue` or another direct user request" in instruction
+        assert "not as a request to detect speech already present" in instruction
+        assert "The user does not need to provide wording or timestamps" in instruction
+        assert "do not force dialogue into every block" in instruction
+        assert "**Foreground Priority and Segment Load:**" in instruction
+        assert "one primary foreground event" in instruction
+        assert "Never make dialogue or lyrics, loud music, dense effects, and heavy action compete" in instruction
+        assert "**Dialogue and Vocal Mixing:**" in instruction
+        assert "duck any music" in instruction
+        assert "**Pacing and Flow:**" in instruction
+        assert "quieter breathing room" in instruction
+        assert "only inside a timestamp block containing intelligible spoken dialogue" not in instruction
+        assert "synchronized effects intensify with the movement" not in instruction
 
 
 def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():
