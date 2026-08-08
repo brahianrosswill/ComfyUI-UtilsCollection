@@ -143,6 +143,11 @@ paths = ["web/background_model_selection.js"]
 python_tests = []
 frontend_tests = ["tests/test_background_model_selection.mjs"]
 
+[groups.load_image_alpha_frontend]
+paths = ["web/load_image_alpha.js", "web/load_image_alpha_extension.js"]
+python_tests = []
+frontend_tests = ["tests/test_load_image_alpha.mjs"]
+
 [groups.markdown_frontend]
 paths = ["web/markdown_preview.js"]
 python_tests = ["tests/test_markdown_preview.py"]

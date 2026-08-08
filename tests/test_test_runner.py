@@ -23,6 +23,19 @@ def test_manifest_maps_every_tracked_production_source():
     assert selection.unmapped == set()
 
 
+def test_manifest_tests_are_tracked_and_present():
+    groups = runner.load_groups()
+    tracked = runner.git_lines("ls-files", "tests/test_*.py", "tests/test_*.mjs")
+    configured = {
+        path
+        for group in groups.values()
+        for path in (*group.python_tests, *group.frontend_tests)
+    }
+
+    assert configured <= tracked
+    assert all((runner.REPOSITORY_ROOT / path).is_file() for path in configured)
+
+
 def test_changed_paths_select_only_dependent_groups_and_direct_tests():
     groups = runner.load_groups()
     selection = runner.select_tests(
@@ -43,6 +56,34 @@ def test_changed_paths_select_only_dependent_groups_and_direct_tests():
     assert selection.frontend_tests == set()
 
 
+def test_manifest_change_uses_test_selector_group():
+    selection = runner.select_tests({"tests/test_groups.toml"}, runner.load_groups())
+
+    assert selection.groups == {"test_selector"}
+    assert selection.python_tests == {"tests/test_test_runner.py"}
+
+
+def test_revision_manifest_is_loaded_from_requested_base(monkeypatch):
+    calls = []
+    manifest = """
+[groups.encoder]
+paths = ["deleted.py"]
+python_tests = ["tests/test_encoder.py"]
+frontend_tests = []
+"""
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0, stdout=manifest, stderr=""),
+    )
+
+    groups = runner.load_groups_from_revision("release-base")
+
+    assert calls[0][0] == ["git", "show", "release-base:tests/test_groups.toml"]
+    assert groups["encoder"].paths == ("deleted.py",)
+
+
 def test_frontend_source_selects_frontend_and_parity_coverage():
     selection = runner.select_tests(
         {"web/layered_background_editor.js"}, runner.load_groups()
@@ -54,10 +95,49 @@ def test_frontend_source_selects_frontend_and_parity_coverage():
     assert "tests/test_staged_editor_layout.mjs" in selection.frontend_tests
 
 
-def test_unknown_production_source_fails_closed():
+def test_unknown_production_source_fails_closed(monkeypatch, tmp_path):
+    (tmp_path / "new_domain.py").touch()
+    monkeypatch.setattr(runner, "REPOSITORY_ROOT", tmp_path)
     selection = runner.select_tests({"new_domain.py"}, runner.load_groups())
 
     assert selection.unmapped == {"new_domain.py"}
+
+
+def test_deleted_source_uses_historical_group_without_deleted_test(monkeypatch, tmp_path):
+    current_test = tmp_path / "tests" / "test_current.py"
+    current_test.parent.mkdir()
+    current_test.touch()
+    monkeypatch.setattr(runner, "REPOSITORY_ROOT", tmp_path)
+    current = {
+        "encoder": runner.TestGroup(
+            "encoder", ("encoder_nodes.py",), ("tests/test_current.py",), ()
+        )
+    }
+    historical = {
+        "encoder": runner.TestGroup(
+            "encoder",
+            ("encoder_nodes.py", "qwen_vlm_nodes.py"),
+            ("tests/test_current.py", "tests/test_deleted.py"),
+            (),
+        )
+    }
+
+    selection = runner.select_tests(
+        {"qwen_vlm_nodes.py"}, current, historical_groups=(historical,)
+    )
+
+    assert selection.groups == {"encoder"}
+    assert selection.python_tests == {"tests/test_current.py"}
+    assert selection.unmapped == set()
+
+
+def test_deleted_direct_test_is_not_selected(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "REPOSITORY_ROOT", tmp_path)
+
+    selection = runner.select_tests({"tests/test_deleted.py"}, {})
+
+    assert selection.python_tests == set()
+    assert selection.reasons == {}
 
 
 def test_explicit_group_and_unknown_group_behavior():
@@ -73,28 +153,26 @@ def test_explicit_group_and_unknown_group_behavior():
         runner.select_tests(set(), groups, ("missing",))
 
 
-def test_final_test_discovery_excludes_untracked_tests(monkeypatch):
+def test_final_test_discovery_excludes_deleted_tests(monkeypatch, tmp_path):
+    python_test = tmp_path / "tests" / "test_one.py"
+    frontend_test = tmp_path / "tests" / "test_two.mjs"
+    python_test.parent.mkdir()
+    python_test.touch()
+    frontend_test.touch()
+    monkeypatch.setattr(runner, "REPOSITORY_ROOT", tmp_path)
     monkeypatch.setattr(
         runner,
         "git_lines",
         lambda *args: {
             "tests/test_one.py",
             "tests/test_two.mjs",
+            "tests/test_deleted.py",
         },
     )
 
-    groups = {
-        "configured": runner.TestGroup(
-            "configured",
-            (),
-            ("tests/test_configured.py",),
-            ("tests/test_configured.mjs",),
-        )
-    }
-
-    assert runner.tracked_final_tests(groups) == (
-        {"tests/test_one.py", "tests/test_configured.py"},
-        {"tests/test_two.mjs", "tests/test_configured.mjs"},
+    assert runner.tracked_final_tests() == (
+        {"tests/test_one.py"},
+        {"tests/test_two.mjs"},
     )
 
 
