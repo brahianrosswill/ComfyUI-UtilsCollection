@@ -59,6 +59,7 @@ class SamplingUtils(ComfyExtension):
             UC_ImageBlendByMask,
             UC_ImagePad,
             UC_CropByMask,
+            UC_StagedLayerCrops,
             UC_ImageCropMerge,
             UC_ImageAndMaskResize,
             UC_ResizeMask,

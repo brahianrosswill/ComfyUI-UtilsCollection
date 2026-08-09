@@ -25,6 +25,7 @@ DESCRIPTIONS = {
     "UC_BackgroundRemovalPreserveAlpha": "Removes an image background while preserving source resolution and soft alpha.",
     "UC_UnifiedBackgroundReplace": "Removes backgrounds from multiple foreground images and centers them over one shared background.",
     "UC_StagedLayeredBackgroundComposite": "Places staged foreground cutouts over one background without rerunning background removal.",
+    "UC_StagedLayerCrops": "Crops selected staged compositor layers from the composed image as an ordered image list.",
     "UC_StagedIndividualComposites": "Interactively stages foregrounds and renders each one independently over the background.",
     "UC_ExtractImage": "Extracts one image by index from a native ComfyUI image list.",
     "UC_StagedLayeredBackgroundCompositeOptions": "Configures reusable staged background-compositing cleanup and resize settings.",

@@ -34,6 +34,7 @@ from .composite_helpers import (
     _save_editor_preview,
     _visible_placement_slices,
     background_removal_with_alpha,
+    crop_staged_layers_by_indices,
 )
 from .background_replace_helpers import (
     _expanded_box,
@@ -126,6 +127,42 @@ class UC_CropByMask(io.ComfyNode):
             y,
             width,
             height,
+        )
+
+
+class UC_StagedLayerCrops(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_StagedLayerCrops",
+            display_name="Crop Staged Layers by Index",
+            category="utils/image",
+            inputs=[
+                io.Image.Input("image", display_name="Composed Image"),
+                io.Mask.Input("layer_masks", display_name="Layer Masks"),
+                io.String.Input(
+                    "layer_indices",
+                    multiline=False,
+                    default="0",
+                    tooltip=(
+                        "Zero-based layer indices in output order, separated by "
+                        "commas or spaces. Crops use tight bounds with no padding."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Image.Output(
+                    "images",
+                    display_name="Images",
+                    is_output_list=True,
+                )
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image, layer_masks, layer_indices):
+        return io.NodeOutput(
+            crop_staged_layers_by_indices(image, layer_masks, layer_indices)
         )
 
 

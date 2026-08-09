@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import re
 
 import torch
 import torch.nn.functional as F
@@ -682,3 +683,45 @@ def _crop_bounds(mask, padding, multiple=8):
     x = max(0, min(center_x - crop_width // 2, width - crop_width))
     y = max(0, min(center_y - crop_height // 2, height - crop_height))
     return x, y, crop_width, crop_height
+
+
+def crop_staged_layers_by_indices(image, layer_masks, layer_indices):
+    if image.ndim != 4 or image.shape[0] != 1:
+        raise ValueError("Staged layer cropping requires exactly one composed image.")
+    if layer_masks.ndim == 2:
+        layer_masks = layer_masks.unsqueeze(0)
+    if layer_masks.ndim != 3:
+        raise ValueError("Layer masks must have shape [layers, height, width].")
+
+    tokens = [token for token in re.split(r"[,\s]+", str(layer_indices).strip()) if token]
+    if not tokens:
+        raise ValueError("Layer indices must contain at least one zero-based index.")
+    try:
+        indices = [int(token) for token in tokens]
+    except ValueError as error:
+        raise ValueError("Layer indices must be integers separated by commas or spaces.") from error
+
+    layer_count = int(layer_masks.shape[0])
+    invalid = [index for index in indices if index < 0 or index >= layer_count]
+    if invalid:
+        raise ValueError(
+            f"Layer index {invalid[0]} is outside the available range 0-{layer_count - 1}."
+        )
+
+    if layer_masks.shape[-2:] != image.shape[1:3]:
+        layer_masks = _resize_mask(
+            layer_masks,
+            int(image.shape[2]),
+            int(image.shape[1]),
+            "nearest-exact",
+        )
+
+    crops = []
+    for index in indices:
+        mask = layer_masks[index : index + 1]
+        try:
+            x, y, width, height = _crop_bounds(mask, padding=0, multiple=8)
+        except ValueError as error:
+            raise ValueError(f"Layer mask index {index} is empty.") from error
+        crops.append(image[:, y : y + height, x : x + width])
+    return crops

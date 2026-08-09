@@ -206,6 +206,56 @@ def test_crop_by_mask_multiple_defaults_to_legacy_eight_pixels():
     assert output.result[4:] == (16, 16)
 
 
+def test_staged_layer_crops_returns_selected_layers_as_ordered_image_list():
+    schema = composite_nodes.UC_StagedLayerCrops.define_schema()
+    image = torch.zeros((1, 24, 32, 3), dtype=torch.float32)
+    image[0, :, :, 0] = torch.arange(32, dtype=torch.float32)[None, :]
+    layer_masks = torch.zeros((3, 24, 32), dtype=torch.float32)
+    layer_masks[0, 4:6, 2:4] = 1.0
+    layer_masks[1, 8:10, 14:16] = 1.0
+    layer_masks[2, 12:14, 26:28] = 1.0
+
+    crops = composite_nodes.UC_StagedLayerCrops.execute(
+        image,
+        layer_masks,
+        "2, 0 1",
+    ).result[0]
+
+    assert schema.node_id == "UC_StagedLayerCrops"
+    assert [value.id for value in schema.inputs] == [
+        "image",
+        "layer_masks",
+        "layer_indices",
+    ]
+    assert schema.inputs[2].multiline is False
+    assert schema.outputs[0].is_output_list is True
+    assert len(crops) == 3
+    assert all(crop.shape == (1, 8, 8, 3) for crop in crops)
+    means = [float(crop[..., 0].mean()) for crop in crops]
+    assert means[0] > means[2] > means[1]
+
+
+@pytest.mark.parametrize("layer_indices", ["", "x", "-1", "3"])
+def test_staged_layer_crops_rejects_invalid_indices(layer_indices):
+    image = torch.zeros((1, 16, 16, 3), dtype=torch.float32)
+    layer_masks = torch.ones((3, 16, 16), dtype=torch.float32)
+
+    with pytest.raises(ValueError):
+        composite_nodes.UC_StagedLayerCrops.execute(
+            image,
+            layer_masks,
+            layer_indices,
+        )
+
+
+def test_staged_layer_crops_rejects_empty_selected_mask():
+    image = torch.zeros((1, 16, 16, 3), dtype=torch.float32)
+    layer_masks = torch.zeros((1, 16, 16), dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="Layer mask index 0 is empty"):
+        composite_nodes.UC_StagedLayerCrops.execute(image, layer_masks, "0")
+
+
 def test_crop_merge_supports_mask_and_singleton_broadcast():
     original = torch.zeros(2, 8, 8, 3)
     crop = torch.ones(1, 4, 4, 3)
