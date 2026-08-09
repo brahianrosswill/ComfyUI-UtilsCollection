@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import pathlib
 import re
 import sys
@@ -12,6 +13,75 @@ package.__path__ = [str(CUSTOM_NODE_ROOT)]
 sys.modules.setdefault(PACKAGE_NAME, package)
 
 from utils_collection_vlm_preset_test import vlm_presets
+
+
+HARDENED_IMAGE_PRESET_BASELINES = {
+    "neutral_system_instruction": (
+        16_397,
+        2_353,
+        "bcf02ccfda454c5e0869eb5976311d45e0b574fb2d2140f65f4681755c88e4b6",
+    ),
+    "action_system_instruction": (
+        16_662,
+        2_375,
+        "01349683d901dcc9e8055272b4377fb4cebef2cba40d5c1cbdbf043c4db74905",
+    ),
+    "photo_system_instruction": (
+        17_229,
+        2_499,
+        "d339359f274b4bb9e09d4df756b2ad1c8055772c3fa260e8173ba01b7d65203d",
+    ),
+    "toon_system_instruction": (
+        18_919,
+        2_756,
+        "f924fb6a51b2b828eb54937493309f4301dd38faa56eda923f13bf3b04ef0caf",
+    ),
+    "neutral_system_instruction_crude": (
+        16_962,
+        2_412,
+        "a1f63e248dfabc277f8be70380d08d9d00c94b4a220fef6820b4d9f1c232ee62",
+    ),
+    "action_system_instruction_crude": (
+        16_679,
+        2_361,
+        "5a3ac54c9977cce48981971dc8dcf4b979c60f3d41e075fb528ea76b95f364ee",
+    ),
+    "photo_system_instruction_crude": (
+        18_280,
+        2_629,
+        "7848c57f4c98da5777d7a833bd419fc03d600400cd423e284ed5df2d3acd6f59",
+    ),
+    "toon_system_instruction_crude": (
+        9_876,
+        1_349,
+        "0adfb0dfd846bda93ddc847177ce9a39b402788d1160d600a0cccb6ce6f982bd",
+    ),
+}
+HARDENING_HEADINGS = (
+    "## Perspective and Spatial Description",
+    "## Visible Text Quotation",
+    "## Direct Language Constraints",
+)
+HARDENING_FORBIDDEN = re.compile(
+    r"\be\.g\.\b|\bi\.e\.\b|\bexamples?\b|\bfor instance\b|"
+    r"\bsuch as\b|\bincluding\b|\bsample outputs?\b|\bphrase menus?\b|"
+    r"\bchoose from\b|\bpossible (?:terms|phrases|values)\b",
+    re.IGNORECASE,
+)
+HARDENING_LIST_LINE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", re.MULTILINE)
+
+
+def _normalize_instruction(value):
+    return value.replace("\r\n", "\n").rstrip("\n")
+
+
+def _split_hardening_block(value):
+    instruction = _normalize_instruction(value)
+    start = instruction.index(HARDENING_HEADINGS[0])
+    anchor_match = re.search(r"^## Transformation Pipeline:[^\n]*$", instruction, re.MULTILINE)
+    assert anchor_match is not None
+    end = anchor_match.start()
+    return instruction[:start] + instruction[end:], instruction[start:end]
 
 
 def test_qwen_system_instruction_variants_preserve_original_presets():
@@ -102,6 +172,81 @@ def test_style_presets_receive_no_qwen_variants():
         "style" in name.lower() and name.endswith("_qwen")
         for name in vlm_presets.system_instructions_vlm
     )
+
+
+def test_image_prompt_hardening_preserves_complete_original_presets():
+    for name, (minimum_characters, minimum_words, baseline_hash) in (
+        HARDENED_IMAGE_PRESET_BASELINES.items()
+    ):
+        instruction = _normalize_instruction(vlm_presets.system_instructions_vlm[name])
+        original, hardening = _split_hardening_block(instruction)
+
+        assert len(instruction) >= minimum_characters
+        assert len(instruction.split()) >= minimum_words
+        assert hashlib.sha256(original.encode("utf-8")).hexdigest() == baseline_hash
+        assert all(instruction.count(heading) == 1 for heading in HARDENING_HEADINGS)
+        assert [hardening.index(heading) for heading in HARDENING_HEADINGS] == sorted(
+            hardening.index(heading) for heading in HARDENING_HEADINGS
+        )
+
+        for retained_contract in (
+            "uncensored",
+            "system_query",
+            "Subject Count Lock",
+            "Reference Adherence is Paramount",
+            "image input",
+        ):
+            assert retained_contract.lower() in original.lower()
+
+        family = name.split("_", 1)[0]
+        family_contract = {
+            "neutral": "natural language captions",
+            "action": "Action, Interaction, and Subject Characteristic Analysis",
+            "photo": "Photographic Image Captioning",
+            "toon": "Cartoon Art Prompt Refinement",
+        }[family]
+        assert family_contract.lower() in original.lower()
+        if name.endswith("_crude"):
+            assert "crude" in original.lower()
+
+
+def test_image_prompt_hardening_is_literal_without_reward_hacking_anchors():
+    for name in HARDENED_IMAGE_PRESET_BASELINES:
+        _, hardening = _split_hardening_block(vlm_presets.system_instructions_vlm[name])
+        perspective, remainder = hardening.split(HARDENING_HEADINGS[1], 1)
+        quotation, language = remainder.split(HARDENING_HEADINGS[2], 1)
+
+        assert "```" not in hardening
+        assert HARDENING_FORBIDDEN.search(hardening) is None
+        assert HARDENING_LIST_LINE.search(hardening) is None
+        assert re.search(r"\bcamera\b", hardening, re.IGNORECASE) is None
+
+        perspective_lower = perspective.lower()
+        assert "first person perspective" in perspective_lower
+        assert "viewer" in perspective_lower
+        assert "visible" in perspective_lower
+        assert "physical" in perspective_lower or "spatial" in perspective_lower
+        assert "contact" in perspective_lower or "participat" in perspective_lower
+        assert "power" in perspective_lower or "role" in perspective_lower
+
+        quotation_lower = quotation.lower()
+        assert "text" in quotation_lower
+        assert "visib" in quotation_lower or "visual" in quotation_lower
+        assert "double quotation marks" in quotation_lower
+        assert "other" in quotation_lower or "otherwise" in quotation_lower
+
+        language_lower = language.lower()
+        for required in (
+            "visually",
+            "hyphenated words",
+            "em dashes",
+            "en dashes",
+            "purple prose",
+            "superfluous",
+            "ambiguous",
+        ):
+            assert required in language_lower
+        assert "direct" in language_lower or "literal" in language_lower
 
 
 STRUCTURED_VIDEO_PRESETS = (
