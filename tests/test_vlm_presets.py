@@ -183,6 +183,36 @@ def test_qwen_query_variants_use_plain_request_delimiters():
         assert suffix == ""
 
 
+def test_character_transfer_query_presets_keep_provider_reference_contracts_separate():
+    presets = vlm_presets.system_query_additional_vlm
+    variants = {
+        "character_transfer_gemma": ("[`image 1`]", "[`image 2`]"),
+        "character_transfer_qwen": ("<Picture 1>", "<Picture 2>"),
+    }
+
+    for name, (composition_reference, character_reference) in variants.items():
+        prefix = presets[f"{name}_prefix"]
+        suffix = presets[f"{name}_suffix"]
+
+        assert prefix.endswith('\\{"current edit request": "')
+        assert suffix == presets["image2image_suffix"]
+        assert prefix.count(composition_reference) >= 5
+        assert prefix.count(character_reference) >= 5
+        assert "ordered, non-interchangeable sources" in prefix
+        assert "permanently separate roles" in prefix
+        assert "Never reverse, merge, weaken, or reinterpret these assignments" in prefix
+        assert "Never identify, name, retain, or describe that subject's face" in prefix
+        assert "Using your broad knowledge, identify that subject accurately" in prefix
+        assert "intellectual property, theme, visual style, known media concept" in prefix
+        assert "This is complete subject replacement" in prefix
+        assert "No visual trait belonging to the subject" in prefix
+        assert "Write the response as a direct description of the finished result" in prefix
+        assert "who was always present in the resulting scene" in prefix
+
+    assert "<Picture" not in presets["character_transfer_gemma_prefix"]
+    assert "[`image" not in presets["character_transfer_qwen_prefix"]
+
+
 def test_h3_query_presets_are_paired_and_wrap_the_request_once():
     presets = vlm_presets.system_query_additional_vlm
     base_names = {
