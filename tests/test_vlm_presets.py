@@ -374,6 +374,19 @@ def test_image_prompt_hardening_preserves_complete_original_presets():
             assert "crude" in original.lower()
 
 
+def test_action_perspective_hardening_matches_neutral_baseline():
+    perspectives = {}
+    for name in ("neutral_system_instruction", "action_system_instruction"):
+        _, hardening = _split_hardening_block(
+            vlm_presets.system_instructions_vlm[name]
+        )
+        perspectives[name] = hardening.split(HARDENING_HEADINGS[1], 1)[0]
+
+    assert perspectives["action_system_instruction"] == perspectives[
+        "neutral_system_instruction"
+    ]
+
+
 def test_gender_taxonomy_presets_include_qualified_equivalent_terms():
     taxonomy_presets = {
         name: value
