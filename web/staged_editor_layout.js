@@ -37,10 +37,14 @@ export function naturalEditorWidth({ coreWidth = 0, toolbarWidth = 0, rowWidths 
 }
 
 export function previewHeight(width, imageWidth = 0, imageHeight = 0) {
+  const previewWidth = Math.max(0, finite(width));
   const aspect = finite(imageWidth) > 0 && finite(imageHeight) > 0
     ? finite(imageWidth) / finite(imageHeight)
     : EMPTY_PREVIEW_ASPECT;
-  return Math.ceil(Math.max(0, finite(width)) / aspect);
+  return Math.ceil(Math.min(
+    previewWidth / aspect,
+    previewWidth / EMPTY_PREVIEW_ASPECT,
+  ));
 }
 
 export function visibleLayerListHeight(rowHeights = [], gap = 0, chromeHeight = 0) {

@@ -259,11 +259,11 @@ class UC_LoadImageWithAlpha(io.ComfyNode):
         return io.NodeOutput(rgb, mask, torch.cat((rgb, alpha), dim=-1))
 
     @classmethod
-    def IS_CHANGED(cls, image: str):
+    def fingerprint_inputs(cls, image: str):
         return nodes.LoadImage.IS_CHANGED(image)
 
     @classmethod
-    def VALIDATE_INPUTS(cls, image: str):
+    def validate_inputs(cls, image: str):
         return nodes.LoadImage.VALIDATE_INPUTS(image)
 
 

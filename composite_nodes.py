@@ -740,7 +740,17 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
             display_name="Staged Composite Options",
             category="utils/image",
             inputs=[
-                io.Float.Input("mask_threshold", default=0.5, min=0, max=1, step=0.01),
+                io.Float.Input(
+                    "mask_threshold",
+                    default=0.5,
+                    min=0,
+                    max=1,
+                    step=0.01,
+                    tooltip=(
+                        "Threshold removal-model masks and determine tight bounds for "
+                        "embedded alpha. Embedded alpha values inside those bounds remain unchanged."
+                    ),
+                ),
                 io.Int.Input("border_cleanup_width", default=2, min=0, max=64),
                 io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64),
                 io.Int.Input("gap_fill_radius", default=2, min=0, max=64),

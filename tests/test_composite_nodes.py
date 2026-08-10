@@ -956,6 +956,36 @@ def test_staged_compositor_uses_embedded_alpha_without_background_removal(monkey
     assert torch.allclose(layer["mask"], torch.full((1, 2, 2), 0.5))
 
 
+def test_staged_compositor_uses_threshold_only_for_embedded_alpha_bounds(monkeypatch):
+    monkeypatch.setattr(
+        staged_compositor_helpers, "_save_editor_preview", lambda *args: None
+    )
+    foreground = torch.zeros(1, 8, 10, 4)
+    foreground[..., 0] = 0.75
+    foreground[..., 3] = 1.0 / 255.0
+    foreground[:, 2:6, 3:8, 3] = 0.75
+    model = _QueuedBackgroundModel([])
+
+    staged = staged_compositor_helpers._stage_layered_foregrounds(
+        model,
+        {"foreground_0": foreground},
+        0.5,
+        0,
+        0,
+        0,
+    )
+
+    layer = staged["layers"][0]
+    assert len(model.masks) == 0
+    assert layer["image"].shape == (1, 4, 5, 3)
+    assert torch.allclose(layer["mask"], torch.full((1, 4, 5), 0.75))
+    preview = staged_compositor_helpers._preview_staged_foregrounds(
+        torch.zeros(1, 16, 16, 3), staged, 0
+    )
+    metadata = preview.ui["uc_layered_scene_editor"][0]["layers"][0]
+    assert (metadata["crop_width"], metadata["crop_height"]) == (5, 4)
+
+
 def test_staged_layered_composite_tracks_and_applies_horizontal_flip(monkeypatch):
     monkeypatch.setattr(
         staged_compositor_helpers, "_save_editor_preview", lambda *args: None

@@ -206,7 +206,8 @@ class LayeredPlacementEditor {
       background: "#17191d",
     });
     this.previewRow = element("div", {
-      display: "flex", flexDirection: "row", alignItems: "flex-start", gap: "6px", minWidth: "0",
+      display: "flex", flexDirection: "row", alignItems: "stretch", gap: "6px",
+      minWidth: "0", minHeight: "0", flex: "1 1 auto",
     });
     this.previewRow.append(this.stage);
     Object.assign(this.stage.style, { flex: "1 1 auto", width: "auto" });
@@ -552,8 +553,9 @@ class LayeredPlacementEditor {
     const stageWidth = panelLayout.previewWidth;
     const dimensions = this.dimensions();
     const stageHeight = previewHeight(stageWidth, dimensions?.width, dimensions?.height);
-    this.stage.style.height = `${stageHeight}px`;
-    this.stage.style.aspectRatio = dimensions ? `${dimensions.width} / ${dimensions.height}` : "16 / 9";
+    this.previewRow.style.minHeight = `${stageHeight}px`;
+    this.stage.style.height = "auto";
+    this.stage.style.aspectRatio = "auto";
     this.paintColorPicker?.setPanelHeight(stageHeight);
 
     const rootVerticalChrome = this.stylePixels(this.root, ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"]);

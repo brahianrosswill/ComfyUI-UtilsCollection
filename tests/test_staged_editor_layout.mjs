@@ -39,11 +39,11 @@ test("inline picker expands node without changing preview width", () => {
   });
 });
 
-test("preview uses 16:9 without an image and the real image aspect when known", () => {
+test("preview contains square and portrait images without increasing minimum height", () => {
   assert.equal(previewHeight(800), 450);
   assert.equal(previewHeight(800, 1600, 800), 400);
-  assert.equal(previewHeight(800, 800, 1600), 1600);
-  assert.equal(previewHeight(800, 800, 800), 800);
+  assert.equal(previewHeight(800, 800, 1600), 450);
+  assert.equal(previewHeight(800, 800, 800), 450);
 });
 
 test("layer list exposes three complete measured rows", () => {

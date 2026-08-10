@@ -455,7 +455,10 @@ def _stage_layered_foregrounds(
                 "source_height": source_height,
                 "source_width": source_width,
             }
-        occupied = refined > 0
+        if uses_embedded_alpha and float(mask_threshold) > 0:
+            occupied = refined >= float(mask_threshold)
+        else:
+            occupied = refined > 0
         occupied_rows = torch.nonzero(occupied.any(dim=1), as_tuple=False).flatten()
         occupied_columns = torch.nonzero(occupied.any(dim=0), as_tuple=False).flatten()
         if occupied_rows.numel() == 0 or occupied_columns.numel() == 0:
