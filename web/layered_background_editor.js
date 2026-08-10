@@ -869,21 +869,21 @@ class LayeredPlacementEditor {
       grip.draggable = true;
       const reorderButtons = element("div", {
         display: "flex",
-        flex: "0 0 24px",
-        flexDirection: "column",
-        gap: "2px",
+        flex: "0 0 67px",
+        flexDirection: "row",
+        gap: "3px",
       });
       const reorderButton = (text, title, disabled, callback) => {
         const button = element("button", {
-          width: "24px",
-          height: "20px",
+          width: "32px",
+          height: "30px",
           padding: "0",
           border: "1px solid rgba(255,255,255,.2)",
           borderRadius: "3px",
           color: "inherit",
           background: "rgba(0,0,0,.25)",
           cursor: disabled ? "default" : "pointer",
-          fontSize: "12px",
+          fontSize: "16px",
           lineHeight: "1",
           opacity: disabled ? ".35" : "1",
         });
@@ -948,6 +948,34 @@ class LayeredPlacementEditor {
         transformButtons.push(flip, flipVertical, reset);
         controls.append(flip, flipVertical, reset);
         const rotation = this.createLayerNumericControl(key, "rotation", "Rot°", "Layer rotation in degrees");
+        const toggleRotation = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (this.paintMode
+            || this.layerPlacement(key).locked === true
+            || this.layerPlacement(key).included === false) return;
+          this.selectLayer(key);
+          this.toggleRotate(key);
+        };
+        Object.assign(rotation.caption.style, {
+          padding: "2px",
+          borderRadius: "3px",
+          cursor: "pointer",
+          userSelect: "none",
+        });
+        rotation.caption.title = "Toggle canvas rotation mode for this layer";
+        rotation.caption.setAttribute("role", "button");
+        rotation.caption.setAttribute("aria-label", rotation.caption.title);
+        rotation.caption.setAttribute("aria-pressed", "false");
+        rotation.caption.tabIndex = 0;
+        rotation.caption.addEventListener("click", toggleRotation);
+        rotation.caption.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") toggleRotation(event);
+        });
+        for (const button of [rotation.decrement, rotation.increment]) {
+          Object.assign(button.style, { flex: "0 0 20px", width: "20px", fontSize: "13px" });
+        }
+        Object.assign(rotation.input.style, { flex: "0 0 48px", minWidth: "48px", width: "48px" });
         rotation.decrement.title = "Rotate left one degree";
         rotation.increment.title = "Rotate right one degree";
         rotation.decrement.addEventListener("click", (event) => {
@@ -964,7 +992,18 @@ class LayeredPlacementEditor {
         const lock = this.createLayerAction("🔓", "Lock this layer against transforms", () => this.toggleLayerLocked(key));
         Object.assign(lock.style, { flex: "0 0 28px", width: "28px", padding: "0" });
         controls.append(rotation.root, warp, include, lock);
-        this.rowControls.set(key, { inputs: numericInputs, transformButtons, flip, flipVertical, reset, include, lock, warp, row });
+        this.rowControls.set(key, {
+          inputs: numericInputs,
+          transformButtons,
+          flip,
+          flipVertical,
+          reset,
+          include,
+          lock,
+          warp,
+          rotate: rotation.caption,
+          row,
+        });
       }
       row.append(grip, reorderButtons, name, position, controls);
       row.addEventListener("click", () => this.selectLayer(key));
@@ -1040,9 +1079,9 @@ class LayeredPlacementEditor {
     const increment = this.createStepButton("▶", `${label}: increase by 0.002`);
     const input = element("input", {
       boxSizing: "border-box",
-      flex: "0 0 70px",
-      minWidth: "70px",
-      width: "70px",
+      flex: "0 0 56px",
+      minWidth: "56px",
+      width: "56px",
       height: "28px",
       border: "1px solid rgba(255,255,255,.2)",
       borderRadius: "4px",
@@ -1081,13 +1120,13 @@ class LayeredPlacementEditor {
     });
     root.addEventListener("click", (event) => event.stopPropagation());
     root.append(caption, decrement, input, increment);
-    return { root, input, decrement, increment };
+    return { root, caption, input, decrement, increment };
   }
 
   createStepButton(text, title) {
     const button = element("button", {
-      flex: "0 0 28px",
-      width: "28px",
+      flex: "0 0 22px",
+      width: "22px",
       height: "28px",
       padding: "0",
       border: "1px solid rgba(255,255,255,.2)",
@@ -1095,7 +1134,7 @@ class LayeredPlacementEditor {
       color: "inherit",
       background: "rgba(0,0,0,.25)",
       cursor: "pointer",
-      fontSize: "18px",
+      fontSize: "14px",
       lineHeight: "1",
     });
     button.type = "button";
@@ -1655,13 +1694,13 @@ class LayeredPlacementEditor {
     return this.layerQuadPoints(key, dimensions);
   }
 
-  layerAtCanvasPoint(canvasPoint, dimensions, includeLocked = false) {
+  layerAtCanvasPoint(canvasPoint, dimensions) {
     return frontmostLayerAtPoint(
       this.connectedLayers(),
       canvasPoint,
       (key) => this.layerQuadPoints(key, dimensions),
       (key) => this.layerPlacement(key).included !== false
-        && (includeLocked || this.layerPlacement(key).locked !== true),
+        && this.layerPlacement(key).locked !== true,
     );
   }
 
@@ -1672,7 +1711,7 @@ class LayeredPlacementEditor {
     if (this.paintMode) return;
     const dimensions = this.dimensions();
     if (!this.view || !dimensions) return;
-    const key = this.layerAtCanvasPoint(this.canvasPoint(event), dimensions, true);
+    const key = this.layerAtCanvasPoint(this.canvasPoint(event), dimensions);
     if (!key) return;
     this.selectLayer(key);
     const layers = this.compositionLayers();
@@ -2033,6 +2072,16 @@ class LayeredPlacementEditor {
       if (controls.warp) {
         controls.warp.setAttribute("aria-pressed", String(this.warpLayer === key));
         controls.warp.style.background = this.warpLayer === key ? "rgba(64,180,255,.30)" : "rgba(0,0,0,.25)";
+      }
+      if (controls.rotate) {
+        const active = this.rotateLayer === key;
+        const disabled = this.paintMode || locked || this.layerPlacement(key).included === false;
+        controls.rotate.setAttribute("aria-pressed", String(active));
+        controls.rotate.setAttribute("aria-disabled", String(disabled));
+        controls.rotate.tabIndex = disabled ? -1 : 0;
+        controls.rotate.style.background = active ? "rgba(64,180,255,.30)" : "transparent";
+        controls.rotate.style.cursor = disabled ? "default" : "pointer";
+        controls.rotate.style.opacity = disabled ? ".55" : ".78";
       }
       for (const input of Object.values(controls.inputs)) input.disabled = this.paintMode || locked;
       for (const control of controls.transformButtons || []) control.disabled = this.paintMode || locked;

@@ -47,6 +47,29 @@ test("frontmost hit testing ignores excluded overlapping layers", () => {
   );
 });
 
+test("frontmost hit testing passes through locked overlapping layers", () => {
+  const layers = ["back", "front"];
+  const placements = {
+    back: { included: true, locked: false },
+    front: { included: true, locked: true },
+  };
+  const quad = [
+    { x: 0, y: 0 },
+    { x: 4, y: 0 },
+    { x: 4, y: 4 },
+    { x: 0, y: 4 },
+  ];
+  assert.equal(
+    frontmostLayerAtPoint(
+      layers,
+      { x: 2, y: 2 },
+      () => quad,
+      (key) => placements[key].included !== false && placements[key].locked !== true,
+    ),
+    "back",
+  );
+});
+
 test("context actions expose state and boundary availability", () => {
   const invoked = [];
   const callback = (name) => () => invoked.push(name);
