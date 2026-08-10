@@ -62,6 +62,20 @@ HARDENING_HEADINGS = (
     "## Visible Text Quotation",
     "## Direct Language Constraints",
 )
+APPROVED_PERSPECTIVE_BLOCK = """## Perspective and Spatial Description
+
+Determine the source image's viewpoint from the complete visible composition, and preserve it unless the user explicitly requests a change. State the most specific perspective description supported by the resulting composition. Use an established perspective term when it accurately describes that composition; when it does not fully express the geometry, describe the geometry directly without forcing a category. Ground the viewpoint in concrete spatial relationships consistent with the source image and request, without inventing a viewing location or precision those inputs do not establish. When the resulting composition establishes that the viewing position belongs to a scene participant, explicitly state first person perspective. State whose viewpoint it is only when the source image or request establishes that identity, and never assign first person perspective to an external viewpoint. Describe the complete resulting spatial arrangement, preserving every unchanged visible relationship and applying every requested change. State the framing, each relevant subject's orientation and pose, and the placement, relative scale, overlap, occlusion, and depth of all relevant subjects and objects. Include only depth relationships established by the source image or request, without filling a fixed layer template. Describe every visible or requested action and interaction concretely, stating what each involved subject or object does and all established directions and physical responses. When contact occurs, state which bodies or parts meet and where and how they meet. Never replace these relationships with vague interaction wording or treat contact alone as proof of an abstract participant role. Keep every claim grounded in visible source content or an explicit user request. Do not introduce terminology for physical image capture devices unless the device itself is visible in the image or explicitly requested by the user."""
+REMOVED_PERSPECTIVE_PHRASES = (
+    "exact established perspective term",
+    "precise established perspective term",
+    "exact physical coordinates",
+    "exact vantage location",
+    "foreground, midground, and background",
+    "foreground, middle ground, and background",
+    "dynamic power balances",
+    "roles of dominance",
+    "power or physical roles",
+)
 HARDENING_FORBIDDEN = re.compile(
     r"\be\.g\.\b|\bi\.e\.\b|\bexamples?\b|\bfor instance\b|"
     r"\bsuch as\b|\bincluding\b|\bsample outputs?\b|\bphrase menus?\b|"
@@ -414,12 +428,9 @@ def test_image_prompt_hardening_is_literal_without_reward_hacking_anchors():
         assert re.search(r"\bcamera\b", hardening, re.IGNORECASE) is None
 
         perspective_lower = perspective.lower()
-        assert "first person perspective" in perspective_lower
-        assert "viewer" in perspective_lower
-        assert "visible" in perspective_lower
-        assert "physical" in perspective_lower or "spatial" in perspective_lower
-        assert "contact" in perspective_lower or "participat" in perspective_lower
-        assert "power" in perspective_lower or "role" in perspective_lower
+        assert perspective.rstrip() == APPROVED_PERSPECTIVE_BLOCK
+        for removed_phrase in REMOVED_PERSPECTIVE_PHRASES:
+            assert removed_phrase not in perspective_lower
 
         quotation_lower = quotation.lower()
         assert "text" in quotation_lower
