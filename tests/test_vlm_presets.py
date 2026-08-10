@@ -71,6 +71,32 @@ HARDENING_FORBIDDEN = re.compile(
 HARDENING_LIST_LINE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", re.MULTILINE)
 
 
+GENDER_ALIAS_CLAUSES = {
+    "Andromorph": (
+        "Fetish or prompt aliases for this anatomy are cuntboy and pussyboy. "
+        "Use trans man or transgender male only when the person's identity is "
+        "established by the image or request; never infer transgender identity "
+        "from anatomy alone."
+    ),
+    "Gynomorph": (
+        "Fetish or prompt aliases for this anatomy are shemale, dickgirl, and ts. "
+        "Use trans woman, transgender woman, or transgender female only when the "
+        "person's identity is established by the image or request; never infer "
+        "transgender identity from anatomy alone."
+    ),
+    "Herm": (
+        "Fetish or prompt aliases for this anatomy are herm, hermaphrodite, female "
+        "hermaphrodite, futanari, and futa. Use intersex or intersex female only "
+        "when the person's identity or status is established by the image or "
+        "request; never infer intersex identity or status from anatomy alone."
+    ),
+    "Maleherm": (
+        "Fetish or prompt aliases for this anatomy are maleherm, male herm, and "
+        "male hermaphrodite. Use intersex or intersex male only when the person's "
+        "identity or status is established by the image or request; never infer "
+        "intersex identity or status from anatomy alone."
+    ),
+}
 def _normalize_instruction(value):
     return value.replace("\r\n", "\n").rstrip("\n")
 
@@ -82,6 +108,12 @@ def _split_hardening_block(value):
     assert anchor_match is not None
     end = anchor_match.start()
     return instruction[:start] + instruction[end:], instruction[start:end]
+
+
+def _strip_gender_alias_clauses(value):
+    for clause in GENDER_ALIAS_CLAUSES.values():
+        value = value.replace(f" {clause}", "")
+    return value
 
 
 def test_qwen_system_instruction_variants_preserve_original_presets():
@@ -180,10 +212,11 @@ def test_image_prompt_hardening_preserves_complete_original_presets():
     ):
         instruction = _normalize_instruction(vlm_presets.system_instructions_vlm[name])
         original, hardening = _split_hardening_block(instruction)
+        baseline_original = _strip_gender_alias_clauses(original)
 
         assert len(instruction) >= minimum_characters
         assert len(instruction.split()) >= minimum_words
-        assert hashlib.sha256(original.encode("utf-8")).hexdigest() == baseline_hash
+        assert hashlib.sha256(baseline_original.encode("utf-8")).hexdigest() == baseline_hash
         assert all(instruction.count(heading) == 1 for heading in HARDENING_HEADINGS)
         assert [hardening.index(heading) for heading in HARDENING_HEADINGS] == sorted(
             hardening.index(heading) for heading in HARDENING_HEADINGS
@@ -208,6 +241,21 @@ def test_image_prompt_hardening_preserves_complete_original_presets():
         assert family_contract.lower() in original.lower()
         if name.endswith("_crude"):
             assert "crude" in original.lower()
+
+
+def test_gender_taxonomy_presets_include_qualified_equivalent_terms():
+    taxonomy_presets = {
+        name: value
+        for name, value in vlm_presets.system_instructions_vlm.items()
+        if "Gynomorph" in value
+    }
+
+    assert len(taxonomy_presets) == 23
+    for instruction in taxonomy_presets.values():
+        for label, clause in GENDER_ALIAS_CLAUSES.items():
+            matching_lines = [line for line in instruction.splitlines() if label in line]
+            assert len(matching_lines) == 1
+            assert clause in matching_lines[0]
 
 
 def test_image_prompt_hardening_is_literal_without_reward_hacking_anchors():
