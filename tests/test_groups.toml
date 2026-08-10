@@ -1,5 +1,5 @@
 [groups.encoder]
-paths = ["encoder_helpers.py", "encoder_nodes.py", "vlm_nodes.py", "vlm_presets.py", "minimax_h3_vlm_nodes.py", "minimax_h3_vlm_presets.py"]
+paths = ["encoder_helpers.py", "encoder_nodes.py", "vlm_nodes.py", "vlm_presets.py", "vlm_legacy_presets.py", "minimax_h3_vlm_nodes.py", "minimax_h3_vlm_presets.py"]
 python_tests = [
   "tests/test_advanced_visual_consensus.py",
   "tests/test_encoder_correctness.py",

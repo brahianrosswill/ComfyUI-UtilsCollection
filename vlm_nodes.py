@@ -1,5 +1,6 @@
-from comfy_api.latest import ComfyExtension, io
+from comfy_api.latest import io
 from .vlm_presets import system_instructions_vlm, system_query_additional_vlm, additional_instructions_vlm
+from .vlm_legacy_presets import legacy_system_instructions_vlm
 
 
 class UC_VLMSysInstrPresets(io.ComfyNode):
@@ -34,6 +35,34 @@ class UC_VLMSysInstrPresets(io.ComfyNode):
         presets_dict = cls.get_presets()
         system_instruction = presets_dict.get(preset, "")
         return io.NodeOutput(system_instruction)
+
+
+class UC_VLMSysInstrLegacyPresets(UC_VLMSysInstrPresets):
+    @classmethod
+    def get_presets(cls):
+        return legacy_system_instructions_vlm
+
+    @classmethod
+    def define_schema(cls):
+        presets = cls.get_presets()
+        options = sorted(presets)
+        default = options[0] if options else ""
+        return io.Schema(
+            node_id="UC_VLMSysInstrLegacyPresets",
+            display_name="VLM System Instruction Legacy Presets",
+            category="advanced/text",
+            inputs=[
+                io.Combo.Input(
+                    "preset",
+                    display_name="vlm_system_instruction_legacy_preset",
+                    options=options,
+                    default=default,
+                ),
+            ],
+            outputs=[
+                io.String.Output(display_name="system_instruction"),
+            ],
+        )
 
 
 class UC_VLMSysQueryAddPresets(io.ComfyNode):

@@ -106,6 +106,7 @@ def test_preset_widget_labels_are_unique_and_descriptive():
         preset_nodes.UC_CameraShotPresets: "camera_shot_preset",
         preset_nodes.UC_UnifiedPresets: "styles_preset",
         vlm_nodes.UC_VLMSysInstrPresets: "vlm_system_instruction_preset",
+        vlm_nodes.UC_VLMSysInstrLegacyPresets: "vlm_system_instruction_legacy_preset",
         vlm_nodes.UC_VLMSysQueryAddPresets: "vlm_system_query_add_preset",
         vlm_nodes.UC_VLMSysInstrAdvPresets: "vlm_system_instruction_advanced_preset",
         scheduler_nodes.Ideogram4SchedulerPreset: "ideogram4_scheduler_preset",

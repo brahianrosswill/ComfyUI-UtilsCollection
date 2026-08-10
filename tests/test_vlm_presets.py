@@ -12,7 +12,7 @@ package = types.ModuleType(PACKAGE_NAME)
 package.__path__ = [str(CUSTOM_NODE_ROOT)]
 sys.modules.setdefault(PACKAGE_NAME, package)
 
-from utils_collection_vlm_preset_test import vlm_presets
+from utils_collection_vlm_preset_test import vlm_legacy_presets, vlm_presets
 
 
 HARDENED_IMAGE_PRESET_BASELINES = {
@@ -69,8 +69,6 @@ HARDENING_FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 HARDENING_LIST_LINE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", re.MULTILINE)
-
-
 GENDER_ALIAS_CLAUSES = {
     "Andromorph": (
         "Fetish or prompt aliases for this anatomy are cuntboy and pussyboy. "
@@ -97,6 +95,23 @@ GENDER_ALIAS_CLAUSES = {
         "intersex identity or status from anatomy alone."
     ),
 }
+LEGACY_SYSTEM_PRESET_BASELINES = {
+    "neutral_system_instruction_legacy": (16_742, 2_368, 101, 0, "f0392ea612e34f0bee656f4e9bb89f59f9c6fc82539be2e2205443dfbede2e5d"),
+    "action_system_instruction_legacy": (17_003, 2_390, 100, 0, "da80afcc3d11dc82ee51c0c313cb95106d77a6ac56c09f428211141f41e0999f"),
+    "photo_system_instruction_legacy": (17_981, 2_579, 90, 0, "fd258a3196add5071a24087ae26c21102f04c46eb6c52af788d9babd9ff3d419"),
+    "toon_system_instruction_legacy": (19_177, 2_763, 93, 0, "83a76127ef224f3bbac1606d0811a1b6e4d09a0490bbe355c3ba542bbf5cba0a"),
+    "ideogram_4_json_instruction_legacy": (23_102, 3_250, 189, 0, "231c8eba8ba095789ac66925e2e3227770f712b8def25c12b328050a427bbc59"),
+    "ideogram_4_json_instruction_short_legacy": (23_383, 3_382, 151, 0, "4e7d68fa89bb9d8c194e874ce7769612e8653fa44e7d2a5b3b5ce2673e700ca6"),
+    "ideogram_4_json_instruction_style_legacy": (25_419, 3_590, 175, 0, "1152ef24619dffa1cd7b1739adcc1a3bf1e000d0959d0430243948a54e917348"),
+    "ideogram_4_json_instruction_color_legacy": (25_915, 3_646, 177, 0, "95348d4a51a408a913bb6805f6752c9fe31af50bf46756564ae2cd52b923a547"),
+    "cinematic_dumb_intelligent_legacy": (13_938, 1_852, 0, 154, "b05b49068d6c5bc1f8c20a307b4e181492be700852fbe7199a5aa2f084c53a61"),
+    "video_basic_system_instruction_legacy": (14_428, 2_093, 74, 0, "1a6d406975d2dcd9d67767e6644928a119bde76f4848ce1d91fc4d69482f78ea"),
+    "video_8sec_system_instruction_legacy": (13_723, 2_012, 97, 0, "ba69dc8e1daa850417d0d540a5ff9615b521837bd089cfc4b5a8f94b6355b55c"),
+    "video_struct_system_instruction_legacy": (12_505, 1_811, 74, 0, "569eef0d2fd42c2786cf0019b7deea99ae13fb0c46dd5a805fef0061653c4c8d"),
+    "video_8part_struct_system_instruction_legacy": (16_026, 2_348, 113, 0, "1c1174839c05208b179ab9eaf66d87402d21e2901aaaa4191ccfc05d1bbfa25b"),
+}
+
+
 def _normalize_instruction(value):
     return value.replace("\r\n", "\n").rstrip("\n")
 
@@ -114,6 +129,22 @@ def _strip_gender_alias_clauses(value):
     for clause in GENDER_ALIAS_CLAUSES.values():
         value = value.replace(f" {clause}", "")
     return value
+
+
+def test_legacy_system_presets_match_d9f47de_exactly():
+    assert not any(name.endswith("_legacy") for name in vlm_presets.system_instructions_vlm)
+    actual_legacy_names = set(vlm_legacy_presets.legacy_system_instructions_vlm)
+    assert actual_legacy_names == set(LEGACY_SYSTEM_PRESET_BASELINES)
+
+    for name, (characters, words, crlf, bare_lf, digest) in (
+        LEGACY_SYSTEM_PRESET_BASELINES.items()
+    ):
+        value = vlm_legacy_presets.legacy_system_instructions_vlm[name]
+        assert len(value) == characters
+        assert len(value.split()) == words
+        assert value.count("\r\n") == crlf
+        assert value.count("\n") - value.count("\r\n") == bare_lf
+        assert hashlib.sha256(value.encode("utf-8")).hexdigest() == digest
 
 
 def test_qwen_system_instruction_variants_preserve_original_presets():

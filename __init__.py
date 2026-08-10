@@ -83,6 +83,7 @@ class SamplingUtils(ComfyExtension):
             UC_EditOpPresets,
             UC_CameraShotPresets,
             UC_VLMSysInstrPresets,
+            UC_VLMSysInstrLegacyPresets,
             UC_VLMSysQueryAddPresets,
             UC_VLMSysInstrAdvPresets,
             UC_MiniMaxH3VLMSysInstrPresets,
