@@ -1,6 +1,7 @@
 from typing_extensions import override
 
 from .encoder_nodes import *
+from .embedding_nodes import *
 from .image_nodes import *
 from .preset_nodes import *
 from .vlm_nodes import *
@@ -91,6 +92,7 @@ class SamplingUtils(ComfyExtension):
             UC_LegacyPromptPresets,
             UC_UnifiedPresets,
             UC_AttentionBiasTextEncode,
+            UC_EmbeddingDetokenizerAnalysis,
             UC_TagNormalizeCombine,
             UC_ImageToVideoPrompt,
             UC_LoadImagePath,

@@ -9,6 +9,11 @@ python_tests = [
 ]
 frontend_tests = []
 
+[groups.embedding_analysis]
+paths = ["embedding_helpers.py", "embedding_nodes.py"]
+python_tests = ["tests/test_embedding_analysis.py"]
+frontend_tests = []
+
 [groups.patcher]
 paths = ["patcher_helpers.py", "patcher_nodes.py"]
 python_tests = ["tests/test_patcher_nodes.py"]

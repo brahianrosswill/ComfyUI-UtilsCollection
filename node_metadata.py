@@ -51,6 +51,7 @@ DESCRIPTIONS = {
     "UC_MiniMaxH3VLMSysInstrPresets": "Provides dedicated Base, First/Last Frame, and Reference VLM instructions for MiniMax H3.",
     "UC_MiniMaxH3VLMSysInstrAdvPresets": "Provides MiniMax H3 VLM instructions with explicit user and system overrides.",
     "UC_AttentionBiasTextEncode": "Encodes text while applying token-level attention bias controls.",
+    "UC_EmbeddingDetokenizerAnalysis": "Analyzes stored embedding vectors against every compatible connected text-encoder vocabulary.",
     "UC_TextConsensusBlendConfig": "Configures consensus-based blending of multiple text conditioning tensors.",
     "UC_VisualFusionConfig": "Configures grid-aware fusion of visual token embeddings from multiple images.",
     "UC_ConditioningConsensusBlend": "Blends multiple conditioning outputs after encoding while preserving reference placement.",
