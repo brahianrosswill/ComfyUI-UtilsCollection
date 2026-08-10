@@ -1198,6 +1198,28 @@ def save_blended_visual_embeddings(
     logging.info(f"[UC_VisualFusionConfig] Saved blended visual tokens as {embedding_key} embedding to: {full_save_path}")
 
 
+def save_conditioning_visual_embeddings(
+    conditioning_tensor: torch.Tensor,
+    visual_range: tuple[int, int],
+    visual_fusion_config: dict,
+    embedding_key: str,
+) -> None:
+    """Save one existing conditioning tensor's isolated visual span."""
+    if conditioning_tensor.ndim != 3:
+        raise ValueError("Visual conditioning export requires a [batch, tokens, channels] tensor.")
+    visual_start, visual_end = visual_range
+    if not 0 <= visual_start < visual_end <= conditioning_tensor.shape[1]:
+        raise ValueError("Visual conditioning export received an invalid visual token range.")
+    save_blended_visual_embeddings(
+        [
+            conditioning_tensor[batch, visual_start:visual_end, :].detach()
+            for batch in range(conditioning_tensor.shape[0])
+        ],
+        visual_fusion_config,
+        embedding_key,
+    )
+
+
 def resolve_embedding_output_path(embeddings_dir: str, file_name: str) -> str:
     """Resolve a relative output name and prove that it remains below embeddings_dir."""
     if not file_name or not file_name.strip():
@@ -1221,14 +1243,13 @@ def evaluate_conditioning_consensus_blend(
     device: str = "cpu",
     visual_ranges: dict = None,
     embedding_key: str = "qwen3vl_8b",
-    clip = None,
-    tokens_dict: dict = None,
     mask_cache: dict = None,
     visual_grids: dict = None,
 ) -> tuple:
     """
     Decoupled blending engine focused entirely on isolated visual token spatial fusion.
-    Saves isolated blended raw visual embeddings if save_blended_embeds is configured.
+    Saves the exact isolated visual tensor used in the fused conditioning when
+    save_blended_embeds is configured.
     """
 
     if visual_fusion_config is None:
@@ -1258,7 +1279,7 @@ def evaluate_conditioning_consensus_blend(
         raise ValueError("Every visual fusion source must have a valid visual token range.")
 
     C_blended_list = []
-    saved_visual_weights = None
+    exported_visuals = []
     for b in range(B):
         batch_tensors_dict = {k: sequence_tensors[k][b].to(device=device) for k in active_keys}
         ref_key = active_keys[0]
@@ -1275,17 +1296,16 @@ def evaluate_conditioning_consensus_blend(
             suffixes[k] = t[v_end:, :]
 
         sources = [visuals[key] for key in active_keys]
-        blended_vis_2d, visual_weights = fuse_visual_token_sources(
+        blended_vis_2d = fuse_visual_token_sources(
             sources,
             visual_fusion_config,
             device,
             mask_cache,
             expected_visual_length,
             source_grids,
-            return_weights=True,
         )
-        if saved_visual_weights is None:
-            saved_visual_weights = visual_weights
+        if visual_fusion_config.get("save_blended_embeds", False):
+            exported_visuals.append(blended_vis_2d.detach())
 
         # Surrounding text (prefixes & suffixes) are kept 100% pure from the reference pass
         blended_prefix = prefixes[ref_key]
@@ -1297,39 +1317,11 @@ def evaluate_conditioning_consensus_blend(
     C_blended = torch.stack(C_blended_list, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
 
     if visual_fusion_config.get("save_blended_embeds", False):
-        if clip is None or not tokens_dict:
-            raise ValueError("Saving blended visual embeddings requires the text encoder and source tokens.")
-
-        cond_stage = clip.cond_stage_model
-        if hasattr(cond_stage, "clip") and isinstance(cond_stage.clip, str) and hasattr(cond_stage, cond_stage.clip):
-            clip_model = getattr(cond_stage, cond_stage.clip)
-        elif hasattr(cond_stage, "clip_model"):
-            clip_model = cond_stage.clip_model
-        elif hasattr(cond_stage, "clip_d"):
-            clip_model = cond_stage.clip_d
-        else:
-            clip_model = cond_stage
-
-        raw_visuals = []
-        for key in active_keys:
-            if key not in tokens_dict:
-                raise ValueError(f"Missing source tokens for raw visual embedding {key}.")
-            token_list = tokens_dict[key][next(iter(tokens_dict[key]))]
-            tokens_only = [[token[0] for token in batch] for batch in token_list]
-            embeds, _, _, _ = clip_model.process_tokens(tokens_only, device)
-            v_start, v_end = visual_ranges[key]
-            raw_visuals.append(embeds[0, v_start:v_end, :].clone().cpu())
-
-        blended_raw = fuse_visual_token_sources(
-            raw_visuals,
+        save_blended_visual_embeddings(
+            exported_visuals,
             visual_fusion_config,
-            device,
-            mask_cache,
-            expected_visual_length,
-            source_grids,
-            weights_override=saved_visual_weights,
+            embedding_key,
         )
-        save_blended_visual_embeddings([blended_raw], visual_fusion_config, embedding_key)
 
     # Pooled output is kept pure from reference pass since text is identical
     ref_key = active_keys[0]
@@ -2233,10 +2225,6 @@ def _spatially_fuse_visual_consensus_sources(
             key: branch["visual_range"] for key, branch in zip(keys, branches)
         },
         embedding_key=next(iter(branches[0]["tokens"])),
-        clip=clip,
-        tokens_dict={
-            key: branch["tokens"] for key, branch in zip(keys, branches)
-        },
         mask_cache={},
         visual_grids={
             key: branch["grid"] for key, branch in zip(keys, branches)

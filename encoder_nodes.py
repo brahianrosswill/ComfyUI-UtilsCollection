@@ -20,6 +20,7 @@ from .encoder_helpers import(
     evaluate_formula,
     evaluate_conditioning_formula,
     evaluate_conditioning_consensus_blend,
+    save_conditioning_visual_embeddings,
     blend_text_vectors,
     find_visual_token_range,
     build_token_to_conditioning_map,
@@ -2135,7 +2136,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
         def format_krea_prompt(user_prompt):
             if minimax_h3:
                 return format_minimax_h3_prompt(user_prompt, system_prompt)
-            if system_prompt:
+            if system_prompt or active_images:
                 return (
                     "<|im_start|>user\n<|im_end|>\n"
                     f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
@@ -2176,6 +2177,9 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             visual_fusion_config = {"visual_fusion_method": "off"}
         visual_method = visual_fusion_config.get("visual_fusion_method", "off")
         visual_encoder_path = visual_fusion_config.get("visual_encoder_path", "grid-deepstack")
+        save_visual_embedding = bool(
+            visual_fusion_config.get("save_blended_embeds", False)
+        )
 
         processed_active_images = [
             prepare_vlm_image(image, vlm_resolution) for image in active_images
@@ -2230,6 +2234,12 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 if pooled_output is not None:
                     pooled_tensors["a"] = pooled_output
                 reference_cond_dict = inline_cond[0][1]
+                if save_visual_embedding:
+                    tokens_dict["a"] = inline_tokens
+                    visual_ranges["a"] = find_visual_token_range(
+                        inline_tokens,
+                        sequence_tensors["a"],
+                    )
                 if formula.strip() not in {"", "a"}:
                     logging.warning(
                         "AdvancedVisualConditioning: numbered inline placeholders encode one native multimodal sequence; formula '%s' was ignored.",
@@ -2274,7 +2284,7 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             P_X = cond_X[0][1].get("pooled_output")
             cond_metadata = cond_X[0][1]
 
-            if visual_method != "off":
+            if visual_method != "off" or save_visual_embedding:
                 try:
                     tokens = (
                         tokenize_minimax_h3_prompt(
@@ -2289,13 +2299,17 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     visual_ranges[letter] = find_visual_token_range(
                         tokens,
                         C_X,
-                        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                        legacy_krea_spatial=(
+                            visual_method != "off"
+                            and visual_encoder_path == "legacy-flat"
+                        ),
                     )
-                    visual_grids[letter] = visual_fusion_grid(
-                        processed_img,
-                        visual_ranges[letter][1] - visual_ranges[letter][0],
-                        visual_encoder_path == "legacy-flat",
-                    )
+                    if visual_method != "off":
+                        visual_grids[letter] = visual_fusion_grid(
+                            processed_img,
+                            visual_ranges[letter][1] - visual_ranges[letter][0],
+                            visual_encoder_path == "legacy-flat",
+                        )
                 except Exception as exc:
                     raise ValueError(
                         f"Could not locate the visual token range for image {idx + 1}: {exc}"
@@ -2318,10 +2332,23 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 key_name = next(iter(tokens.keys()))
 
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, mask_cache=fusion_mask_cache, visual_grids=visual_grids
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)
+            if save_visual_embedding:
+                default_key = "a"
+                source_tokens = tokens_dict.get(default_key)
+                if source_tokens is None or default_key not in visual_ranges:
+                    raise ValueError(
+                        "Saving an unfused visual embedding requires the default visual input."
+                    )
+                save_conditioning_visual_embeddings(
+                    sequence_tensors[default_key],
+                    visual_ranges[default_key],
+                    visual_fusion_config,
+                    next(iter(source_tokens.keys())),
+                )
 
         # Build final conditioning dictionary
         final_cond_dict = reference_cond_dict.copy()
@@ -2527,7 +2554,7 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 key_name = next(iter(tokens.keys()))
 
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
+                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, mask_cache=fusion_mask_cache, visual_grids=visual_grids
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -3233,7 +3260,7 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     key_name = next(iter(tokens.keys()))
 
                 C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, clip=clip, tokens_dict=tokens_dict, mask_cache=fusion_mask_cache, visual_grids=visual_grids
+                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, mask_cache=fusion_mask_cache, visual_grids=visual_grids
                 )
             else:
                 C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)

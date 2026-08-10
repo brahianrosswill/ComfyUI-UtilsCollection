@@ -1687,6 +1687,38 @@ def test_advanced_visual_text_only_path_preserves_custom_system_prompt():
     assert not Clip.tokenized_text.startswith("<|im_start|>user\n<|im_end|>")
 
 
+def test_advanced_visual_image_only_path_uses_anti_stripping_template(monkeypatch):
+    class Clip:
+        tokenized_text = None
+
+        @classmethod
+        def tokenize(cls, text, **kwargs):
+            cls.tokenized_text = text
+            return {"fake": [[(1, 1.0)]]}
+
+        @staticmethod
+        def encode_from_tokens_scheduled(tokens):
+            return [[torch.ones(1, 1, 1), {}]]
+
+    monkeypatch.setattr(
+        encoder_nodes, "prepare_vlm_image", lambda image, _resolution: image
+    )
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        Clip(),
+        prompt="",
+        system_prompt="",
+        vlm_resolution=384,
+        image_inputs={"image_1": torch.ones(1, 2, 2, 3)},
+    )
+
+    assert Clip.tokenized_text.startswith(
+        "<|im_start|>user\n<|im_end|>\n<|im_start|>system\n<|im_end|>"
+    )
+    assert "Describe the image by detailing" not in Clip.tokenized_text
+    assert "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>" in Clip.tokenized_text
+
+
 def test_numbered_image_placeholders_preserve_prompt_order_and_strip_invalid(caplog):
     prompt, numbers = encoder_helpers.prepare_image_placeholder_prompt(
         "first image_input_2 then IMAGE_INPUT_1 repeat image_input_2 missing image_input_3 image_input_fusion",

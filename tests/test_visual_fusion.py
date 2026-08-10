@@ -101,32 +101,24 @@ def test_deepstack_reuses_main_spatial_mask():
     assert torch.equal(main.bool(), layers[1].eq(200.0))
 
 
-def test_saved_raw_embedding_uses_active_conditioning_mask(monkeypatch):
+def test_saved_embedding_is_exact_fused_conditioning_visual_span(monkeypatch):
     config = {
         **_config(seed=31),
         "save_blended_embeds": True,
     }
     cache = {}
     sequence_tensors = {
-        "a": torch.zeros(1, 6, 1),
-        "b": torch.ones(1, 6, 1),
+        "a": torch.stack([torch.zeros(6, 1), torch.full((6, 1), 2.0)]),
+        "b": torch.stack([torch.ones(6, 1), torch.full((6, 1), 3.0)]),
     }
     visual_ranges = {"a": (1, 5), "b": (1, 5)}
-    tokens = {
-        "a": {"qwen3vl_4b": [[(0, 1.0)]]},
-        "b": {"qwen3vl_4b": [[(1, 1.0)]]},
-    }
-
-    class ClipModel:
-        def process_tokens(self, tokens_only, device):
-            value = float(tokens_only[0][0])
-            return torch.full((1, 6, 2), value, device=device), None, None, None
-
-    class Clip:
-        cond_stage_model = ClipModel()
 
     saved = []
-    monkeypatch.setattr(encoder_helpers, "save_blended_visual_embeddings", lambda tensors, config, key: saved.append(tensors[0]))
+    monkeypatch.setattr(
+        encoder_helpers,
+        "save_blended_visual_embeddings",
+        lambda tensors, config, key: saved.extend(tensors),
+    )
 
     conditioning, _ = encoder_helpers.evaluate_conditioning_consensus_blend(
         sequence_tensors,
@@ -134,14 +126,35 @@ def test_saved_raw_embedding_uses_active_conditioning_mask(monkeypatch):
         config,
         "cpu",
         visual_ranges,
-        clip=Clip(),
-        tokens_dict=tokens,
         mask_cache=cache,
         visual_grids={"a": (2, 2), "b": (2, 2)},
     )
 
     assert len(cache) == 1
-    assert torch.equal(conditioning[0, 1:5, 0], saved[0][:, 0])
+    assert len(saved) == 2
+    for batch in range(2):
+        assert torch.equal(conditioning[batch, 1:5, :], saved[batch])
+
+
+def test_unfused_visual_export_preserves_only_visual_batches(monkeypatch):
+    conditioning = torch.arange(24, dtype=torch.float32).reshape(2, 6, 2)
+    saved = []
+    monkeypatch.setattr(
+        encoder_helpers,
+        "save_blended_visual_embeddings",
+        lambda tensors, config, key: saved.extend(tensors),
+    )
+
+    encoder_helpers.save_conditioning_visual_embeddings(
+        conditioning,
+        (1, 5),
+        {"save_path": "unused.safetensors"},
+        "qwen3vl_4b",
+    )
+
+    assert len(saved) == 2
+    assert torch.equal(saved[0], conditioning[0, 1:5, :])
+    assert torch.equal(saved[1], conditioning[1, 1:5, :])
 
 
 @pytest.mark.parametrize("method", ["index-consensus", "similarity-consensus", "unknown"])
@@ -439,6 +452,49 @@ def test_advanced_visual_encoder_spatial_output_contains_every_source(monkeypatc
     ).result[0]
 
     assert set(output[0][0][:, 1:5, 0].flatten().tolist()) == {1.0, 10.0}
+
+
+def test_advanced_visual_encoder_exports_default_unfused_visual_input(monkeypatch):
+    encoded = torch.arange(12, dtype=torch.float32).reshape(1, 6, 2)
+    exported = []
+
+    class Clip:
+        @staticmethod
+        def tokenize(*_args, **_kwargs):
+            return {"qwen3vl_4b": [[(0, 1.0)]]}
+
+    monkeypatch.setattr(
+        encoder_nodes, "prepare_vlm_image", lambda image, _resolution: image
+    )
+    monkeypatch.setattr(
+        encoder_nodes,
+        "encode_embedding_classical_scaled_bias",
+        lambda *_args, **_kwargs: [[encoded, {}]],
+    )
+    monkeypatch.setattr(
+        encoder_nodes, "find_visual_token_range", lambda *_args, **_kwargs: (1, 5)
+    )
+    monkeypatch.setattr(
+        encoder_nodes,
+        "save_conditioning_visual_embeddings",
+        lambda tensor, visual_range, config, key: exported.append(
+            (tensor, visual_range, key)
+        ),
+    )
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        Clip(),
+        prompt="",
+        system_prompt="",
+        vlm_resolution=384,
+        image_inputs={"image_1": torch.zeros(1, 2, 2, 3)},
+        visual_fusion_config={
+            **_config(method="off"),
+            "save_blended_embeds": True,
+        },
+    )
+
+    assert exported == [(encoded, (1, 5), "qwen3vl_4b")]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
