@@ -36,6 +36,7 @@ def test_registered_non_deprecated_nodes_have_search_metadata():
 
     assert "UC_StaticFloat" in checked
     assert "UC_ConditioningConsensusBlend" in checked
+    assert "UC_VLMSysQueryRawPresets" in checked
 
 
 def test_legacy_nodes_do_not_inherit_canonical_search_metadata():

@@ -47,6 +47,7 @@ DESCRIPTIONS = {
     "UC_UnifiedPresets": "Combines multiple prompt preset families into one selector.",
     "UC_VLMSysInstrPresets": "Provides system instruction presets for vision-language models.",
     "UC_VLMSysQueryAddPresets": "Provides supplemental query presets for vision-language models.",
+    "UC_VLMSysQueryRawPresets": "Outputs vision-language query instructions without request-wrapper syntax.",
     "UC_VLMSysInstrAdvPresets": "Provides advanced system instruction presets for vision-language models.",
     "UC_MiniMaxH3VLMSysInstrPresets": "Provides dedicated Base, First/Last Frame, and Reference VLM instructions for MiniMax H3.",
     "UC_MiniMaxH3VLMSysInstrAdvPresets": "Provides MiniMax H3 VLM instructions with explicit user and system overrides.",

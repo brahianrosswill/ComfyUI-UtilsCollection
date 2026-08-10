@@ -86,6 +86,7 @@ class SamplingUtils(ComfyExtension):
             UC_VLMSysInstrPresets,
             UC_VLMSysInstrLegacyPresets,
             UC_VLMSysQueryAddPresets,
+            UC_VLMSysQueryRawPresets,
             UC_VLMSysInstrAdvPresets,
             UC_MiniMaxH3VLMSysInstrPresets,
             UC_MiniMaxH3VLMSysInstrAdvPresets,

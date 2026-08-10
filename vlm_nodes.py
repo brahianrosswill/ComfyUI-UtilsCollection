@@ -1,5 +1,10 @@
 from comfy_api.latest import io
-from .vlm_presets import system_instructions_vlm, system_query_additional_vlm, additional_instructions_vlm
+from .vlm_presets import (
+    additional_instructions_vlm,
+    system_instructions_vlm,
+    system_query_additional_vlm,
+    system_query_raw_vlm,
+)
 from .vlm_legacy_presets import legacy_system_instructions_vlm
 
 
@@ -104,6 +109,31 @@ class UC_VLMSysQueryAddPresets(io.ComfyNode):
         prefix = system_query_additional_vlm.get(f"{preset}_prefix", "")
         suffix = system_query_additional_vlm.get(f"{preset}_suffix", "")
         return io.NodeOutput(f"{prefix}{text}{suffix}")
+
+
+class UC_VLMSysQueryRawPresets(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        options = sorted(system_query_raw_vlm)
+        default = options[0] if options else ""
+        return io.Schema(
+            node_id="UC_VLMSysQueryRawPresets",
+            display_name="VLM System Query Raw Presets",
+            category="advanced/text",
+            inputs=[
+                io.Combo.Input(
+                    "preset",
+                    display_name="vlm_system_query_raw_preset",
+                    options=options,
+                    default=default,
+                ),
+            ],
+            outputs=[io.String.Output(display_name="system_query")],
+        )
+
+    @classmethod
+    def execute(cls, preset) -> io.NodeOutput:
+        return io.NodeOutput(system_query_raw_vlm.get(preset, ""))
 
 
 class UC_VLMSysInstrAdvPresets(io.ComfyNode):

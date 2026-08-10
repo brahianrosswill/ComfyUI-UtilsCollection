@@ -12,7 +12,7 @@ package = types.ModuleType(PACKAGE_NAME)
 package.__path__ = [str(CUSTOM_NODE_ROOT)]
 sys.modules.setdefault(PACKAGE_NAME, package)
 
-from utils_collection_vlm_preset_test import vlm_legacy_presets, vlm_presets
+from utils_collection_vlm_preset_test import vlm_legacy_presets, vlm_nodes, vlm_presets
 
 
 HARDENED_IMAGE_PRESET_BASELINES = {
@@ -211,6 +211,76 @@ def test_character_transfer_query_presets_keep_provider_reference_contracts_sepa
 
     assert "<Picture" not in presets["character_transfer_gemma_prefix"]
     assert "[`image" not in presets["character_transfer_qwen_prefix"]
+
+
+def test_raw_query_presets_preserve_instructions_without_request_carriers():
+    wrapped = vlm_presets.system_query_additional_vlm
+    raw = vlm_presets.system_query_raw_vlm
+    expected_names = {
+        key.removesuffix("_prefix").removesuffix("_suffix") for key in wrapped
+    }
+    assert set(raw) == expected_names
+
+    json_carriers = {
+        "character_transfer_gemma": "current edit request",
+        "character_transfer_qwen": "current edit request",
+        "ideogram_4": "current request",
+        "image2image": "current edit request",
+        "text2image": "current request",
+        "video_basic": "current video request",
+    }
+    json_suffix = '\r\n\u2060 \u2060\u2060"\\}'
+    for name, request_key in json_carriers.items():
+        carrier = f' \\{{"{request_key}": "'
+        assert wrapped[f"{name}_suffix"] == json_suffix
+        assert raw[name] == wrapped[f"{name}_prefix"].removesuffix(carrier)
+
+    for name in ("image2image_qwen", "text2image_qwen"):
+        assert wrapped[f"{name}_suffix"] == ""
+        assert raw[name] == wrapped[f"{name}_prefix"].removesuffix(
+            " Current request:\n"
+        )
+
+    for name in ("h3_fl2va", "h3_ref2va"):
+        prefix = wrapped[f"{name}_prefix"].removesuffix(
+            "\n\nBEGIN VIDEO REQUEST:\n"
+        )
+        suffix = wrapped[f"{name}_suffix"].removeprefix(
+            "\nEND VIDEO REQUEST.\n\n"
+        )
+        assert raw[name] == f"{prefix}\n\n{suffix}"
+
+    forbidden = (
+        '\\{"current request": "',
+        '\\{"current edit request": "',
+        '\\{"current video request": "',
+        "Current request:",
+        "BEGIN VIDEO REQUEST",
+        "END VIDEO REQUEST",
+    )
+    assert all(
+        value and not any(marker in value for marker in forbidden)
+        for value in raw.values()
+    )
+    assert "<Picture" not in raw["character_transfer_gemma"]
+    assert "[`image" not in raw["character_transfer_qwen"]
+
+
+def test_raw_query_preset_node_outputs_selected_instruction_directly():
+    schema = vlm_nodes.UC_VLMSysQueryRawPresets.define_schema()
+
+    assert schema.node_id == "UC_VLMSysQueryRawPresets"
+    assert schema.display_name == "VLM System Query Raw Presets"
+    assert schema.category == "advanced/text"
+    assert [value.id for value in schema.inputs] == ["preset"]
+    assert schema.inputs[0].display_name == "vlm_system_query_raw_preset"
+    assert schema.inputs[0].options == sorted(vlm_presets.system_query_raw_vlm)
+    assert schema.outputs[0].display_name == "system_query"
+
+    preset = schema.inputs[0].options[0]
+    assert vlm_nodes.UC_VLMSysQueryRawPresets.execute(preset).args == (
+        vlm_presets.system_query_raw_vlm[preset],
+    )
 
 
 def test_h3_query_presets_are_paired_and_wrap_the_request_once():
