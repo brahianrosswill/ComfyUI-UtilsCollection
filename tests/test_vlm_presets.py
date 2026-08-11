@@ -339,9 +339,22 @@ def test_h3_ref2va_query_preset_uses_only_supplied_reference_roles():
 
     assert "use only identifiers that exist" in prefix
     assert "Do not automatically classify any picture as the first or final frame" in prefix
-    assert "Use every supplied picture deliberately" in prefix
-    assert "never mention an unsupplied `<Picture N>`" in suffix
+    assert "Use `<Picture N>` as source provenance" in prefix
+    assert "never as a timeline-segment anchor" in prefix
+    assert "If the active system instruction provides a subject or reference definition section" in prefix
+    assert "only in that subject or reference's first complete definition" in prefix
+    assert "without repeating the picture identifier at every timestamp segment" in prefix
+    assert "Never turn a picture identifier into a timestamp declaration" in prefix
+    assert "Use every supplied picture deliberately as visual evidence" in prefix
+    assert "where its subject or other referenced content is first completely defined" in suffix
+    assert "Do not repeat picture identifiers at each timeline interval" in suffix
+    assert "never mention an unsupplied identifier" in suffix
     assert "Do not assign first-frame or final-frame status" in suffix
+    assert "`subject_definitions:`" not in prefix + suffix
+    assert "`detailed_description:`" not in prefix + suffix
+    assert "`Timeline:`" not in prefix + suffix
+    assert "wherever that reference materially controls" not in prefix
+    assert "Use every supplied picture through its existing identifier" not in suffix
 
 
 def test_style_presets_receive_no_qwen_variants():
@@ -535,8 +548,8 @@ def test_timeline_video_preset_uses_adaptive_contiguous_ranges():
     ]
 
     assert "first output text must be exactly `Timeline:`" in instruction
-    assert "[00.00s-01.00s]:" in instruction
-    assert "[01.00s-02.50s]:" in instruction
+    assert "[0.00s-1.00s]:" in instruction
+    assert "[1.00s-2.50s]:" in instruction
     assert "3-second request using three meaningful sections" in instruction
     assert "5-second request using four differently timed sections" in instruction
     assert "Never reuse their duration, count, boundaries, or content" in instruction
@@ -578,21 +591,24 @@ def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():
         assert "Use no fixed number of sections" in instruction
         assert "Every range touches the next without a gap or overlap" in instruction
         assert "final range ends at the exact total duration" in instruction
-        assert "[00.00s-00.00s]:" in instruction
+        assert "[0.00s-0.00s]:" in instruction
         assert "[SPEECH]:" in instruction
         assert "<d>[Language]" in instruction
         assert "The timestamp range remains the authoritative timing structure" in instruction
 
 
-def test_timeline_presets_require_zero_padded_two_decimal_total_seconds():
+def test_timeline_presets_require_minimal_width_two_decimal_total_seconds():
     for name in TIMELINE_CHANNEL_BALANCE_PRESETS:
         instruction = vlm_presets.system_instructions_vlm[name]
 
-        assert "first range begins at `00.00s`" in instruction
-        assert "[00.00s-00.00s]:" in instruction
+        assert "first range begins at `0.00s`" in instruction
+        assert "[0.00s-0.00s]:" in instruction
         assert "total elapsed seconds" in instruction
-        assert "at least two integer digits" in instruction
+        assert "fewest integer digits needed" in instruction
         assert "exactly two decimal digits" in instruction
+        assert "zero-padded two-decimal" not in instruction
+        assert "at least two integer digits" not in instruction
+        assert "[00.00s" not in instruction
         assert "[0s-" not in instruction
         assert "[start-end]:" not in instruction
 
@@ -650,21 +666,30 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "If `summary:` mentions temporal information" in instruction
     assert "preserve their order and relationship exactly" in instruction
     assert "must retain its supplied timestamp relationship" in instruction
-    assert "Copy every `<Picture N>` and timestamp pair explicitly supplied" in instruction
+    assert "Read every `<Picture N>` and timestamp pair explicitly supplied" in instruction
+    assert "as an internal picture-to-time map" in instruction
     assert "without adding information to that pair" in instruction
     assert "Use each supplied timestamp as the opening of the timeline block" in instruction
-    assert "Do not cite it in an earlier or later block" in instruction
+    assert "Do not write `<Picture N>` anywhere inside `detailed_description:` or `Timeline:`" in instruction
+    assert "do not output a picture-to-timestamp or picture-to-shot declaration" in instruction
+    assert "cite every existing `<Picture N>` that shows or defines that subject" in instruction
+    assert "Inside `detailed_description:` and `Timeline:`, use `<Subject N>`" in instruction
+    assert "never cite `<Picture N>` in a timestamp block" in instruction
     assert "If the final supplied timestamp precedes the requested duration" in instruction
-    assert "record only every picture number and timestamp pair" in instruction
-    assert "Do not add a shot number or another association" in instruction
+    assert "use it only to plan the corresponding timeline content" in instruction
+    assert "cite ComfyUI's existing `<Picture N>` identifiers only as subject provenance" in instruction
     assert "For every explicitly supplied picture and timestamp pair" in instruction
+    assert "without emitting the matching `<Picture N>`" in instruction
     assert "Write `summary:` immediately after the completed timeline" in instruction
-    assert "no picture citation outside its assigned timestamp block" in instruction
+    assert "no `<Picture N>` citation inside `detailed_description:` or `Timeline:`" in instruction
     assert "no repeated or independently reconstructed timeline progression" in instruction
     assert "temporal consistency between `summary:` and `Timeline:`" in instruction
     assert "Condense the preceding timeline" not in instruction
     assert "Mention actions, transitions" not in instruction
     assert "condensing only that established progression" not in instruction
+    assert "Cite the picture at the opening of that block" not in instruction
+    assert "cite the matching `<Picture N>` at the block's opening" not in instruction
+    assert "no picture citation outside its assigned timestamp block" not in instruction
     assert "nonchronological premise" not in instruction
     assert "separately assembled downstream H3 media prefix" not in instruction
     assert "fixed ordinal pairing" not in instruction

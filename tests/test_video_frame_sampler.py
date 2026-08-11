@@ -59,6 +59,8 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
     assert schema.inputs[4].default == 0.25
     assert schema.inputs[5].default == 1
     assert schema.inputs[6].default == "00.000s"
+    assert "0.00s" in schema.inputs[6].options
+    assert "00.00s" not in schema.inputs[6].options
     assert schema.inputs[7].default == "H3 alignment prefix"
     assert [output.id for output in schema.outputs] == [
         "image_batch",
@@ -139,11 +141,18 @@ def test_uniform_pts_uses_irregular_presentation_times():
         ("MM:SS.mmm", "02:03.456"),
         ("MM:SS:mmm", "02:03:456"),
         ("00.000s", "123.456s"),
-        ("00.00s", "123.46s"),
+        ("0.00s", "123.46s"),
     ],
 )
 def test_timestamp_formats_are_deterministic(timestamp_format, expected):
     assert format_video_timestamp(Fraction(123456, 1000), timestamp_format) == expected
+
+
+def test_two_decimal_seconds_use_minimal_integer_width():
+    assert format_video_timestamp(Fraction(0), "0.00s") == "0.00s"
+    assert format_video_timestamp(Fraction(1234, 1000), "0.00s") == "1.23s"
+    assert format_video_timestamp(Fraction(12304, 1000), "0.00s") == "12.30s"
+    assert format_video_timestamp(Fraction(1234, 1000), "00.000s") == "01.234s"
 
 
 def test_timestamp_rounding_carries_into_the_next_minute():
@@ -154,21 +163,21 @@ def test_timestamp_rounding_carries_into_the_next_minute():
 
 
 def test_timeline_reuses_formatted_timestamp_literals_without_unit_rewriting():
-    timestamps = ["00.000s", "02.50s"]
+    timestamps = ["00.000s", "2.50s"]
 
     assert build_video_timeline_text(timestamps, "timestamps only") == (
-        "00.000s\n02.50s"
+        "00.000s\n2.50s"
     )
     assert build_video_timeline_text(timestamps, "indexed") == (
-        "0: 00.000s\n1: 02.50s"
+        "0: 00.000s\n1: 2.50s"
     )
     assert build_video_timeline_text(timestamps, "H3 pictures") == (
-        "<Picture 1> at 00.000s\n<Picture 2> at 02.50s"
+        "<Picture 1> at 00.000s\n<Picture 2> at 2.50s"
     )
     assert build_video_timeline_text(timestamps, "H3 alignment prefix") == (
         "For the target video, at 00.000s into the target video, "
         "<Picture 1> (from [Shot 1]) is fully referenced.\n"
-        "For the target video, at 02.50s into the target video, "
+        "For the target video, at 2.50s into the target video, "
         "<Picture 2> (from [Shot 2]) is fully referenced."
     )
 

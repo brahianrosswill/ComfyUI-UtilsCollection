@@ -22,7 +22,7 @@ VIDEO_FRAME_TIMESTAMP_FORMATS = (
     "MM:SS.mmm",
     "MM:SS:mmm",
     "00.000s",
-    "00.00s",
+    "0.00s",
 )
 
 VIDEO_FRAME_TIMELINE_STYLES = (
@@ -380,10 +380,10 @@ def format_video_timestamp(timestamp: Fraction | float, timestamp_format: str) -
         raise ValueError(f"Unsupported video timestamp format: {timestamp_format}")
 
     value = _as_fraction(timestamp)
-    if timestamp_format == "00.00s":
+    if timestamp_format == "0.00s":
         total_centiseconds = _rounded_units(value, 100)
         seconds, centiseconds = divmod(total_centiseconds, 100)
-        return f"{seconds:02d}.{centiseconds:02d}s"
+        return f"{seconds}.{centiseconds:02d}s"
 
     total_milliseconds = _rounded_units(value, 1000)
     total_seconds, milliseconds = divmod(total_milliseconds, 1000)
