@@ -274,6 +274,14 @@ def test_raw_query_presets_preserve_instructions_without_request_carriers():
         )
         assert raw[name] == f"{prefix}\n\n{suffix}"
 
+    t2va_prefix = wrapped["h3_t2va_prefix"].removesuffix(
+        "\r\n\r\nBEGIN VIDEO REQUEST:\r\n"
+    )
+    t2va_suffix = wrapped["h3_t2va_suffix"].removeprefix(
+        "\r\nEND VIDEO REQUEST.\r\n\r\n"
+    )
+    assert raw["h3_t2va"] == f"{t2va_prefix}\r\n\r\n{t2va_suffix}"
+
     forbidden = (
         '\\{"current request": "',
         '\\{"current edit request": "',
@@ -342,6 +350,7 @@ def test_h3_query_presets_are_paired_and_wrap_the_request_once():
         key.removesuffix("_prefix").removesuffix("_suffix") for key in presets
     }
     assert {
+        "h3_t2va",
         "h3_fl2va",
         "h3_ref2va",
         "h3_fl2va_experimental",
@@ -362,9 +371,84 @@ def test_h3_query_presets_are_paired_and_wrap_the_request_once():
         assert prefix.endswith("BEGIN VIDEO REQUEST:\n")
         assert suffix.startswith("\nEND VIDEO REQUEST.")
         assert wrapped.count(request) == 1
+
+    for name in (
+        "h3_fl2va",
+        "h3_ref2va",
+        "h3_fl2va_experimental",
+        "h3_ref2va_experimental",
+    ):
+        prefix = presets[f"{name}_prefix"]
+        suffix = presets[f"{name}_suffix"]
         assert "ComfyUI has already assigned" in prefix
         assert "Do not create, reproduce, or renumber" in prefix
         assert "Do not output the upstream media-prefix declaration" in suffix
+
+
+def test_h3_t2va_query_uses_images_only_as_prompt_evidence():
+    wrapped = vlm_presets.system_query_additional_vlm
+    raw = vlm_presets.system_query_raw_vlm
+    prefix = wrapped["h3_t2va_prefix"]
+    suffix = wrapped["h3_t2va_suffix"]
+    request = "Make the subjects cross the clearing."
+    expected_raw = (
+        prefix.removesuffix("\r\n\r\nBEGIN VIDEO REQUEST:\r\n")
+        + "\r\n\r\n"
+        + suffix.removeprefix("\r\nEND VIDEO REQUEST.\r\n\r\n")
+    )
+
+    assert prefix.endswith("BEGIN VIDEO REQUEST:\r\n")
+    assert suffix.startswith("\r\nEND VIDEO REQUEST.")
+    assert f"{prefix}{request}{suffix}".count(request) == 1
+    assert "only as visual evidence" in prefix
+    assert "not supplied to downstream MiniMax H3" in prefix
+    assert "The completed prompt must stand on its text alone." in prefix
+    assert "never output `<Picture N>`" in prefix
+    assert "MiniMax H3 receives this text and none of the supplied VLM images" in suffix
+    assert "Do not output `<Picture N>`" in suffix
+    assert "ComfyUI has already assigned" not in prefix
+    assert "first frame" not in prefix.lower()
+    assert "final frame" not in prefix.lower()
+    assert raw["h3_t2va"] == expected_raw
+    assert "BEGIN VIDEO REQUEST" not in raw["h3_t2va"]
+    assert "END VIDEO REQUEST" not in raw["h3_t2va"]
+    assert all(
+        value.count("\n") == value.count("\r\n")
+        for value in (prefix, suffix, raw["h3_t2va"])
+    )
+    assert "h3_t2va" in vlm_nodes.UC_VLMSysQueryAddPresets.get_presets()
+    assert "h3_t2va" in vlm_nodes.UC_VLMSysQueryRawPresets.define_schema().inputs[0].options
+
+    source = ast.parse(
+        (CUSTOM_NODE_ROOT / "vlm_presets.py").read_text(encoding="utf-8")
+    )
+    dictionaries = {
+        target.id: node.value
+        for node in source.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and target.id in {"system_query_additional_vlm", "system_query_raw_vlm"}
+    }
+    wrapped_literals = {
+        ast.literal_eval(key): value
+        for key, value in zip(
+            dictionaries["system_query_additional_vlm"].keys,
+            dictionaries["system_query_additional_vlm"].values,
+        )
+        if isinstance(key, ast.Constant)
+    }
+    raw_literals = {
+        ast.literal_eval(key): value
+        for key, value in zip(
+            dictionaries["system_query_raw_vlm"].keys,
+            dictionaries["system_query_raw_vlm"].values,
+        )
+        if isinstance(key, ast.Constant)
+    }
+    assert isinstance(wrapped_literals["h3_t2va_prefix"], ast.Constant)
+    assert isinstance(wrapped_literals["h3_t2va_suffix"], ast.Constant)
+    assert isinstance(raw_literals["h3_t2va"], ast.Constant)
 
 
 def test_h3_fl2va_query_preset_enforces_available_boundary_pictures():
@@ -758,6 +842,60 @@ def test_experimental_timeline_presets_keep_minimal_width_snapshot():
         assert "[0.00s-0.00s]:" in instruction
         assert "fewest integer digits needed" in instruction
         assert "zero-padded two-decimal" not in instruction
+
+
+def test_minimax_h3_t2va_uses_general_standalone_timeline_contract():
+    name = "video_timeline_minimax_h3_t2va_system_instruction"
+    instruction = vlm_presets.system_instructions_vlm[name]
+    basic_schema = vlm_nodes.UC_VLMSysInstrPresets.define_schema()
+    advanced_schema = vlm_nodes.UC_VLMSysInstrAdvPresets.define_schema()
+
+    assert name in basic_schema.inputs[0].options
+    assert name in advanced_schema.inputs[0].options
+    assert "MiniMax H3 receives only the completed text" in instruction
+    assert "receives none of these images" in instruction
+    assert "The completed output must stand on its text alone." in instruction
+    assert "Never write `<Picture N>`" in instruction
+    assert "Complete First-Use Definitions" in instruction
+    assert "[0.00s-0.00s]:" in instruction
+    assert "first range begins at `0.00s`" in instruction
+    assert "Use the fewest integer digits needed" in instruction
+    assert "exactly two decimal digits" in instruction
+    assert instruction.count("\n") == instruction.count("\r\n")
+    assert "MM:SS.mmm" not in instruction
+    assert "00:00.000" not in instruction
+    assert "ComfyUI has already assigned" not in instruction
+    assert "fully_preserved" not in instruction
+    assert "retention_analysis:" not in instruction
+    assert "subject_definitions:" not in instruction
+
+    fields = (
+        "integrated_multimodal_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+    positions = [instruction.index(field) for field in fields]
+    assert positions == sorted(positions)
+
+    source = ast.parse(
+        (CUSTOM_NODE_ROOT / "vlm_presets.py").read_text(encoding="utf-8")
+    )
+    preset_dict = next(
+        node.value
+        for node in source.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "system_instructions_vlm"
+            for target in node.targets
+        )
+    )
+    literal_nodes = {
+        ast.literal_eval(key): value
+        for key, value in zip(preset_dict.keys, preset_dict.values)
+        if isinstance(key, ast.Constant)
+    }
+    assert isinstance(literal_nodes[name], ast.Constant)
 
 
 def test_minimax_h3_base_timeline_field_order():
