@@ -98,6 +98,7 @@ class SamplingUtils(ComfyExtension):
             UC_ImageToVideoPrompt,
             UC_LoadImagePath,
             UC_LoadImageDirectory,
+            UC_SampleVideoFramesAsImages,
             UC_HighResolutionTileSplit,
             UC_HighResolutionTileAccumulator,
             UC_ListToImageBatch,

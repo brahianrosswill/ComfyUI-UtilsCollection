@@ -1,0 +1,465 @@
+from __future__ import annotations
+
+import io
+import os
+from dataclasses import dataclass
+from fractions import Fraction
+from typing import Callable, Iterator, Sequence
+
+import av
+import numpy as np
+import torch
+
+
+VIDEO_FRAME_SAMPLING_STRATEGIES = (
+    "codec keyframes",
+    "uniform PTS",
+)
+
+VIDEO_FRAME_TIMESTAMP_FORMATS = (
+    "HH:MM:SS.mmm",
+    "HH:MM:SS:mmm",
+    "MM:SS.mmm",
+    "MM:SS:mmm",
+    "00.000s",
+    "00.00s",
+)
+
+VIDEO_FRAME_TIMELINE_STYLES = (
+    "H3 alignment prefix",
+    "H3 pictures",
+    "indexed",
+    "timestamps only",
+)
+
+
+@dataclass(frozen=True)
+class VideoFrameRecord:
+    """Presentation metadata for one frame in the active VIDEO input."""
+
+    frame_index: int
+    timestamp: Fraction
+    key_frame: bool
+
+
+@dataclass(frozen=True)
+class SampledVideoFrames:
+    image_batch: torch.Tensor
+    image_list: list[torch.Tensor]
+    timestamps: list[str]
+    timestamps_text: str
+    timeline_text: str
+
+
+def _as_fraction(value: Fraction | float | int) -> Fraction:
+    if isinstance(value, Fraction):
+        return value
+    if isinstance(value, int):
+        return Fraction(value)
+    return Fraction(str(value))
+
+
+def _video_source_factory(video) -> Callable[[], str | io.BytesIO]:
+    source = video.get_stream_source()
+    if isinstance(source, (str, os.PathLike)):
+        path = os.fspath(source)
+        return lambda: path
+
+    seek = getattr(source, "seek", None)
+    if callable(seek):
+        seek(0)
+    data = source.read()
+    return lambda: io.BytesIO(data)
+
+
+def _active_video_frames(
+    video,
+    source_factory: Callable[[], str | io.BytesIO] | None = None,
+) -> Iterator[tuple[int, Fraction, av.VideoFrame]]:
+    """Yield active frames in presentation order with clip-relative PTS."""
+
+    if source_factory is None:
+        source_factory = _video_source_factory(video)
+    source = source_factory()
+    start_seconds, duration_seconds = video.get_active_trim_window()
+    trim_start = _as_fraction(start_seconds)
+    trim_duration = _as_fraction(duration_seconds)
+
+    with av.open(source, mode="r") as container:
+        if not container.streams.video:
+            raise ValueError("The VIDEO input contains no video stream.")
+
+        stream = container.streams.video[0]
+        if stream.time_base is None:
+            raise ValueError("The video stream has no time base for PTS conversion.")
+
+        stream_time_base = Fraction(stream.time_base)
+        stream_start_pts = stream.start_time if stream.start_time is not None else 0
+        stream_origin = Fraction(stream_start_pts) * stream_time_base
+        active_start = stream_origin + trim_start
+        active_end = active_start + trim_duration if trim_duration > 0 else None
+
+        if trim_start > 0:
+            seek_pts = stream_start_pts + int(trim_start / stream_time_base)
+            container.seek(seek_pts, stream=stream, backward=True, any_frame=False)
+
+        relative_origin = None
+        previous_time = None
+        frame_index = 0
+
+        for frame in container.decode(stream):
+            if frame.pts is None:
+                raise ValueError(
+                    "A decoded video frame has no PTS; exact timestamp sampling is unavailable."
+                )
+
+            frame_time_base = frame.time_base or stream.time_base
+            if frame_time_base is None:
+                raise ValueError(
+                    "A decoded video frame has no time base for PTS conversion."
+                )
+
+            presentation_time = Fraction(frame.pts) * Fraction(frame_time_base)
+            if presentation_time < active_start:
+                continue
+            if active_end is not None and presentation_time >= active_end:
+                break
+            if previous_time is not None and presentation_time < previous_time:
+                raise ValueError("Video presentation timestamps are not monotonic.")
+
+            if relative_origin is None:
+                relative_origin = presentation_time
+            relative_time = presentation_time - relative_origin
+            previous_time = presentation_time
+            yield frame_index, relative_time, frame
+            frame_index += 1
+
+
+def scan_video_frame_records(
+    video,
+    source_factory: Callable[[], str | io.BytesIO] | None = None,
+) -> list[VideoFrameRecord]:
+    records = [
+        VideoFrameRecord(
+            frame_index=frame_index,
+            timestamp=timestamp,
+            key_frame=bool(frame.key_frame),
+        )
+        for frame_index, timestamp, frame in _active_video_frames(
+            video, source_factory
+        )
+    ]
+    if not records:
+        raise ValueError("The active VIDEO input contains no decodable frames.")
+    return records
+
+
+def _spacing_filter(
+    records: Sequence[VideoFrameRecord], minimum_spacing: Fraction
+) -> list[VideoFrameRecord]:
+    selected: list[VideoFrameRecord] = []
+    for record in sorted(records, key=lambda item: (item.timestamp, item.frame_index)):
+        if not selected or record.timestamp - selected[-1].timestamp >= minimum_spacing:
+            selected.append(record)
+    return selected
+
+
+def _evenly_thin(
+    records: Sequence[VideoFrameRecord],
+    count: int,
+    *,
+    single_from_end: bool,
+) -> list[VideoFrameRecord]:
+    if count <= 0 or not records:
+        return []
+    if count >= len(records):
+        return list(records)
+    if count == 1:
+        index = len(records) - 1 if single_from_end else len(records) // 2
+        return [records[index]]
+
+    denominator = count - 1
+    last_index = len(records) - 1
+    indices = [
+        (position * last_index + denominator // 2) // denominator
+        for position in range(count)
+    ]
+    return [records[index] for index in indices]
+
+
+def _select_uniform_records(
+    records: Sequence[VideoFrameRecord],
+    maximum_frames: int,
+    include_zero_time: bool,
+    minimum_spacing: Fraction,
+) -> list[VideoFrameRecord]:
+    zero_record = records[0]
+    candidates = [record for record in records if record.frame_index != zero_record.frame_index]
+
+    if maximum_frames == 0:
+        combined = ([zero_record] if include_zero_time else []) + candidates
+        return _spacing_filter(combined, minimum_spacing)
+
+    if not candidates:
+        return [zero_record] if include_zero_time else []
+
+    if include_zero_time and maximum_frames == 1:
+        return [zero_record]
+
+    duration = records[-1].timestamp
+    if duration <= 0:
+        return [zero_record] if include_zero_time else []
+
+    if include_zero_time:
+        target_count = maximum_frames - 1
+        targets = [
+            duration * Fraction(position, target_count)
+            for position in range(1, target_count + 1)
+        ]
+        selected = [zero_record]
+    else:
+        target_count = maximum_frames
+        targets = [
+            duration * Fraction(position, target_count + 1)
+            for position in range(1, target_count + 1)
+        ]
+        selected = []
+
+    nearest = []
+    for target in targets:
+        nearest.append(
+            min(
+                candidates,
+                key=lambda record: (
+                    abs(record.timestamp - target),
+                    record.timestamp,
+                    record.frame_index,
+                ),
+            )
+        )
+
+    unique = {record.frame_index: record for record in selected + nearest}
+    return _spacing_filter(list(unique.values()), minimum_spacing)
+
+
+def _select_keyframe_records(
+    records: Sequence[VideoFrameRecord],
+    maximum_frames: int,
+    include_zero_time: bool,
+    minimum_spacing: Fraction,
+    keyframe_stride: int,
+) -> list[VideoFrameRecord]:
+    zero_record = records[0]
+    raw_keyframes = [record for record in records if record.key_frame]
+    candidates = raw_keyframes[::keyframe_stride]
+
+    if include_zero_time:
+        combined = [zero_record] + [
+            record for record in candidates if record.frame_index != zero_record.frame_index
+        ]
+    else:
+        combined = [record for record in candidates if record.timestamp > 0]
+
+    spaced = _spacing_filter(combined, minimum_spacing)
+    if maximum_frames == 0 or len(spaced) <= maximum_frames:
+        return spaced
+
+    if include_zero_time:
+        zero = spaced[0]
+        remaining = _evenly_thin(
+            spaced[1:],
+            maximum_frames - 1,
+            single_from_end=True,
+        )
+        return [zero] + remaining
+
+    return _evenly_thin(
+        spaced,
+        maximum_frames,
+        single_from_end=False,
+    )
+
+
+def select_video_frame_records(
+    records: Sequence[VideoFrameRecord],
+    strategy: str,
+    maximum_frames: int,
+    include_zero_time: bool,
+    minimum_spacing_seconds: float,
+    keyframe_stride: int,
+) -> list[VideoFrameRecord]:
+    if strategy not in VIDEO_FRAME_SAMPLING_STRATEGIES:
+        raise ValueError(f"Unsupported video-frame sampling strategy: {strategy}")
+    if maximum_frames < 0:
+        raise ValueError("maximum_frames must be zero or greater.")
+    if minimum_spacing_seconds < 0:
+        raise ValueError("minimum_spacing_seconds must be zero or greater.")
+    if keyframe_stride < 1:
+        raise ValueError("keyframe_stride must be at least one.")
+    if not records:
+        raise ValueError("No video-frame records are available for selection.")
+
+    ordered = sorted(records, key=lambda item: (item.timestamp, item.frame_index))
+    minimum_spacing = _as_fraction(minimum_spacing_seconds)
+
+    if strategy == "uniform PTS":
+        selected = _select_uniform_records(
+            ordered,
+            maximum_frames,
+            include_zero_time,
+            minimum_spacing,
+        )
+    else:
+        selected = _select_keyframe_records(
+            ordered,
+            maximum_frames,
+            include_zero_time,
+            minimum_spacing,
+            keyframe_stride,
+        )
+
+    if not selected:
+        raise ValueError("No video frames satisfy the selected sampling controls.")
+    return selected
+
+
+def _frame_to_image(frame: av.VideoFrame) -> torch.Tensor:
+    image = frame.to_ndarray(format="rgb24")
+    rotation = getattr(frame, "rotation", 0) or 0
+    if rotation:
+        quarter_turns = int(round(rotation / 90.0))
+        image = np.rot90(image, k=quarter_turns, axes=(0, 1)).copy()
+    image = np.ascontiguousarray(image)
+    return torch.from_numpy(image).to(dtype=torch.float32).div_(255.0)
+
+
+def decode_selected_video_frames(
+    video,
+    records: Sequence[VideoFrameRecord],
+    source_factory: Callable[[], str | io.BytesIO] | None = None,
+) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    expected = {record.frame_index: record for record in records}
+    selected_images: dict[int, torch.Tensor] = {}
+    last_index = max(expected)
+
+    for frame_index, timestamp, frame in _active_video_frames(
+        video, source_factory
+    ):
+        record = expected.get(frame_index)
+        if record is not None:
+            if timestamp != record.timestamp:
+                raise ValueError("Video timestamps changed between selection and decoding.")
+            selected_images[frame_index] = _frame_to_image(frame)
+        if frame_index >= last_index:
+            break
+
+    missing = [record.frame_index for record in records if record.frame_index not in selected_images]
+    if missing:
+        raise ValueError("Selected video frames could not be decoded.")
+
+    ordered_images = [selected_images[record.frame_index] for record in records]
+    first_shape = ordered_images[0].shape
+    if any(image.shape != first_shape for image in ordered_images[1:]):
+        raise ValueError("Selected video frames have inconsistent image dimensions.")
+
+    image_batch = torch.stack(ordered_images, dim=0)
+    image_list = [image_batch[index : index + 1] for index in range(image_batch.shape[0])]
+    return image_batch, image_list
+
+
+def _rounded_units(timestamp: Fraction, units_per_second: int) -> int:
+    if timestamp < 0:
+        raise ValueError("Relative video timestamps cannot be negative.")
+    numerator = timestamp.numerator * units_per_second
+    denominator = timestamp.denominator
+    return (2 * numerator + denominator) // (2 * denominator)
+
+
+def format_video_timestamp(timestamp: Fraction | float, timestamp_format: str) -> str:
+    if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
+        raise ValueError(f"Unsupported video timestamp format: {timestamp_format}")
+
+    value = _as_fraction(timestamp)
+    if timestamp_format == "00.00s":
+        total_centiseconds = _rounded_units(value, 100)
+        seconds, centiseconds = divmod(total_centiseconds, 100)
+        return f"{seconds:02d}.{centiseconds:02d}s"
+
+    total_milliseconds = _rounded_units(value, 1000)
+    total_seconds, milliseconds = divmod(total_milliseconds, 1000)
+
+    if timestamp_format == "00.000s":
+        return f"{total_seconds:02d}.{milliseconds:03d}s"
+
+    total_minutes, seconds = divmod(total_seconds, 60)
+    if timestamp_format == "MM:SS.mmm":
+        return f"{total_minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+    if timestamp_format == "MM:SS:mmm":
+        return f"{total_minutes:02d}:{seconds:02d}:{milliseconds:03d}"
+
+    hours, minutes = divmod(total_minutes, 60)
+    separator = "." if timestamp_format == "HH:MM:SS.mmm" else ":"
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}{separator}{milliseconds:03d}"
+
+
+def build_video_timeline_text(
+    timestamps: Sequence[str],
+    timeline_style: str,
+) -> str:
+    if timeline_style not in VIDEO_FRAME_TIMELINE_STYLES:
+        raise ValueError(f"Unsupported video timeline style: {timeline_style}")
+    if timeline_style == "timestamps only":
+        lines = list(timestamps)
+    elif timeline_style == "indexed":
+        lines = [f"{index}: {timestamp}" for index, timestamp in enumerate(timestamps)]
+    elif timeline_style == "H3 pictures":
+        lines = [
+            f"<Picture {index}> at {timestamp}"
+            for index, timestamp in enumerate(timestamps, start=1)
+        ]
+    else:
+        lines = [
+            (
+                f"For the target video, at {timestamp} into the target video, "
+                f"<Picture {index}> (from [Shot {index}]) is fully referenced."
+            )
+            for index, timestamp in enumerate(timestamps, start=1)
+        ]
+    return "\n".join(lines)
+
+
+def sample_video_frames_as_images(
+    video,
+    sampling_strategy: str,
+    maximum_frames: int,
+    include_zero_time: bool,
+    minimum_spacing_seconds: float,
+    keyframe_stride: int,
+    timestamp_format: str,
+    timeline_style: str,
+) -> SampledVideoFrames:
+    source_factory = _video_source_factory(video)
+    records = scan_video_frame_records(video, source_factory)
+    selected = select_video_frame_records(
+        records,
+        sampling_strategy,
+        maximum_frames,
+        include_zero_time,
+        minimum_spacing_seconds,
+        keyframe_stride,
+    )
+    image_batch, image_list = decode_selected_video_frames(
+        video, selected, source_factory
+    )
+    timestamps = [
+        format_video_timestamp(record.timestamp, timestamp_format)
+        for record in selected
+    ]
+
+    return SampledVideoFrames(
+        image_batch=image_batch,
+        image_list=image_list,
+        timestamps=timestamps,
+        timestamps_text=", ".join(timestamps),
+        timeline_text=build_video_timeline_text(timestamps, timeline_style),
+    )

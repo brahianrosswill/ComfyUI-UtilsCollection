@@ -44,11 +44,17 @@ python_tests = [
 frontend_tests = []
 
 [groups.image_utilities]
-paths = ["image_nodes.py", "color_name_data.py", "color_palette_helpers.py"]
+paths = [
+  "image_nodes.py",
+  "image_helpers.py",
+  "color_name_data.py",
+  "color_palette_helpers.py",
+]
 python_tests = [
   "tests/test_bounding_box.py",
   "tests/test_load_image_alpha.py",
   "tests/test_prevalent_colors.py",
+  "tests/test_video_frame_sampler.py",
 ]
 frontend_tests = []
 

@@ -17,6 +17,12 @@ from .tile_helpers import (
     split_and_encode_tiles,
 )
 from .color_palette_helpers import extract_prevalent_color_outputs
+from .image_helpers import (
+    VIDEO_FRAME_SAMPLING_STRATEGIES,
+    VIDEO_FRAME_TIMESTAMP_FORMATS,
+    VIDEO_FRAME_TIMELINE_STYLES,
+    sample_video_frames_as_images,
+)
 
 
 from comfy_api.latest import io
@@ -581,6 +587,153 @@ class UC_LoadImageDirectory(io.ComfyNode):
             except Exception:
                 pass
         return m.digest().hex()
+
+
+class UC_SampleVideoFramesAsImages(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_SampleVideoFramesAsImages",
+            display_name="Sample Video Frames (Images)",
+            category="image/video",
+            description=(
+                "Samples presentation-timestamp-aligned video frames as both an "
+                "IMAGE batch and independently mappable IMAGE list."
+            ),
+            search_aliases=[
+                "sample video frames",
+                "extract video frames",
+                "video keyframes",
+                "video to images",
+                "video image batch",
+                "video image list",
+            ],
+            inputs=[
+                io.Video.Input("video", tooltip="Core VIDEO input to sample."),
+                io.Combo.Input(
+                    "sampling_strategy",
+                    options=list(VIDEO_FRAME_SAMPLING_STRATEGIES),
+                    default="codec keyframes",
+                    tooltip=(
+                        "codec keyframes selects decoded codec keyframes. uniform "
+                        "PTS selects frames across presentation time."
+                    ),
+                ),
+                io.Int.Input(
+                    "maximum_frames",
+                    default=16,
+                    min=0,
+                    step=1,
+                    tooltip=(
+                        "Maximum total output count, including the zero-time frame. "
+                        "0 returns every frame eligible after spacing and stride."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "include_zero_time",
+                    default=True,
+                    tooltip=(
+                        "Place the first visible frame at output position 0 and "
+                        "normalize its presentation timestamp to zero."
+                    ),
+                ),
+                io.Float.Input(
+                    "minimum_spacing_seconds",
+                    default=0.25,
+                    min=0.0,
+                    step=0.01,
+                    round=0.001,
+                    tooltip=(
+                        "Minimum presentation-time separation between selected "
+                        "frames."
+                    ),
+                ),
+                io.Int.Input(
+                    "keyframe_stride",
+                    default=1,
+                    min=1,
+                    step=1,
+                    tooltip=(
+                        "For codec keyframes only, retain every Nth raw codec "
+                        "keyframe before spacing and count limiting."
+                    ),
+                ),
+                io.Combo.Input(
+                    "timestamp_format",
+                    options=list(VIDEO_FRAME_TIMESTAMP_FORMATS),
+                    default="00.000s",
+                    tooltip="Formatting reused verbatim by every text output.",
+                ),
+                io.Combo.Input(
+                    "timeline_style",
+                    options=list(VIDEO_FRAME_TIMELINE_STYLES),
+                    default="H3 alignment prefix",
+                    tooltip=(
+                        "Scalar timeline text: full H3 alignment prefix, compact "
+                        "H3 <Picture N>, zero-based indexed, or timestamps only."
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Image.Output(
+                    "image_batch",
+                    display_name="image batch",
+                    tooltip="Selected frames as one chronological IMAGE batch.",
+                ),
+                io.Image.Output(
+                    "images",
+                    display_name="images",
+                    is_output_list=True,
+                    tooltip="Selected frames as aligned single-image list entries.",
+                ),
+                io.String.Output(
+                    "timestamps",
+                    display_name="timestamps",
+                    is_output_list=True,
+                    tooltip="Formatted timestamps aligned with the image list.",
+                ),
+                io.String.Output(
+                    "timestamps_text",
+                    display_name="timestamps text",
+                    tooltip="All formatted timestamps joined into one comma-and-space-separated string.",
+                ),
+                io.String.Output(
+                    "timeline_text",
+                    display_name="timeline text",
+                    tooltip="One concatenation-ready timeline string.",
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        video,
+        sampling_strategy: str,
+        maximum_frames: int,
+        include_zero_time: bool,
+        minimum_spacing_seconds: float,
+        keyframe_stride: int,
+        timestamp_format: str,
+        timeline_style: str,
+    ) -> io.NodeOutput:
+        sampled = sample_video_frames_as_images(
+            video,
+            sampling_strategy,
+            maximum_frames,
+            include_zero_time,
+            minimum_spacing_seconds,
+            keyframe_stride,
+            timestamp_format,
+            timeline_style,
+        )
+        return io.NodeOutput(
+            sampled.image_batch,
+            sampled.image_list,
+            sampled.timestamps,
+            sampled.timestamps_text,
+            sampled.timeline_text,
+        )
 
 
 class UC_ImageMatchPropertiesNode(io.ComfyNode):
