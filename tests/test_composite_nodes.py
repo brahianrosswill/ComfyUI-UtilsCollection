@@ -986,6 +986,27 @@ def test_staged_compositor_uses_threshold_only_for_embedded_alpha_bounds(monkeyp
     assert (metadata["crop_width"], metadata["crop_height"]) == (5, 4)
 
 
+def test_staged_compositor_uses_full_frame_when_solid_rgb_removal_is_empty():
+    foreground = torch.zeros(1, 4, 5, 3)
+    model = _QueuedBackgroundModel([torch.zeros(1, 4, 5)])
+
+    staged = staged_compositor_helpers._stage_layered_foregrounds(
+        model,
+        {"foreground_0": foreground},
+        0.5,
+        2,
+        1,
+        1,
+    )
+
+    layer = staged["layers"][0]
+    assert len(model.colors) == 1
+    assert model.masks == []
+    assert layer["uses_embedded_alpha"] is False
+    assert layer["image"].shape == (1, 4, 5, 3)
+    assert torch.equal(layer["mask"], torch.ones(1, 4, 5))
+
+
 def test_staged_layered_composite_tracks_and_applies_horizontal_flip(monkeypatch):
     monkeypatch.setattr(
         staged_compositor_helpers, "_save_editor_preview", lambda *args: None

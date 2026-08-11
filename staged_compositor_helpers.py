@@ -404,7 +404,13 @@ def _stage_layered_foregrounds(
                     mask_resize_method,
                 )[0]
         else:
-            if processing_size > 0 and max(source_height, source_width) > processing_size:
+            channel_minimum = foreground.amin(dim=(1, 2))
+            channel_maximum = foreground.amax(dim=(1, 2))
+            solid_color = torch.equal(channel_minimum, channel_maximum)
+            if (
+                processing_size > 0
+                and max(source_height, source_width) > processing_size
+            ):
                 scale = processing_size / max(source_height, source_width)
                 mask_input_height = max(1, round(source_height * scale))
                 mask_input_width = max(1, round(source_width * scale))
@@ -449,6 +455,9 @@ def _stage_layered_foregrounds(
                 artifact_cleanup_radius,
                 gap_fill_radius,
             )
+            if solid_color and not bool(torch.any(refined > 0)):
+                refined = torch.ones_like(refined)
+                full_alpha = torch.ones_like(full_alpha)
         if retain_full_alpha:
             full_alpha_by_socket[key] = {
                 "mask": full_alpha,
