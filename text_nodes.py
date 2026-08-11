@@ -7,6 +7,7 @@ from .helper_functions import (
     unescape_string,
     repair_and_minify_json,
 )
+from .text_helpers import concatenate_aligned_text_inputs
 
 class UC_BoldFrakturTextStyle(io.ComfyNode):
     @classmethod
@@ -209,6 +210,52 @@ class UC_TextConcatenateAutogrow(io.ComfyNode):
             )
         ]
         return io.NodeOutput(str(delimiter).join(str(value) for value in ordered_values))
+
+
+class UC_TextConcatenateListsAutogrow(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        text_template = io.Autogrow.TemplateNames(
+            io.AnyType.Input("text", optional=True),
+            names=[f"text_{index}" for index in range(1, 101)],
+            min=0,
+        )
+        return io.Schema(
+            node_id="UC_TextConcatenateListsAutogrow",
+            display_name="Concatenate Text Lists (Autogrow)",
+            category="advanced/text",
+            is_input_list=True,
+            inputs=[
+                io.AnyType.Input(
+                    "delimiter",
+                    optional=True,
+                    tooltip="Scalar delimiters broadcast; delimiter lists align by output index.",
+                ),
+                io.Autogrow.Input(
+                    "text_inputs",
+                    template=text_template,
+                    optional=True,
+                    tooltip="Scalar values broadcast while list values align by index.",
+                ),
+            ],
+            outputs=[
+                io.String.Output(
+                    "concatenated_text",
+                    display_name="concatenated text",
+                    is_output_list=True,
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        text_inputs: io.Autogrow.Type | None = None,
+        delimiter: list | None = None,
+    ) -> io.NodeOutput:
+        return io.NodeOutput(
+            concatenate_aligned_text_inputs(text_inputs, delimiter),
+        )
 
 
 class UC_Newline(io.ComfyNode):

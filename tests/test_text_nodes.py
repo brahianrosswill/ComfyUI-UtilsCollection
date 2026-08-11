@@ -87,6 +87,52 @@ def test_text_concatenate_autogrow_accepts_no_inputs():
     assert output.args == ("",)
 
 
+def test_text_concatenate_lists_schema_receives_and_returns_complete_lists():
+    schema = text_nodes.UC_TextConcatenateListsAutogrow.define_schema()
+    inputs = {value.id: value for value in schema.inputs}
+
+    assert schema.node_id == "UC_TextConcatenateListsAutogrow"
+    assert schema.display_name == "Concatenate Text Lists (Autogrow)"
+    assert schema.is_input_list is True
+    assert inputs["delimiter"].get_io_type() == "*"
+    assert inputs["text_inputs"].template.input.get_io_type() == "*"
+    assert schema.outputs[0].get_io_type() == "STRING"
+    assert schema.outputs[0].is_output_list is True
+
+
+def test_text_concatenate_lists_broadcasts_scalars_and_aligns_lists():
+    output = text_nodes.UC_TextConcatenateListsAutogrow.execute(
+        delimiter=[" "],
+        text_inputs={
+            "text_1": ["prefix"],
+            "text_2": ["one", "two", "three"],
+            "text_3": ["suffix"],
+        },
+    )
+
+    assert output.args == (
+        ["prefix one suffix", "prefix two suffix", "prefix three suffix"],
+    )
+
+
+def test_text_concatenate_lists_aligns_delimiters_and_repeats_final_values():
+    output = text_nodes.UC_TextConcatenateListsAutogrow.execute(
+        delimiter=["/", " | "],
+        text_inputs={
+            "text_2": ["A", "B"],
+            "text_1": [1, 2, 3],
+        },
+    )
+
+    assert output.args == (["1/A", "2 | B", "3 | B"],)
+
+
+def test_text_concatenate_lists_accepts_no_inputs():
+    output = text_nodes.UC_TextConcatenateListsAutogrow.execute()
+
+    assert output.args == ([""],)
+
+
 def test_newline_node_has_no_inputs_and_outputs_one_newline():
     schema = text_nodes.UC_Newline.define_schema()
 
