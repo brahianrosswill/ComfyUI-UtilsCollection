@@ -535,8 +535,8 @@ def test_timeline_video_preset_uses_adaptive_contiguous_ranges():
     ]
 
     assert "first output text must be exactly `Timeline:`" in instruction
-    assert "[0s-1s]:" in instruction
-    assert "[1s-2.5s]:" in instruction
+    assert "[00.00s-01.00s]:" in instruction
+    assert "[01.00s-02.50s]:" in instruction
     assert "3-second request using three meaningful sections" in instruction
     assert "5-second request using four differently timed sections" in instruction
     assert "Never reuse their duration, count, boundaries, or content" in instruction
@@ -578,10 +578,23 @@ def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():
         assert "Use no fixed number of sections" in instruction
         assert "Every range touches the next without a gap or overlap" in instruction
         assert "final range ends at the exact total duration" in instruction
-        assert "[start-end]:" in instruction
+        assert "[00.00s-00.00s]:" in instruction
         assert "[SPEECH]:" in instruction
         assert "<d>[Language]" in instruction
         assert "The timestamp range remains the authoritative timing structure" in instruction
+
+
+def test_timeline_presets_require_zero_padded_two_decimal_total_seconds():
+    for name in TIMELINE_CHANNEL_BALANCE_PRESETS:
+        instruction = vlm_presets.system_instructions_vlm[name]
+
+        assert "first range begins at `00.00s`" in instruction
+        assert "[00.00s-00.00s]:" in instruction
+        assert "total elapsed seconds" in instruction
+        assert "at least two integer digits" in instruction
+        assert "exactly two decimal digits" in instruction
+        assert "[0s-" not in instruction
+        assert "[start-end]:" not in instruction
 
 
 def test_minimax_h3_base_timeline_field_order():
@@ -608,9 +621,9 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     ]
     fields = (
         "subject_definitions:",
-        "summary:",
         "retention_analysis:",
         "detailed_description:",
+        "summary:",
         "overall_soundscape:",
         "non_diegetic_music:",
     )
@@ -631,6 +644,32 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "<Audio N>" in instruction
     assert "A label never replaces the full subject" in instruction
     assert "Place `Timeline:` immediately beneath `detailed_description:`" in instruction
+    assert "Place `summary:` immediately after the complete timeline" in instruction
+    assert "without retelling the timeline" in instruction
+    assert "as a second progression" in instruction
+    assert "If `summary:` mentions temporal information" in instruction
+    assert "preserve their order and relationship exactly" in instruction
+    assert "must retain its supplied timestamp relationship" in instruction
+    assert "Copy every `<Picture N>` and timestamp pair explicitly supplied" in instruction
+    assert "without adding information to that pair" in instruction
+    assert "Use each supplied timestamp as the opening of the timeline block" in instruction
+    assert "Do not cite it in an earlier or later block" in instruction
+    assert "If the final supplied timestamp precedes the requested duration" in instruction
+    assert "record only every picture number and timestamp pair" in instruction
+    assert "Do not add a shot number or another association" in instruction
+    assert "For every explicitly supplied picture and timestamp pair" in instruction
+    assert "Write `summary:` immediately after the completed timeline" in instruction
+    assert "no picture citation outside its assigned timestamp block" in instruction
+    assert "no repeated or independently reconstructed timeline progression" in instruction
+    assert "temporal consistency between `summary:` and `Timeline:`" in instruction
+    assert "Condense the preceding timeline" not in instruction
+    assert "Mention actions, transitions" not in instruction
+    assert "condensing only that established progression" not in instruction
+    assert "nonchronological premise" not in instruction
+    assert "separately assembled downstream H3 media prefix" not in instruction
+    assert "fixed ordinal pairing" not in instruction
+    assert "shot mapping was supplied" not in instruction
+    assert "Sample Video Frames" not in instruction
 
 
 def test_minimax_h3_timeline_presets_avoid_example_led_content_anchors():
