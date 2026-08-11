@@ -847,35 +847,83 @@ def test_experimental_timeline_presets_keep_minimal_width_snapshot():
 def test_minimax_h3_t2va_uses_general_standalone_timeline_contract():
     name = "video_timeline_minimax_h3_t2va_system_instruction"
     instruction = vlm_presets.system_instructions_vlm[name]
+    reference_instruction = vlm_presets.system_instructions_vlm[
+        "video_timeline_minimax_h3_reference_system_instruction"
+    ]
+    base_instruction = vlm_presets.system_instructions_vlm[
+        "video_timeline_minimax_h3_base_system_instruction"
+    ]
+    prefix = vlm_presets.system_query_additional_vlm["h3_t2va_prefix"]
+    suffix = vlm_presets.system_query_additional_vlm["h3_t2va_suffix"]
+    raw = vlm_presets.system_query_raw_vlm["h3_t2va"]
     basic_schema = vlm_nodes.UC_VLMSysInstrPresets.define_schema()
     advanced_schema = vlm_nodes.UC_VLMSysInstrAdvPresets.define_schema()
 
     assert name in basic_schema.inputs[0].options
     assert name in advanced_schema.inputs[0].options
+    assert instruction != reference_instruction
+    assert instruction != base_instruction
+
+    assert "MiniMax H3 Standalone Text-to-Video" in instruction
     assert "MiniMax H3 receives only the completed text" in instruction
     assert "receives none of these images" in instruction
-    assert "The completed output must stand on its text alone." in instruction
-    assert "Never write `<Picture N>`" in instruction
+    assert "VLM-Only Visual Evidence" in instruction
+    assert "Standalone Prompt Boundary" in instruction
+    assert "Never emit `<Picture N>`" in instruction
+    assert instruction.count("<Picture N>") == 1
     assert "Complete First-Use Definitions" in instruction
-    assert "[0.00s-0.00s]:" in instruction
-    assert "first range begins at `0.00s`" in instruction
-    assert "Use the fewest integer digits needed" in instruction
-    assert "exactly two decimal digits" in instruction
-    assert instruction.count("\n") == instruction.count("\r\n")
-    assert "MM:SS.mmm" not in instruction
-    assert "00:00.000" not in instruction
-    assert "ComfyUI has already assigned" not in instruction
-    assert "fully_preserved" not in instruction
-    assert "retention_analysis:" not in instruction
-    assert "subject_definitions:" not in instruction
+    assert "Never attach possessive" in instruction
 
     fields = (
-        "integrated_multimodal_description:",
+        "subject_definitions:",
+        "detailed_description:",
+        "summary:",
         "overall_soundscape:",
         "non_diegetic_music:",
     )
     positions = [instruction.index(field) for field in fields]
     assert positions == sorted(positions)
+    assert "exactly five top-level fields" in instruction
+    assert "Place `Timeline:` immediately beneath `detailed_description:`" in instruction
+    assert "Place `summary:` immediately after the complete timeline" in instruction
+    assert "Do not enumerate, sequence, condense, restate, paraphrase" in instruction
+    assert "duplicate timeline progression in `summary:`" in instruction
+
+    assert "[0.00s-0.00s]:" in instruction
+    assert "first range begins at `0.00s`" in instruction
+    assert "Use the fewest integer digits needed" in instruction
+    assert "exactly two decimal digits" in instruction
+    for forbidden in (
+        "[00.00s-00.00s]:",
+        "MM:SS.mmm",
+        "00:00.000",
+        "ComfyUI constructs",
+        "Existing Media References",
+        "Explicit Picture Timestamp Mapping",
+        "retention_analysis:",
+        "integrated_multimodal_description:",
+        "fully_preserved",
+        "<Video N>",
+        "<Audio N>",
+    ):
+        assert forbidden not in instruction
+
+    assert "Use every ordered image supplied with this request" in prefix
+    assert "BEGIN VIDEO REQUEST:" in prefix
+    assert "END VIDEO REQUEST." in suffix
+    assert "none of the supplied VLM images" in suffix
+    assert "BEGIN VIDEO REQUEST:" not in raw
+    assert "END VIDEO REQUEST." not in raw
+    for value in (
+        instruction,
+        prefix,
+        suffix,
+        raw,
+    ):
+        assert value.count("\n") == value.count("\r\n")
+
+    assert "retention_analysis:" in reference_instruction
+    assert "integrated_multimodal_description:" in base_instruction
 
     source = ast.parse(
         (CUSTOM_NODE_ROOT / "vlm_presets.py").read_text(encoding="utf-8")
