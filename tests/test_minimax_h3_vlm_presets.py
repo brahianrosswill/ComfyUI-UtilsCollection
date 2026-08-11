@@ -12,7 +12,6 @@ sys.modules.setdefault(PACKAGE_NAME, package)
 from utils_collection_minimax_h3_vlm_preset_test import (
     minimax_h3_vlm_nodes,
     minimax_h3_vlm_presets,
-    vlm_presets,
 )
 
 
@@ -142,24 +141,6 @@ def test_native_h3_modes_share_operational_and_audio_contracts():
             assert prohibited.lower() not in lowered
 
 
-def test_timeline_derived_h3_presets_preserve_complete_source_instructions():
-    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
-    sources = {
-        "minimax_h3_timeline_fl2va": "video_timeline_system_instruction",
-        "minimax_h3_timeline_ref2va": "video_timeline_system_instruction",
-        "minimax_h3_timeline_crude_fl2va": "video_timeline_system_instruction_crude",
-        "minimax_h3_timeline_crude_ref2va": "video_timeline_system_instruction_crude",
-    }
-
-    for derived_name, source_name in sources.items():
-        instruction = presets[derived_name]
-        source = vlm_presets.system_instructions_vlm[source_name].replace(
-            "\r\n", "\n"
-        )
-
-        assert instruction.startswith(f"{source}\n\n### MiniMax H3 ")
-
-
 def test_timeline_derived_h3_presets_keep_shared_picture_contract_boundaries():
     presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
 
@@ -167,6 +148,19 @@ def test_timeline_derived_h3_presets_keep_shared_picture_contract_boundaries():
         instruction = presets[name]
         assert "ComfyUI constructs the media-prefix declarations" in instruction
         assert "Do not add a separate reference-analysis field" in instruction
+
+
+def test_timeline_derived_h3_presets_use_guide_aligned_timestamps():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+
+    for name in TIMELINE_DERIVED_PRESETS:
+        instruction = presets[name]
+        assert "[00:00.000-00:00.800]:" in instruction
+        assert "[00:04.000-00:05.000]:" in instruction
+        assert "[MM:SS.mmm-MM:SS.mmm]:" in instruction
+        assert "first range begins at `00:00.000`" in instruction
+        assert "[start-end]:" not in instruction
+        assert "[0s-" not in instruction
 
 
 def test_timeline_derived_h3_presets_create_dialogue_and_limit_channel_load():

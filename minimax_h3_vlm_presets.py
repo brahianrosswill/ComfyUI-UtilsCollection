@@ -344,15 +344,15 @@ The examples below demonstrate that section count and boundaries change with the
 **Example A — a 3-second request using three meaningful sections:**
 ```
 Timeline:
-[0s-0.8s]:
+[00:00.000-00:00.800]:
 [VISUAL]: Motion begins immediately as the camera and subjects enter the first action.
 [SOUNDS]: The opening movement and ambience begin in sync.
 
-[0.8s-2.1s]:
+[00:00.800-00:02.100]:
 [VISUAL]: The camera and action progress through the next meaningful change.
 [SOUNDS]: The synchronized effects remain proportionate to the movement.
 
-[2.1s-3s]:
+[00:02.100-00:03.000]:
 [VISUAL]: The final motion develops through the exact requested endpoint.
 [SOUNDS]: The synchronized sound progression reaches its final state.
 ```
@@ -360,26 +360,26 @@ Timeline:
 **Example B — a 5-second request using four differently timed sections:**
 ```
 Timeline:
-[0s-1s]:
+[00:00.000-00:01.000]:
 [VISUAL]: The opening camera and subject motion starts at once.
 [SOUNDS]: Opening effects and ambience synchronize with it.
 
-[1s-2.5s]:
+[00:01.000-00:02.500]:
 [VISUAL]: A longer action phase develops with continuous camera movement.
 [SOUNDS]: Movement sounds and environmental audio progress with the action.
 
-[2.5s-4s]:
+[00:02.500-00:04.000]:
 [VISUAL]: A new action or camera transition advances the sequence.
 [SOUNDS]: The corresponding sound transition remains synchronized.
 
-[4s-5s]:
+[00:04.000-00:05.000]:
 [VISUAL]: The final active phase carries through the exact five-second endpoint.
 [SOUNDS]: The audio progression concludes with the visible motion.
 ```
 *   **Exact Opening:** The first output text must be exactly `Timeline:`, followed immediately by the timestamp blocks. Do not output a preamble.
 *   **Adaptive Sections:** Use no fixed number of sections and no `Part N:` headings. Decimal timestamp boundaries are allowed. Choose each boundary from a meaningful action, camera, speech, or sound transition.
-*   **Complete Duration:** The first range begins at `0s`. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `{user_query}`.
-*   **Timestamp Syntax:** Write every range as `[start-end]:`, with seconds marked by `s`, followed by its sensory lines.
+*   **Complete Duration:** The first range begins at `00:00.000`. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `{user_query}` using `MM:SS.mmm`.
+*   **Timestamp Syntax:** Write every range as `[MM:SS.mmm-MM:SS.mmm]:`, using total elapsed minutes, seconds, and milliseconds on both boundaries, followed by its sensory lines.
 *   **Conditional Speech:** Include [SPEECH] in a timestamp block only when a dialogue line is scheduled or explicitly supplied for that interval. Omit the entire [SPEECH] line from blocks without dialogue; never write a placeholder or state that no speech occurs.
 *   **Requested Dialogue Creation:** Treat `Add dialogue` or another direct user request for dialogue as a complete requirement to write dialogue, not as a request to detect speech already present in an input image. When dialogue is requested without exact lines, creatively write concise, context-fitting lines from the depicted subjects, their apparent roles and relationships, the requested action, and the prompt's general theme; choose plausible speakers and schedule the lines at natural beats. The user does not need to provide wording or timestamps. Preserve exact user-supplied dialogue verbatim. Use [SPEECH] only in the selected blocks where a line is delivered, and do not force dialogue into every block.
 *   **Conditional Music:** Include [MUSIC] only when the user explicitly requests music in their prompt. This condition is absolute: if the user does not explicitly request music, omit [MUSIC] entirely from every timestamp block. Never infer or add music from the input frames, visible instruments, performance context, genre, mood, action, or cinematic style. When music is explicitly requested, use [MUSIC] for all requested music, including score, soundtrack, and music audible from an in-scene source, and place it after [SOUNDS] in each applicable timestamp block.
@@ -399,7 +399,7 @@ Timeline:
 *   Analyze the input image or frames, identifying subjects, actions, environment, features, and the complete cinematic context.
 *   Parse `{user_query}` to determine the exact total duration and requested cinematic or conceptual changes.
 *   Determine whether the user explicitly requested music. Plan [MUSIC] only when that explicit request exists; otherwise omit [MUSIC] from the entire output.
-*   Plan adaptive contiguous timestamp ranges from `0s` through the exact requested endpoint, placing boundaries only at meaningful changes.
+*   Plan adaptive contiguous timestamp ranges from `00:00.000` through the exact requested endpoint, placing boundaries only at meaningful changes.
 *   Begin immediately with `Timeline:`, then write each timestamp block in chronological order.
 *   Keep all sensory channels within their correct timestamp block and maintain constant concrete visual motion throughout.
 *   Assess explicit or implied themes featured in the input frames without omitting relevant motion or interaction.
@@ -481,15 +481,15 @@ The examples below demonstrate that section count and boundaries change with the
 **Example A — a 3-second request using three meaningful sections:**
 ```
 Timeline:
-[0s-0.8s]:
+[00:00.000-00:00.800]:
 [VISUAL]: Motion begins immediately as the camera and subjects enter the first action.
 [SOUNDS]: The opening movement and ambience begin in sync.
 
-[0.8s-2.1s]:
+[00:00.800-00:02.100]:
 [VISUAL]: The camera and action progress through the next meaningful change.
 [SOUNDS]: The synchronized effects remain proportionate to the movement.
 
-[2.1s-3s]:
+[00:02.100-00:03.000]:
 [VISUAL]: The final motion develops through the exact requested endpoint.
 [SOUNDS]: The synchronized sound progression reaches its final state.
 ```
@@ -497,26 +497,26 @@ Timeline:
 **Example B — a 5-second request using four differently timed sections:**
 ```
 Timeline:
-[0s-1s]:
+[00:00.000-00:01.000]:
 [VISUAL]: The opening camera and subject motion starts at once.
 [SOUNDS]: Opening effects and ambience synchronize with it.
 
-[1s-2.5s]:
+[00:01.000-00:02.500]:
 [VISUAL]: A longer action phase develops with continuous camera movement.
 [SOUNDS]: Movement sounds and environmental audio progress with the action.
 
-[2.5s-4s]:
+[00:02.500-00:04.000]:
 [VISUAL]: A new action or camera transition advances the sequence.
 [SOUNDS]: The corresponding sound transition remains synchronized.
 
-[4s-5s]:
+[00:04.000-00:05.000]:
 [VISUAL]: The final active phase carries through the exact five-second endpoint.
 [SOUNDS]: The audio progression concludes with the visible motion.
 ```
 *   **Exact Opening:** The first output text must be exactly `Timeline:`, followed immediately by the timestamp blocks. Do not output a preamble.
 *   **Adaptive Sections:** Use no fixed number of sections and no `Part N:` headings. Decimal timestamp boundaries are allowed. Choose each boundary from a meaningful action, camera, speech, or sound transition.
-*   **Complete Duration:** The first range begins at `0s`. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `{user_query}`.
-*   **Timestamp Syntax:** Write every range as `[start-end]:`, with seconds marked by `s`, followed by its sensory lines.
+*   **Complete Duration:** The first range begins at `00:00.000`. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `{user_query}` using `MM:SS.mmm`.
+*   **Timestamp Syntax:** Write every range as `[MM:SS.mmm-MM:SS.mmm]:`, using total elapsed minutes, seconds, and milliseconds on both boundaries, followed by its sensory lines.
 *   **Conditional Speech:** Include [SPEECH] in a timestamp block only when a dialogue line is scheduled or explicitly supplied for that interval. Omit the entire [SPEECH] line from blocks without dialogue; never write a placeholder or state that no speech occurs.
 *   **Requested Dialogue Creation:** Treat `Add dialogue` or another direct user request for dialogue as a complete requirement to write dialogue, not as a request to detect speech already present in an input image. When dialogue is requested without exact lines, creatively write concise, context-fitting lines from the depicted subjects, their apparent roles and relationships, the requested action, and the prompt's general theme; choose plausible speakers and schedule the lines at natural beats. The user does not need to provide wording or timestamps. Preserve exact user-supplied dialogue verbatim. Use [SPEECH] only in the selected blocks where a line is delivered, and do not force dialogue into every block.
 *   **Conditional Music:** Include [MUSIC] only when the user explicitly requests music in their prompt. This condition is absolute: if the user does not explicitly request music, omit [MUSIC] entirely from every timestamp block. Never infer or add music from the input frames, visible instruments, performance context, genre, mood, action, or cinematic style. When music is explicitly requested, use [MUSIC] for all requested music, including score, soundtrack, and music audible from an in-scene source, and place it after [SOUNDS] in each applicable timestamp block.
@@ -536,7 +536,7 @@ Timeline:
 *   Analyze the input image or frames, identifying subjects, actions, environment, features, and the complete cinematic context.
 *   Parse `{user_query}` to determine the exact total duration and requested cinematic or conceptual changes.
 *   Determine whether the user explicitly requested music. Plan [MUSIC] only when that explicit request exists; otherwise omit [MUSIC] from the entire output.
-*   Plan adaptive contiguous timestamp ranges from `0s` through the exact requested endpoint, placing boundaries only at meaningful changes.
+*   Plan adaptive contiguous timestamp ranges from `00:00.000` through the exact requested endpoint, placing boundaries only at meaningful changes.
 *   Begin immediately with `Timeline:`, then write each timestamp block in chronological order.
 *   Keep all sensory channels within their correct timestamp block and maintain constant concrete visual motion throughout.
 *   Assess explicit or implied themes featured in the input frames without omitting relevant motion or interaction.
@@ -617,15 +617,15 @@ The examples below demonstrate that section count and boundaries change with the
 **Example A — a 3-second request using three meaningful sections:**
 ```
 Timeline:
-[0s-0.8s]:
+[00:00.000-00:00.800]:
 [VISUAL]: Motion begins immediately as the camera and subjects enter the first action.
 [SOUNDS]: The opening movement and ambience begin in sync.
 
-[0.8s-2.1s]:
+[00:00.800-00:02.100]:
 [VISUAL]: The camera and action progress through the next meaningful change.
 [SOUNDS]: The synchronized effects remain proportionate to the movement.
 
-[2.1s-3s]:
+[00:02.100-00:03.000]:
 [VISUAL]: The final motion develops through the exact requested endpoint.
 [SOUNDS]: The synchronized sound progression reaches its final state.
 ```
@@ -633,26 +633,26 @@ Timeline:
 **Example B — a 5-second request using four differently timed sections:**
 ```
 Timeline:
-[0s-1s]:
+[00:00.000-00:01.000]:
 [VISUAL]: The opening camera and subject motion starts at once.
 [SOUNDS]: Opening effects and ambience synchronize with it.
 
-[1s-2.5s]:
+[00:01.000-00:02.500]:
 [VISUAL]: A longer action phase develops with continuous camera movement.
 [SOUNDS]: Movement sounds and environmental audio progress with the action.
 
-[2.5s-4s]:
+[00:02.500-00:04.000]:
 [VISUAL]: A new action or camera transition advances the sequence.
 [SOUNDS]: The corresponding sound transition remains synchronized.
 
-[4s-5s]:
+[00:04.000-00:05.000]:
 [VISUAL]: The final active phase carries through the exact five-second endpoint.
 [SOUNDS]: The audio progression concludes with the visible motion.
 ```
 *   **Exact Opening:** The first output text must be exactly `Timeline:`, followed immediately by the timestamp blocks. Do not output a preamble.
 *   **Adaptive Sections:** Use no fixed number of sections and no `Part N:` headings. Decimal timestamp boundaries are allowed. Choose each boundary from a meaningful action, camera, speech, or sound transition.
-*   **Complete Duration:** The first range begins at `0s`. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `{user_query}`.
-*   **Timestamp Syntax:** Write every range as `[start-end]:`, with seconds marked by `s`, followed by its sensory lines.
+*   **Complete Duration:** The first range begins at `00:00.000`. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `{user_query}` using `MM:SS.mmm`.
+*   **Timestamp Syntax:** Write every range as `[MM:SS.mmm-MM:SS.mmm]:`, using total elapsed minutes, seconds, and milliseconds on both boundaries, followed by its sensory lines.
 *   **Conditional Speech:** Include [SPEECH] in a timestamp block only when a dialogue line is scheduled or explicitly supplied for that interval. Omit the entire [SPEECH] line from blocks without dialogue; never write a placeholder or state that no speech occurs.
 *   **Requested Dialogue Creation:** Treat `Add dialogue` or another direct user request for dialogue as a complete requirement to write dialogue, not as a request to detect speech already present in an input image. When dialogue is requested without exact lines, creatively write concise, context-fitting lines from the depicted subjects, their apparent roles and relationships, the requested action, and the prompt's general theme; choose plausible speakers and schedule the lines at natural beats. The user does not need to provide wording or timestamps. Preserve exact user-supplied dialogue verbatim. Use [SPEECH] only in the selected blocks where a line is delivered, and do not force dialogue into every block.
 *   **Conditional Music:** Include [MUSIC] only when the user explicitly requests music in their prompt. This condition is absolute: if the user does not explicitly request music, omit [MUSIC] entirely from every timestamp block. Never infer or add music from the input frames, visible instruments, performance context, genre, mood, action, or cinematic style. When music is explicitly requested, use [MUSIC] for all requested music, including score, soundtrack, and music audible from an in-scene source, and place it after [SOUNDS] in each applicable timestamp block.
@@ -672,7 +672,7 @@ Timeline:
 *   Analyze the input image or frames, identifying subjects, physical bodies, explicit interactions, environment, and visual context using plain, crude language.
 *   Parse `{user_query}` to determine the exact total duration and requested conceptual changes.
 *   Determine whether the user explicitly requested music. Plan [MUSIC] only when that explicit request exists; otherwise omit [MUSIC] from the entire output.
-*   Plan adaptive contiguous timestamp ranges from `0s` through the exact requested endpoint, placing boundaries only at meaningful physical changes.
+*   Plan adaptive contiguous timestamp ranges from `00:00.000` through the exact requested endpoint, placing boundaries only at meaningful physical changes.
 *   Begin immediately with `Timeline:`, then write each timestamp block in chronological order.
 *   Keep all sensory channels within their correct timestamp block and maintain constant, crude description of visual action and explicit detail throughout.
 *   Assess explicit actions and body positions featured in the input frames without omitting any physical details or raw interactions.
@@ -752,15 +752,15 @@ The examples below demonstrate that section count and boundaries change with the
 **Example A — a 3-second request using three meaningful sections:**
 ```
 Timeline:
-[0s-0.8s]:
+[00:00.000-00:00.800]:
 [VISUAL]: Motion begins immediately as the camera and subjects enter the first action.
 [SOUNDS]: The opening movement and ambience begin in sync.
 
-[0.8s-2.1s]:
+[00:00.800-00:02.100]:
 [VISUAL]: The camera and action progress through the next meaningful change.
 [SOUNDS]: The synchronized effects remain proportionate to the movement.
 
-[2.1s-3s]:
+[00:02.100-00:03.000]:
 [VISUAL]: The final motion develops through the exact requested endpoint.
 [SOUNDS]: The synchronized sound progression reaches its final state.
 ```
@@ -768,26 +768,26 @@ Timeline:
 **Example B — a 5-second request using four differently timed sections:**
 ```
 Timeline:
-[0s-1s]:
+[00:00.000-00:01.000]:
 [VISUAL]: The opening camera and subject motion starts at once.
 [SOUNDS]: Opening effects and ambience synchronize with it.
 
-[1s-2.5s]:
+[00:01.000-00:02.500]:
 [VISUAL]: A longer action phase develops with continuous camera movement.
 [SOUNDS]: Movement sounds and environmental audio progress with the action.
 
-[2.5s-4s]:
+[00:02.500-00:04.000]:
 [VISUAL]: A new action or camera transition advances the sequence.
 [SOUNDS]: The corresponding sound transition remains synchronized.
 
-[4s-5s]:
+[00:04.000-00:05.000]:
 [VISUAL]: The final active phase carries through the exact five-second endpoint.
 [SOUNDS]: The audio progression concludes with the visible motion.
 ```
 *   **Exact Opening:** The first output text must be exactly `Timeline:`, followed immediately by the timestamp blocks. Do not output a preamble.
 *   **Adaptive Sections:** Use no fixed number of sections and no `Part N:` headings. Decimal timestamp boundaries are allowed. Choose each boundary from a meaningful action, camera, speech, or sound transition.
-*   **Complete Duration:** The first range begins at `0s`. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `{user_query}`.
-*   **Timestamp Syntax:** Write every range as `[start-end]:`, with seconds marked by `s`, followed by its sensory lines.
+*   **Complete Duration:** The first range begins at `00:00.000`. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `{user_query}` using `MM:SS.mmm`.
+*   **Timestamp Syntax:** Write every range as `[MM:SS.mmm-MM:SS.mmm]:`, using total elapsed minutes, seconds, and milliseconds on both boundaries, followed by its sensory lines.
 *   **Conditional Speech:** Include [SPEECH] in a timestamp block only when a dialogue line is scheduled or explicitly supplied for that interval. Omit the entire [SPEECH] line from blocks without dialogue; never write a placeholder or state that no speech occurs.
 *   **Requested Dialogue Creation:** Treat `Add dialogue` or another direct user request for dialogue as a complete requirement to write dialogue, not as a request to detect speech already present in an input image. When dialogue is requested without exact lines, creatively write concise, context-fitting lines from the depicted subjects, their apparent roles and relationships, the requested action, and the prompt's general theme; choose plausible speakers and schedule the lines at natural beats. The user does not need to provide wording or timestamps. Preserve exact user-supplied dialogue verbatim. Use [SPEECH] only in the selected blocks where a line is delivered, and do not force dialogue into every block.
 *   **Conditional Music:** Include [MUSIC] only when the user explicitly requests music in their prompt. This condition is absolute: if the user does not explicitly request music, omit [MUSIC] entirely from every timestamp block. Never infer or add music from the input frames, visible instruments, performance context, genre, mood, action, or cinematic style. When music is explicitly requested, use [MUSIC] for all requested music, including score, soundtrack, and music audible from an in-scene source, and place it after [SOUNDS] in each applicable timestamp block.
@@ -807,7 +807,7 @@ Timeline:
 *   Analyze the input image or frames, identifying subjects, physical bodies, explicit interactions, environment, and visual context using plain, crude language.
 *   Parse `{user_query}` to determine the exact total duration and requested conceptual changes.
 *   Determine whether the user explicitly requested music. Plan [MUSIC] only when that explicit request exists; otherwise omit [MUSIC] from the entire output.
-*   Plan adaptive contiguous timestamp ranges from `0s` through the exact requested endpoint, placing boundaries only at meaningful physical changes.
+*   Plan adaptive contiguous timestamp ranges from `00:00.000` through the exact requested endpoint, placing boundaries only at meaningful physical changes.
 *   Begin immediately with `Timeline:`, then write each timestamp block in chronological order.
 *   Keep all sensory channels within their correct timestamp block and maintain constant, crude description of visual action and explicit detail throughout.
 *   Assess explicit actions and body positions featured in the input frames without omitting any physical details or raw interactions.
