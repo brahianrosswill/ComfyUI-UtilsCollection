@@ -46,6 +46,7 @@ from .encoder_helpers import(
     CONSENSUS_BLEND_PRESETS,
     execute_advanced_visual_consensus,
     execute_advanced_minimax_h3_image_to_video,
+    execute_advanced_minimax_h3_image_to_video_combined,
     execute_minimax_h3_first_frame_references,
 )
 
@@ -3510,6 +3511,94 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             vlm_resolution=vlm_resolution,
         )
         return io.NodeOutput(conditioning, latent)
+
+
+class UC_AdvancedMiniMaxH3ImageToVideoCombined(
+    UC_AdvancedMiniMaxH3ImageToVideo
+):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "UC_AdvancedMiniMaxH3ImageToVideoCombined"
+        schema.display_name = "Advanced MiniMax H3 Image to Video (Combined)"
+        schema.description = (
+            "Extends the Advanced MiniMax H3 encoder with reference-derived first/final "
+            "VAE keyframes and native references. Connect the returned model to the same "
+            "sampling branch as the positive conditioning and latent."
+        )
+        schema.inputs.insert(
+            0,
+            io.Model.Input(
+                "model",
+                tooltip=(
+                    "MiniMax H3 diffusion model. Mixed keyframe/reference modes return a "
+                    "patched clone; single conditioning modes return this model unchanged."
+                ),
+            ),
+        )
+        inputs = {value.id: value for value in schema.inputs}
+        inputs["ref_image_size"].options = [
+            "match",
+            "max",
+            "none",
+            "first + match",
+            "first + max",
+            "first + last + match",
+            "first + last + max",
+        ]
+        inputs["ref_image_size"].tooltip = (
+            "Match, max, and none retain the Advanced node behavior. First modes route the "
+            "first ordered reference to frame zero; first + last modes also route the final "
+            "reference to the final frame when more than one exists. Match or max applies "
+            "only to remaining native references. Each endpoint is VAE-encoded once."
+        )
+        inputs["reference_images"].tooltip = (
+            "Ordered native H3 references and numbered Qwen pictures. Hybrid ref_image_size "
+            "modes derive endpoint keyframes after socket and batch flattening. Reference "
+            "mode cannot be combined with explicit frame or fusion inputs."
+        )
+        schema.outputs.insert(0, io.Model.Output(display_name="model"))
+        return schema
+
+    @classmethod
+    def execute(
+        cls,
+        model,
+        clip,
+        vae,
+        prompt,
+        width,
+        height,
+        length,
+        first_frame=None,
+        last_frame=None,
+        reference_images: io.Autogrow.Type = None,
+        fusion_images: io.Autogrow.Type = None,
+        visual_fusion_config=None,
+        multiplier=1.0,
+        ref_image_size="match",
+        vlm_resolution=384,
+    ) -> io.NodeOutput:
+        patched_model, conditioning, latent = (
+            execute_advanced_minimax_h3_image_to_video_combined(
+                model,
+                clip,
+                vae,
+                prompt,
+                width,
+                height,
+                length,
+                first_frame=first_frame,
+                last_frame=last_frame,
+                reference_images=reference_images,
+                fusion_images=fusion_images,
+                visual_fusion_config=visual_fusion_config,
+                multiplier=multiplier,
+                ref_image_size=ref_image_size,
+                vlm_resolution=vlm_resolution,
+            )
+        )
+        return io.NodeOutput(patched_model, conditioning, latent)
 
 
 class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):

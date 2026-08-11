@@ -134,6 +134,7 @@ def test_encoder_guide_explains_advanced_minimax_h3_role_contract():
     images = UC_EncoderNodesGuide.execute("image_inputs_and_placeholders").args[0]
 
     assert "`UC_AdvancedMiniMaxH3ImageToVideo`" in catalog
+    assert "`UC_AdvancedMiniMaxH3ImageToVideoCombined`" in catalog
     assert "Connected `first_frame` or `last_frame` inputs select the keyframe path" in images
     assert "`reference_images` autogrow selects native-reference mode" in images
     assert "`fusion_images` autogrow is Qwen-only" in images
@@ -141,7 +142,9 @@ def test_encoder_guide_explains_advanced_minimax_h3_role_contract():
     assert "`ref_image_size`" in images
     assert "`vlm_resolution` independently prepares every Qwen copy" in images
     assert "passed directly to the native H3 tokenizer without a system template" in images
-    assert "Use `UC_MiniMaxH3FirstFrameReferences` when keyframes and native references must coexist" in images
+    assert "`first + last + max`" in images
+    assert "endpoint images are excluded from `minimax_refs`" in images
+    assert "patched only when keyframes and native references coexist" in images
     assert "Qwen-only visual conditioning" in images
     assert "do not create `minimax_keyframes` or an H3 latent" in images
 

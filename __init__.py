@@ -43,6 +43,7 @@ class SamplingUtils(ComfyExtension):
             UC_TextEncodeGemmaSystemEditAdvanced,
             UC_AdvancedVisualConditioningEncode,
             UC_AdvancedMiniMaxH3ImageToVideo,
+            UC_AdvancedMiniMaxH3ImageToVideoCombined,
             UC_MiniMaxH3FirstFrameReferences,
             UC_AdvancedVisConEncoder,
             UC_VisualConsensusConfiguration,

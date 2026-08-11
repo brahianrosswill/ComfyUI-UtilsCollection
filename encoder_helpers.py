@@ -34,6 +34,12 @@ from comfy.sd1_clip import token_weights, escape_important, unescape_important
 
 _VISUAL_ENCODER_PATH_LOCK = threading.RLock()
 _MINIMAX_H3_COMBINED_WRAPPER_KEY = "uc_minimax_h3_combined_visual_latents"
+_MINIMAX_H3_REFERENCE_KEYFRAME_MODES = {
+    "first + match": ("first", "match"),
+    "first + max": ("first", "max"),
+    "first + last + match": ("first_last", "match"),
+    "first + last + max": ("first_last", "max"),
+}
 
 
 def prepare_vae_reference_image(samples, target_size, dimension_multiple, upscale_method="bicubic"):
@@ -373,10 +379,12 @@ def prepare_minimax_h3_reference_image(
     )
 
 
-def validate_minimax_h3_model_patcher(model):
+def validate_minimax_h3_model_patcher(
+    model, context="MiniMax H3 First Frame + References"
+):
     """Require the installed Core MiniMax H3 model before any expensive work."""
     if not isinstance(getattr(model, "model", None), comfy.model_base.MiniMaxH3):
-        raise ValueError("MiniMax H3 First Frame + References requires a MiniMax H3 model.")
+        raise ValueError(f"{context} requires a MiniMax H3 model.")
 
 
 def minimax_h3_combined_payload_wrapper(executor, *args, **kwargs):
@@ -2247,7 +2255,7 @@ def _spatially_fuse_visual_consensus_sources(
     return [[tensor, metadata]]
 
 
-def execute_advanced_minimax_h3_image_to_video(
+def _execute_advanced_minimax_h3_image_to_video(
     clip,
     vae,
     prompt,
@@ -2262,6 +2270,7 @@ def execute_advanced_minimax_h3_image_to_video(
     multiplier=1.0,
     ref_image_size="match",
     vlm_resolution=384,
+    allow_combined_reference_routing=False,
 ):
     """Build coordinated Qwen conditioning, H3 image controls, and AV latent."""
     if not is_minimax_h3_text_encoder(clip):
@@ -2281,8 +2290,33 @@ def execute_advanced_minimax_h3_image_to_video(
             "MiniMax H3 native reference images cannot be combined with fusion images."
         )
     native_reference_mode = bool(flat_references)
-    if native_reference_mode and ref_image_size not in ("match", "max", "none"):
+    reference_keyframe_mode = None
+    reference_size_mode = ref_image_size
+    if ref_image_size in _MINIMAX_H3_REFERENCE_KEYFRAME_MODES:
+        if not allow_combined_reference_routing:
+            raise ValueError(
+                f"Unsupported MiniMax H3 reference image size: {ref_image_size}"
+            )
+        if not flat_references:
+            raise ValueError(
+                f"MiniMax H3 {ref_image_size} requires at least one reference image."
+            )
+        reference_keyframe_mode, reference_size_mode = (
+            _MINIMAX_H3_REFERENCE_KEYFRAME_MODES[ref_image_size]
+        )
+    elif native_reference_mode and ref_image_size not in ("match", "max", "none"):
         raise ValueError(f"Unsupported MiniMax H3 reference image size: {ref_image_size}")
+
+    keyframe_first_image = first_frame
+    keyframe_last_image = last_frame
+    native_reference_images = flat_references
+    if reference_keyframe_mode is not None:
+        keyframe_first_image = flat_references[0]
+        native_reference_images = flat_references[1:]
+        if reference_keyframe_mode == "first_last" and len(flat_references) > 1:
+            keyframe_last_image = flat_references[-1]
+            native_reference_images = flat_references[1:-1]
+
     frame_vae_enabled = ref_image_size != "none"
     visual_sources = []
     if first_frame is not None:
@@ -2312,21 +2346,21 @@ def execute_advanced_minimax_h3_image_to_video(
 
     latent, frame_count = minimax_h3_empty_av_latent(width, height, length)
     prepared_first = (
-        prepare_minimax_h3_frame(first_frame, width, height, "disabled")
-        if first_frame is not None and frame_vae_enabled
+        prepare_minimax_h3_frame(keyframe_first_image, width, height, "disabled")
+        if keyframe_first_image is not None and frame_vae_enabled
         else None
     )
     prepared_last = (
-        prepare_minimax_h3_frame(last_frame, width, height, "center")
-        if last_frame is not None and frame_vae_enabled
+        prepare_minimax_h3_frame(keyframe_last_image, width, height, "center")
+        if keyframe_last_image is not None and frame_vae_enabled
         else None
     )
     prepared_references = (
         [
             prepare_minimax_h3_reference_image(
-                image, width, height, ref_image_size
+                image, width, height, reference_size_mode
             )
-            for image in flat_references
+            for image in native_reference_images
         ]
         if native_reference_mode and frame_vae_enabled
         else []
@@ -2558,7 +2592,92 @@ def execute_advanced_minimax_h3_image_to_video(
         metadata["minimax_refs"] = references
     if metadata:
         conditioning = node_helpers.conditioning_set_values(conditioning, metadata)
+    return conditioning, latent, bool(keyframes and references)
+
+
+def execute_advanced_minimax_h3_image_to_video(
+    clip,
+    vae,
+    prompt,
+    width,
+    height,
+    length,
+    first_frame=None,
+    last_frame=None,
+    reference_images=None,
+    fusion_images=None,
+    visual_fusion_config=None,
+    multiplier=1.0,
+    ref_image_size="match",
+    vlm_resolution=384,
+):
+    conditioning, latent, _requires_combined_wrapper = (
+        _execute_advanced_minimax_h3_image_to_video(
+            clip,
+            vae,
+            prompt,
+            width,
+            height,
+            length,
+            first_frame=first_frame,
+            last_frame=last_frame,
+            reference_images=reference_images,
+            fusion_images=fusion_images,
+            visual_fusion_config=visual_fusion_config,
+            multiplier=multiplier,
+            ref_image_size=ref_image_size,
+            vlm_resolution=vlm_resolution,
+        )
+    )
     return conditioning, latent
+
+
+def execute_advanced_minimax_h3_image_to_video_combined(
+    model,
+    clip,
+    vae,
+    prompt,
+    width,
+    height,
+    length,
+    first_frame=None,
+    last_frame=None,
+    reference_images=None,
+    fusion_images=None,
+    visual_fusion_config=None,
+    multiplier=1.0,
+    ref_image_size="match",
+    vlm_resolution=384,
+):
+    """Build Advanced H3 conditioning and patch only mixed visual payloads."""
+    validate_minimax_h3_model_patcher(
+        model, "Advanced MiniMax H3 Image to Video (Combined)"
+    )
+    conditioning, latent, requires_combined_wrapper = (
+        _execute_advanced_minimax_h3_image_to_video(
+            clip,
+            vae,
+            prompt,
+            width,
+            height,
+            length,
+            first_frame=first_frame,
+            last_frame=last_frame,
+            reference_images=reference_images,
+            fusion_images=fusion_images,
+            visual_fusion_config=visual_fusion_config,
+            multiplier=multiplier,
+            ref_image_size=ref_image_size,
+            vlm_resolution=vlm_resolution,
+            allow_combined_reference_routing=True,
+        )
+    )
+    output_model = (
+        patch_minimax_h3_combined_model(model)
+        if requires_combined_wrapper
+        else model
+    )
+    return output_model, conditioning, latent
 
 
 def execute_minimax_h3_first_frame_references(
