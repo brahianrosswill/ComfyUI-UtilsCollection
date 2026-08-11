@@ -12,7 +12,12 @@ package = types.ModuleType(PACKAGE_NAME)
 package.__path__ = [str(CUSTOM_NODE_ROOT)]
 sys.modules.setdefault(PACKAGE_NAME, package)
 
-from utils_collection_vlm_preset_test import vlm_legacy_presets, vlm_nodes, vlm_presets
+from utils_collection_vlm_preset_test import (
+    vlm_experimental_presets,
+    vlm_legacy_presets,
+    vlm_nodes,
+    vlm_presets,
+)
 
 
 HARDENED_IMAGE_PRESET_BASELINES = {
@@ -255,7 +260,12 @@ def test_raw_query_presets_preserve_instructions_without_request_carriers():
             " Current request:\n"
         )
 
-    for name in ("h3_fl2va", "h3_ref2va"):
+    for name in (
+        "h3_fl2va",
+        "h3_ref2va",
+        "h3_fl2va_experimental",
+        "h3_ref2va_experimental",
+    ):
         prefix = wrapped[f"{name}_prefix"].removesuffix(
             "\n\nBEGIN VIDEO REQUEST:\n"
         )
@@ -297,15 +307,54 @@ def test_raw_query_preset_node_outputs_selected_instruction_directly():
     )
 
 
+def test_experimental_system_instruction_nodes_are_dedicated():
+    presets = vlm_experimental_presets.system_instructions_vlm_experimental
+    basic = vlm_nodes.UC_VLMSysInstrPresetsExperimental.define_schema()
+    advanced = vlm_nodes.UC_VLMSysInstrAdvPresetsExperimental.define_schema()
+    preset = sorted(presets)[0]
+
+    assert basic.node_id == "UC_VLMSysInstrPresetsExperimental"
+    assert basic.display_name == "VLM System Instruction Presets Experimental"
+    assert basic.inputs[0].options == sorted(presets)
+    assert advanced.node_id == "UC_VLMSysInstrAdvPresetsExperimental"
+    assert (
+        advanced.display_name
+        == "VLM System Instruction Advanced Presets Experimental"
+    )
+    assert advanced.inputs[0].options == sorted(presets)
+    assert vlm_nodes.UC_VLMSysInstrPresetsExperimental.execute(preset).args == (
+        presets[preset],
+    )
+    result = vlm_nodes.UC_VLMSysInstrAdvPresetsExperimental.execute(
+        preset,
+        False,
+        "system query",
+        "user query",
+    ).args[0]
+    assert result.startswith(presets[preset])
+    assert "system query" in result
+    assert "user query" in result
+
+
 def test_h3_query_presets_are_paired_and_wrap_the_request_once():
     presets = vlm_presets.system_query_additional_vlm
     base_names = {
         key.removesuffix("_prefix").removesuffix("_suffix") for key in presets
     }
-    assert {"h3_fl2va", "h3_ref2va"} <= base_names
+    assert {
+        "h3_fl2va",
+        "h3_ref2va",
+        "h3_fl2va_experimental",
+        "h3_ref2va_experimental",
+    } <= base_names
 
     request = "Make the subjects cross the clearing."
-    for name in ("h3_fl2va", "h3_ref2va"):
+    for name in (
+        "h3_fl2va",
+        "h3_ref2va",
+        "h3_fl2va_experimental",
+        "h3_ref2va_experimental",
+    ):
         prefix = presets[f"{name}_prefix"]
         suffix = presets[f"{name}_suffix"]
         wrapped = f"{prefix}{request}{suffix}"
@@ -332,29 +381,51 @@ def test_h3_fl2va_query_preset_enforces_available_boundary_pictures():
     assert "use `<Picture 2>` as the fixed ending only when it exists" in suffix
 
 
-def test_h3_ref2va_query_preset_uses_only_supplied_reference_roles():
+def test_h3_ref2va_query_preset_restores_material_reference_use():
     presets = vlm_presets.system_query_additional_vlm
     prefix = presets["h3_ref2va_prefix"]
     suffix = presets["h3_ref2va_suffix"]
 
     assert "use only identifiers that exist" in prefix
     assert "Do not automatically classify any picture as the first or final frame" in prefix
+    assert "cite its existing `<Picture N>` identifier wherever that reference materially controls" in prefix
+    assert "Use every supplied picture deliberately" in prefix
+    assert "Use every supplied picture through its existing identifier" in suffix
+    assert "never mention an unsupplied `<Picture N>`" in suffix
+    assert "Do not assign first-frame or final-frame status" in suffix
+    assert "never as a timeline-segment anchor" not in prefix
+    assert "first complete definition" not in prefix + suffix
+    assert "Do not repeat picture identifiers at each timeline interval" not in suffix
+
+
+def test_h3_ref2va_experimental_query_keeps_regression_snapshot():
+    presets = vlm_presets.system_query_additional_vlm
+    prefix = presets["h3_ref2va_experimental_prefix"]
+    suffix = presets["h3_ref2va_experimental_suffix"]
+
     assert "Use `<Picture N>` as source provenance" in prefix
     assert "never as a timeline-segment anchor" in prefix
-    assert "If the active system instruction provides a subject or reference definition section" in prefix
     assert "only in that subject or reference's first complete definition" in prefix
-    assert "without repeating the picture identifier at every timestamp segment" in prefix
-    assert "Never turn a picture identifier into a timestamp declaration" in prefix
-    assert "Use every supplied picture deliberately as visual evidence" in prefix
-    assert "where its subject or other referenced content is first completely defined" in suffix
     assert "Do not repeat picture identifiers at each timeline interval" in suffix
-    assert "never mention an unsupplied identifier" in suffix
-    assert "Do not assign first-frame or final-frame status" in suffix
-    assert "`subject_definitions:`" not in prefix + suffix
-    assert "`detailed_description:`" not in prefix + suffix
-    assert "`Timeline:`" not in prefix + suffix
     assert "wherever that reference materially controls" not in prefix
-    assert "Use every supplied picture through its existing identifier" not in suffix
+
+
+def test_h3_query_experimental_snapshots_are_static_and_complete():
+    wrapped = vlm_presets.system_query_additional_vlm
+    raw = vlm_presets.system_query_raw_vlm
+
+    assert wrapped["h3_fl2va_experimental_prefix"] == wrapped["h3_fl2va_prefix"]
+    assert wrapped["h3_fl2va_experimental_suffix"] == wrapped["h3_fl2va_suffix"]
+    assert raw["h3_fl2va_experimental"] == raw["h3_fl2va"]
+    assert hashlib.sha256(
+        wrapped["h3_ref2va_experimental_prefix"].encode()
+    ).hexdigest() == "49069b640d3b721871205cd3fe1b74d962bcef42fb77bed5b257a92f88a1ef4a"
+    assert hashlib.sha256(
+        wrapped["h3_ref2va_experimental_suffix"].encode()
+    ).hexdigest() == "cd232756a8c76dbb2b422c47d8fbcc0057081c2f7448e11a27f2e814a4827bab"
+    assert hashlib.sha256(
+        raw["h3_ref2va_experimental"].encode()
+    ).hexdigest() == "0167a861a2d0e3252846fbdda22584ce7ec87d3522043fe4f0b161254e4dac5e"
 
 
 def test_style_presets_receive_no_qwen_variants():
@@ -485,6 +556,36 @@ TIMELINE_CHANNEL_BALANCE_PRESETS = (
     "video_timeline_minimax_h3_reference_system_instruction",
 )
 
+EXPERIMENTAL_VIDEO_PRESET_HASHES = {
+    "video_timeline_system_instruction": (
+        "9dd1d0728a2aa06b1869bffcae24c86b29a04fef691165de2d6a84071b545617"
+    ),
+    "video_timeline_system_instruction_crude": (
+        "5564fb8e194077d8ad3c2afd6c3c0f8a4f256c423b58bc6dc884e8d7dfd1f2b3"
+    ),
+    "video_timeline_minimax_h3_base_system_instruction": (
+        "951501e17444450e5946e4bf2f2f9e7998cbdf0724a9fb5e6ff08e49f7e63eef"
+    ),
+    "video_timeline_minimax_h3_reference_system_instruction": (
+        "05cc45e16bb58a81d1e2dab073f9af507640ecd6238d776c7e1ff73f15403917"
+    ),
+}
+
+STABLE_VIDEO_PRESET_HASHES = {
+    "video_timeline_system_instruction": (
+        "e0ac3632e3fb259fdcfb515dabc494e3eeccf08457b5d3fb9a27dc93407664c3"
+    ),
+    "video_timeline_system_instruction_crude": (
+        "969bd1618c2ffffb5de140c8450985266a96670c5d4365b83e3d83952f79fe16"
+    ),
+    "video_timeline_minimax_h3_base_system_instruction": (
+        "35e24a888ccd476b004e4e37c75f31dff0211273ebcc78bec2d8110760f1cae5"
+    ),
+    "video_timeline_minimax_h3_reference_system_instruction": (
+        "984b416e4d1606c6771d3f77db83e72310d65e71c891ab1822c838c8694e72fc"
+    ),
+}
+
 
 def test_structured_video_presets_are_independent_literal_values():
     source = ast.parse((CUSTOM_NODE_ROOT / "vlm_presets.py").read_text(encoding="utf-8"))
@@ -507,6 +608,43 @@ def test_structured_video_presets_are_independent_literal_values():
         assert name in vlm_presets.system_instructions_vlm
         assert isinstance(vlm_presets.system_instructions_vlm[name], str)
         assert isinstance(literal_nodes[name], ast.Constant)
+
+
+def test_experimental_video_presets_are_independent_literal_snapshots():
+    source = ast.parse(
+        (CUSTOM_NODE_ROOT / "vlm_experimental_presets.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    preset_dict = next(
+        node.value
+        for node in source.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "system_instructions_vlm_experimental"
+            for target in node.targets
+        )
+    )
+    literal_nodes = {
+        ast.literal_eval(key): value
+        for key, value in zip(preset_dict.keys, preset_dict.values)
+        if isinstance(key, ast.Constant)
+    }
+
+    assert set(literal_nodes) == set(EXPERIMENTAL_VIDEO_PRESET_HASHES)
+    assert all(isinstance(value, ast.Constant) for value in literal_nodes.values())
+
+
+def test_stable_and_experimental_video_preset_hashes_are_locked():
+    stable = vlm_presets.system_instructions_vlm
+    experimental = vlm_experimental_presets.system_instructions_vlm_experimental
+
+    assert set(experimental) == set(EXPERIMENTAL_VIDEO_PRESET_HASHES)
+    for name, expected_hash in STABLE_VIDEO_PRESET_HASHES.items():
+        assert hashlib.sha256(stable[name].encode()).hexdigest() == expected_hash
+    for name, expected_hash in EXPERIMENTAL_VIDEO_PRESET_HASHES.items():
+        assert hashlib.sha256(experimental[name].encode()).hexdigest() == expected_hash
 
 
 def test_structured_video_presets_share_audio_and_motion_contracts():
@@ -548,8 +686,8 @@ def test_timeline_video_preset_uses_adaptive_contiguous_ranges():
     ]
 
     assert "first output text must be exactly `Timeline:`" in instruction
-    assert "[0.00s-1.00s]:" in instruction
-    assert "[1.00s-2.50s]:" in instruction
+    assert "[00.00s-01.00s]:" in instruction
+    assert "[01.00s-02.50s]:" in instruction
     assert "3-second request using three meaningful sections" in instruction
     assert "5-second request using four differently timed sections" in instruction
     assert "Never reuse their duration, count, boundaries, or content" in instruction
@@ -591,26 +729,35 @@ def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():
         assert "Use no fixed number of sections" in instruction
         assert "Every range touches the next without a gap or overlap" in instruction
         assert "final range ends at the exact total duration" in instruction
-        assert "[0.00s-0.00s]:" in instruction
+        assert "[00.00s-00.00s]:" in instruction
         assert "[SPEECH]:" in instruction
         assert "<d>[Language]" in instruction
         assert "The timestamp range remains the authoritative timing structure" in instruction
 
 
-def test_timeline_presets_require_minimal_width_two_decimal_total_seconds():
+def test_stable_timeline_presets_require_zero_padded_two_decimal_seconds():
     for name in TIMELINE_CHANNEL_BALANCE_PRESETS:
         instruction = vlm_presets.system_instructions_vlm[name]
 
-        assert "first range begins at `0.00s`" in instruction
-        assert "[0.00s-0.00s]:" in instruction
+        assert "first range begins at `00.00s`" in instruction
+        assert "[00.00s-00.00s]:" in instruction
         assert "total elapsed seconds" in instruction
-        assert "fewest integer digits needed" in instruction
+        assert "at least two integer digits" in instruction
         assert "exactly two decimal digits" in instruction
-        assert "zero-padded two-decimal" not in instruction
-        assert "at least two integer digits" not in instruction
-        assert "[00.00s" not in instruction
+        assert "zero-padded two-decimal" in instruction
+        assert "fewest integer digits needed" not in instruction
         assert "[0s-" not in instruction
         assert "[start-end]:" not in instruction
+
+
+def test_experimental_timeline_presets_keep_minimal_width_snapshot():
+    for instruction in (
+        vlm_experimental_presets.system_instructions_vlm_experimental.values()
+    ):
+        assert "first range begins at `0.00s`" in instruction
+        assert "[0.00s-0.00s]:" in instruction
+        assert "fewest integer digits needed" in instruction
+        assert "zero-padded two-decimal" not in instruction
 
 
 def test_minimax_h3_base_timeline_field_order():
@@ -637,9 +784,9 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     ]
     fields = (
         "subject_definitions:",
+        "summary:",
         "retention_analysis:",
         "detailed_description:",
-        "summary:",
         "overall_soundscape:",
         "non_diegetic_music:",
     )
@@ -660,41 +807,49 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "<Audio N>" in instruction
     assert "A label never replaces the full subject" in instruction
     assert "Place `Timeline:` immediately beneath `detailed_description:`" in instruction
-    assert "Place `summary:` immediately after the complete timeline" in instruction
-    assert "without retelling the timeline" in instruction
-    assert "as a second progression" in instruction
-    assert "If `summary:` mentions temporal information" in instruction
-    assert "preserve their order and relationship exactly" in instruction
-    assert "must retain its supplied timestamp relationship" in instruction
-    assert "Read every `<Picture N>` and timestamp pair explicitly supplied" in instruction
-    assert "as an internal picture-to-time map" in instruction
-    assert "without adding information to that pair" in instruction
-    assert "Use each supplied timestamp as the opening of the timeline block" in instruction
-    assert "Do not write `<Picture N>` anywhere inside `detailed_description:` or `Timeline:`" in instruction
-    assert "do not output a picture-to-timestamp or picture-to-shot declaration" in instruction
-    assert "cite every existing `<Picture N>` that shows or defines that subject" in instruction
-    assert "Inside `detailed_description:` and `Timeline:`, use `<Subject N>`" in instruction
-    assert "never cite `<Picture N>` in a timestamp block" in instruction
-    assert "If the final supplied timestamp precedes the requested duration" in instruction
-    assert "use it only to plan the corresponding timeline content" in instruction
-    assert "cite ComfyUI's existing `<Picture N>` identifiers only as subject provenance" in instruction
-    assert "For every explicitly supplied picture and timestamp pair" in instruction
-    assert "without emitting the matching `<Picture N>`" in instruction
-    assert "Write `summary:` immediately after the completed timeline" in instruction
-    assert "no `<Picture N>` citation inside `detailed_description:` or `Timeline:`" in instruction
-    assert "no repeated or independently reconstructed timeline progression" in instruction
-    assert "temporal consistency between `summary:` and `Timeline:`" in instruction
-    assert "Condense the preceding timeline" not in instruction
-    assert "Mention actions, transitions" not in instruction
-    assert "condensing only that established progression" not in instruction
-    assert "Cite the picture at the opening of that block" not in instruction
-    assert "cite the matching `<Picture N>` at the block's opening" not in instruction
-    assert "no picture citation outside its assigned timestamp block" not in instruction
-    assert "nonchronological premise" not in instruction
+    assert "In `summary:`, state the intended target video" in instruction
+    assert "established reference relationships concisely" in instruction
+    assert "Do not invent task classifications or asset roles" in instruction
+    assert "Cite an established label where its content first becomes relevant" in instruction
+    assert "wherever its role materially affects the current interval" in instruction
+    assert "**Atomic Subject Labels:**" in instruction
+    assert "Never append possessive markers" in instruction
+    assert "without modifying the alias" in instruction
+    assert "Explicit Picture Timestamp Mapping" not in instruction
+    assert "Place `summary:` immediately after the complete timeline" not in instruction
+    assert "Do not write `<Picture N>` anywhere inside" not in instruction
+    assert "never cite `<Picture N>` in a timestamp block" not in instruction
+    assert "picture-to-timestamp or picture-to-shot declaration" not in instruction
     assert "separately assembled downstream H3 media prefix" not in instruction
     assert "fixed ordinal pairing" not in instruction
     assert "shot mapping was supplied" not in instruction
     assert "Sample Video Frames" not in instruction
+
+
+def test_experimental_h3_reference_keeps_regression_contract():
+    instruction = vlm_experimental_presets.system_instructions_vlm_experimental[
+        "video_timeline_minimax_h3_reference_system_instruction"
+    ]
+    fields = (
+        "subject_definitions:",
+        "retention_analysis:",
+        "detailed_description:",
+        "summary:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+
+    assert [instruction.index(field) for field in fields] == sorted(
+        instruction.index(field) for field in fields
+    )
+    assert "Place `summary:` immediately after the complete timeline" in instruction
+    assert "as an internal picture-to-time map" in instruction
+    assert "Do not write `<Picture N>` anywhere inside" in instruction
+    assert "never cite `<Picture N>` in a timestamp block" in instruction
+    assert "cite ComfyUI's existing `<Picture N>` identifiers only as subject provenance" in instruction
+    assert "**Atomic Subject Labels:**" in instruction
+    assert "Never append possessive markers" in instruction
+    assert "without modifying the alias" in instruction
 
 
 def test_minimax_h3_timeline_presets_avoid_example_led_content_anchors():

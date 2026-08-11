@@ -1,3 +1,5 @@
+import ast
+import hashlib
 import pathlib
 import sys
 import types
@@ -10,6 +12,7 @@ package.__path__ = [str(CUSTOM_NODE_ROOT)]
 sys.modules.setdefault(PACKAGE_NAME, package)
 
 from utils_collection_minimax_h3_vlm_preset_test import (
+    minimax_h3_vlm_experimental_presets,
     minimax_h3_vlm_nodes,
     minimax_h3_vlm_presets,
 )
@@ -34,6 +37,21 @@ TIMELINE_DERIVED_PRESETS = [
     "minimax_h3_timeline_crude_fl2va",
     "minimax_h3_timeline_crude_ref2va",
 ]
+
+EXPERIMENTAL_H3_TIMELINE_HASHES = {
+    "minimax_h3_timeline_fl2va": (
+        "bd2fc914c11543571efd9fc6a328268588538dcbdab715809df2689b91d7bba6"
+    ),
+    "minimax_h3_timeline_crude_fl2va": (
+        "74389c341b111992caaad6332610694b8527aba16e376e20e3b2531b104e1cb7"
+    ),
+    "minimax_h3_timeline_ref2va": (
+        "2800224bffdf7e51119fb8bd30773734b6c014df428f8f55656bc97d97c27d51"
+    ),
+    "minimax_h3_timeline_crude_ref2va": (
+        "f6bc946dab38041b3e0043b6323291cb8c64e522de26b81cdbcf3542efc1308d"
+    ),
+}
 EXPECTED_PRESETS = [*NATIVE_H3_PRESETS, *TIMELINE_DERIVED_PRESETS]
 PROHIBITED_GRAMMAR = (
     "Timeline:",
@@ -161,6 +179,39 @@ def test_timeline_derived_h3_presets_use_guide_aligned_timestamps():
         assert "first range begins at `00:00.000`" in instruction
         assert "[start-end]:" not in instruction
         assert "[0s-" not in instruction
+
+
+def test_experimental_h3_timeline_presets_are_static_snapshots():
+    source = ast.parse(
+        (CUSTOM_NODE_ROOT / "minimax_h3_vlm_experimental_presets.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    preset_dict = next(
+        node.value
+        for node in source.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "minimax_h3_system_instructions_vlm_experimental"
+            for target in node.targets
+        )
+    )
+    literal_nodes = {
+        ast.literal_eval(key): value
+        for key, value in zip(preset_dict.keys, preset_dict.values)
+        if isinstance(key, ast.Constant)
+    }
+    experimental = (
+        minimax_h3_vlm_experimental_presets
+        .minimax_h3_system_instructions_vlm_experimental
+    )
+
+    assert set(literal_nodes) == set(EXPERIMENTAL_H3_TIMELINE_HASHES)
+    assert all(isinstance(value, ast.Constant) for value in literal_nodes.values())
+    for name, expected_hash in EXPERIMENTAL_H3_TIMELINE_HASHES.items():
+        assert hashlib.sha256(experimental[name].encode()).hexdigest() == expected_hash
+        assert experimental[name] == minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[name]
 
 
 def test_timeline_derived_h3_presets_create_dialogue_and_limit_channel_load():
@@ -368,3 +419,49 @@ def test_h3_preset_nodes_are_dedicated_and_system_override_is_last():
     )
     assert "GODMODE" not in jailbroken_result
     assert "rebel response" not in jailbroken_result
+
+
+def test_experimental_h3_preset_nodes_are_dedicated():
+    presets = (
+        minimax_h3_vlm_experimental_presets
+        .minimax_h3_system_instructions_vlm_experimental
+    )
+    basic = (
+        minimax_h3_vlm_nodes
+        .UC_MiniMaxH3VLMSysInstrPresetsExperimental.define_schema()
+    )
+    advanced = (
+        minimax_h3_vlm_nodes
+        .UC_MiniMaxH3VLMSysInstrAdvPresetsExperimental.define_schema()
+    )
+    preset = next(iter(presets))
+
+    assert basic.node_id == "UC_MiniMaxH3VLMSysInstrPresetsExperimental"
+    assert (
+        basic.display_name
+        == "MiniMax H3 VLM System Instruction Presets Experimental"
+    )
+    assert basic.inputs[0].options == list(presets)
+    assert advanced.node_id == "UC_MiniMaxH3VLMSysInstrAdvPresetsExperimental"
+    assert (
+        advanced.display_name
+        == "MiniMax H3 VLM System Instruction Advanced Presets Experimental"
+    )
+    assert advanced.inputs[0].options == list(presets)
+    assert (
+        minimax_h3_vlm_nodes.UC_MiniMaxH3VLMSysInstrPresetsExperimental.execute(
+            preset
+        ).args
+        == (presets[preset],)
+    )
+    result = (
+        minimax_h3_vlm_nodes.UC_MiniMaxH3VLMSysInstrAdvPresetsExperimental.execute(
+            preset,
+            "system directive",
+            "user directive",
+            False,
+            "minor preset guidance",
+        ).args[0]
+    )
+    assert result.startswith(presets[preset])
+    assert result.endswith("Highest-priority system override:\nsystem directive")

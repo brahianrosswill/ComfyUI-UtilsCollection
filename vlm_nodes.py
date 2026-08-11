@@ -6,6 +6,7 @@ from .vlm_presets import (
     system_query_raw_vlm,
 )
 from .vlm_legacy_presets import legacy_system_instructions_vlm
+from .vlm_experimental_presets import system_instructions_vlm_experimental
 
 
 class UC_VLMSysInstrPresets(io.ComfyNode):
@@ -40,6 +41,34 @@ class UC_VLMSysInstrPresets(io.ComfyNode):
         presets_dict = cls.get_presets()
         system_instruction = presets_dict.get(preset, "")
         return io.NodeOutput(system_instruction)
+
+
+class UC_VLMSysInstrPresetsExperimental(UC_VLMSysInstrPresets):
+    @classmethod
+    def get_presets(cls):
+        return system_instructions_vlm_experimental
+
+    @classmethod
+    def define_schema(cls):
+        presets = cls.get_presets()
+        options = sorted(presets)
+        default = options[0] if options else ""
+        return io.Schema(
+            node_id="UC_VLMSysInstrPresetsExperimental",
+            display_name="VLM System Instruction Presets Experimental",
+            category="advanced/text",
+            inputs=[
+                io.Combo.Input(
+                    "preset",
+                    display_name="vlm_system_instruction_preset_experimental",
+                    options=options,
+                    default=default,
+                ),
+            ],
+            outputs=[
+                io.String.Output(display_name="system_instruction"),
+            ],
+        )
 
 
 class UC_VLMSysInstrLegacyPresets(UC_VLMSysInstrPresets):
@@ -208,3 +237,34 @@ class UC_VLMSysInstrAdvPresets(io.ComfyNode):
             result = jb_prefix + result + jb_suffix
 
         return io.NodeOutput(result)
+
+
+class UC_VLMSysInstrAdvPresetsExperimental(UC_VLMSysInstrAdvPresets):
+    @classmethod
+    def get_presets(cls):
+        return system_instructions_vlm_experimental
+
+    @classmethod
+    def define_schema(cls):
+        presets = cls.get_presets()
+        options = sorted(presets)
+        default = options[0] if options else ""
+        return io.Schema(
+            node_id="UC_VLMSysInstrAdvPresetsExperimental",
+            display_name="VLM System Instruction Advanced Presets Experimental",
+            category="advanced/text",
+            inputs=[
+                io.Combo.Input(
+                    "preset",
+                    display_name="vlm_system_instruction_advanced_preset_experimental",
+                    options=options,
+                    default=default,
+                ),
+                io.Boolean.Input("jailbreak", default=False),
+                io.String.Input("system_query", multiline=True, default=""),
+                io.String.Input("user_query", multiline=True, default=""),
+            ],
+            outputs=[
+                io.String.Output(display_name="system_instruction"),
+            ],
+        )

@@ -5,12 +5,19 @@ from .minimax_h3_vlm_presets import (
     minimax_h3_vlm_jailbreak_prefix,
     minimax_h3_vlm_jailbreak_suffix,
 )
+from .minimax_h3_vlm_experimental_presets import (
+    minimax_h3_system_instructions_vlm_experimental,
+)
 
 
 class UC_MiniMaxH3VLMSysInstrPresets(io.ComfyNode):
     @classmethod
+    def get_presets(cls):
+        return minimax_h3_system_instructions_vlm
+
+    @classmethod
     def define_schema(cls):
-        options = list(minimax_h3_system_instructions_vlm)
+        options = list(cls.get_presets())
         return io.Schema(
             node_id="UC_MiniMaxH3VLMSysInstrPresets",
             display_name="MiniMax H3 VLM System Instruction Presets",
@@ -28,13 +35,17 @@ class UC_MiniMaxH3VLMSysInstrPresets(io.ComfyNode):
 
     @classmethod
     def execute(cls, preset) -> io.NodeOutput:
-        return io.NodeOutput(minimax_h3_system_instructions_vlm.get(preset, ""))
+        return io.NodeOutput(cls.get_presets().get(preset, ""))
 
 
 class UC_MiniMaxH3VLMSysInstrAdvPresets(io.ComfyNode):
     @classmethod
+    def get_presets(cls):
+        return minimax_h3_system_instructions_vlm
+
+    @classmethod
     def define_schema(cls):
-        options = list(minimax_h3_system_instructions_vlm)
+        options = list(cls.get_presets())
         return io.Schema(
             node_id="UC_MiniMaxH3VLMSysInstrAdvPresets",
             display_name="MiniMax H3 VLM System Instruction Advanced Presets",
@@ -67,7 +78,7 @@ class UC_MiniMaxH3VLMSysInstrAdvPresets(io.ComfyNode):
         jailbreak=False,
         system_query_additional="",
     ) -> io.NodeOutput:
-        result = minimax_h3_system_instructions_vlm.get(preset, "")
+        result = cls.get_presets().get(preset, "")
         if jailbreak:
             result = minimax_h3_vlm_jailbreak_prefix + "\n\n" + result
         if user_query and user_query.strip():
@@ -79,3 +90,67 @@ class UC_MiniMaxH3VLMSysInstrAdvPresets(io.ComfyNode):
         if system_query and system_query.strip():
             result += "\n\nHighest-priority system override:\n" + system_query.strip()
         return io.NodeOutput(result)
+
+
+class UC_MiniMaxH3VLMSysInstrPresetsExperimental(
+    UC_MiniMaxH3VLMSysInstrPresets
+):
+    @classmethod
+    def get_presets(cls):
+        return minimax_h3_system_instructions_vlm_experimental
+
+    @classmethod
+    def define_schema(cls):
+        options = list(cls.get_presets())
+        return io.Schema(
+            node_id="UC_MiniMaxH3VLMSysInstrPresetsExperimental",
+            display_name="MiniMax H3 VLM System Instruction Presets Experimental",
+            category="advanced/text",
+            inputs=[
+                io.Combo.Input(
+                    "preset",
+                    display_name="minimax_h3_vlm_system_instruction_preset_experimental",
+                    options=options,
+                    default=options[0] if options else "",
+                ),
+            ],
+            outputs=[io.String.Output(display_name="system_instruction")],
+        )
+
+
+class UC_MiniMaxH3VLMSysInstrAdvPresetsExperimental(
+    UC_MiniMaxH3VLMSysInstrAdvPresets
+):
+    @classmethod
+    def get_presets(cls):
+        return minimax_h3_system_instructions_vlm_experimental
+
+    @classmethod
+    def define_schema(cls):
+        options = list(cls.get_presets())
+        return io.Schema(
+            node_id="UC_MiniMaxH3VLMSysInstrAdvPresetsExperimental",
+            display_name=(
+                "MiniMax H3 VLM System Instruction Advanced Presets Experimental"
+            ),
+            category="advanced/text",
+            inputs=[
+                io.Combo.Input(
+                    "preset",
+                    display_name=(
+                        "minimax_h3_vlm_system_instruction_advanced_preset_experimental"
+                    ),
+                    options=options,
+                    default=options[0] if options else "",
+                ),
+                io.String.Input("system_query", multiline=True, default=""),
+                io.String.Input("user_query", multiline=True, default=""),
+                io.Boolean.Input("jailbreak", default=False),
+                io.String.Input(
+                    "system_query_additional",
+                    multiline=True,
+                    default="",
+                ),
+            ],
+            outputs=[io.String.Output(display_name="system_instruction")],
+        )
