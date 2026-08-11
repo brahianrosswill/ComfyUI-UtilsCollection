@@ -103,6 +103,7 @@ python_tests = [
   "tests/test_encoder_guide.py",
   "tests/test_high_resolution_tiling_guide.py",
   "tests/test_markdown_preview.py",
+  "tests/test_from_list.py",
   "tests/test_video_prompt_conversion.py",
 ]
 frontend_tests = []

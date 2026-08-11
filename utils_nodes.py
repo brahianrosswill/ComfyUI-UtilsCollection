@@ -85,6 +85,44 @@ class UC_FromSeedCluster(io.ComfyNode):
         return io.NodeOutput(*cluster)
 
 
+class UC_FromList(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        item_type = io.MatchType.Template("item_type")
+        return io.Schema(
+            node_id="UC_FromList",
+            display_name="From List",
+            category="utils/list",
+            description="Returns a consecutive range from any ComfyUI list.",
+            is_input_list=True,
+            search_aliases=["List Slice", "Get List Items", "Select From List"],
+            inputs=[
+                io.MatchType.Input("items", template=item_type),
+                io.Int.Input("start_index", default=0, min=0, step=1),
+                io.Int.Input("number_of_entries", default=1, min=1, step=1),
+            ],
+            outputs=[
+                io.MatchType.Output(
+                    item_type,
+                    id="items",
+                    display_name="items",
+                    is_output_list=True,
+                ),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        items: list,
+        start_index: list[int],
+        number_of_entries: list[int],
+    ) -> io.NodeOutput:
+        start = int(start_index[0])
+        count = int(number_of_entries[0])
+        return io.NodeOutput(items[start : start + count])
+
+
 class UC_SwitchInverseNode(SwitchNode):
     @classmethod
     def define_schema(cls):
