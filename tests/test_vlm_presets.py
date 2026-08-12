@@ -472,14 +472,15 @@ def test_h3_ref2va_query_preset_restores_material_reference_use():
 
     assert "use only identifiers that exist" in prefix
     assert "Do not automatically classify any picture as the first or final frame" in prefix
-    assert "cite its existing `<Picture N>` identifier wherever that reference materially controls" in prefix
+    assert "Use `<Picture N>` as source provenance" in prefix
+    assert "only in that subject or reference's first complete definition" in prefix
     assert "Use every supplied picture deliberately" in prefix
-    assert "Use every supplied picture through its existing identifier" in suffix
-    assert "never mention an unsupplied `<Picture N>`" in suffix
+    assert "Use every supplied picture as visual evidence" in suffix
+    assert "never mention an unsupplied identifier" in suffix
     assert "Do not assign first-frame or final-frame status" in suffix
-    assert "never as a timeline-segment anchor" not in prefix
-    assert "first complete definition" not in prefix + suffix
-    assert "Do not repeat picture identifiers at each timeline interval" not in suffix
+    assert "never as a timeline-segment anchor" in prefix
+    assert "Do not repeat picture identifiers at each timeline interval" in suffix
+    assert "wherever that reference materially controls" not in prefix
 
 
 def test_h3_ref2va_experimental_query_keeps_regression_snapshot():
@@ -501,6 +502,9 @@ def test_h3_query_experimental_snapshots_are_static_and_complete():
     assert wrapped["h3_fl2va_experimental_prefix"] == wrapped["h3_fl2va_prefix"]
     assert wrapped["h3_fl2va_experimental_suffix"] == wrapped["h3_fl2va_suffix"]
     assert raw["h3_fl2va_experimental"] == raw["h3_fl2va"]
+    assert wrapped["h3_ref2va_prefix"] == wrapped["h3_ref2va_experimental_prefix"]
+    assert wrapped["h3_ref2va_suffix"] == wrapped["h3_ref2va_experimental_suffix"]
+    assert raw["h3_ref2va"] == raw["h3_ref2va_experimental"]
     assert hashlib.sha256(
         wrapped["h3_ref2va_experimental_prefix"].encode()
     ).hexdigest() == "49069b640d3b721871205cd3fe1b74d962bcef42fb77bed5b257a92f88a1ef4a"
@@ -666,7 +670,7 @@ STABLE_VIDEO_PRESET_HASHES = {
         "35e24a888ccd476b004e4e37c75f31dff0211273ebcc78bec2d8110760f1cae5"
     ),
     "video_timeline_minimax_h3_reference_system_instruction": (
-        "984b416e4d1606c6771d3f77db83e72310d65e71c891ab1822c838c8694e72fc"
+        "faebee99983a396c3e3b2e016f7d9c58f2a661d0225dbd089c73b35badd2b4f2"
     ),
 }
 
@@ -996,11 +1000,24 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "In `summary:`, state the intended target video" in instruction
     assert "established reference relationships concisely" in instruction
     assert "Do not invent task classifications or asset roles" in instruction
-    assert "Cite an established label where its content first becomes relevant" in instruction
-    assert "wherever its role materially affects the current interval" in instruction
+    assert "use the literal alias only at the subject's first introduction" in instruction
+    assert "Otherwise use the subject's concise ordinary name" in instruction
+    assert "Never repeat one alias multiple times in a timestamp block" in instruction
+    assert "neither visibly supported nor explicitly introduced" in instruction
+    assert "do not use repeated aliases as continuity reinforcement" in instruction
+    assert "Preserve each subject alias throughout the output" not in instruction
+    assert "wherever its role materially affects the current interval" not in instruction
     assert "**Atomic Subject Labels:**" in instruction
     assert "Never append possessive markers" in instruction
     assert "without modifying the alias" in instruction
+    assert "\r\n" in instruction
+    assert not re.search(r"(?<!\r)\n", instruction)
+    source = (CUSTOM_NODE_ROOT / "vlm_presets.py").read_text(encoding="utf-8")
+    assert re.search(
+        r'^    "video_timeline_minimax_h3_reference_system_instruction": "',
+        source,
+        re.MULTILINE,
+    )
     assert "Explicit Picture Timestamp Mapping" not in instruction
     assert "Place `summary:` immediately after the complete timeline" not in instruction
     assert "Do not write `<Picture N>` anywhere inside" not in instruction
