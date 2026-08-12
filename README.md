@@ -31,6 +31,26 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_Krea2LayerAblator`
 - `UC_EncoderNodesGuide`
 
+#### UC_AdvancedMiniMaxH3ImageToVideo: Qwen-only 1024 VLM example
+
+[Workflow JSON](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_Workflow.json) | [API workflow JSON](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_API.json) | [Workflow overview](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_Overview.png) | [Reference images](https://github.com/silveroxides/ComfyUI-UtilsCollection/releases/download/advanced-minimax-h3-qwen-only-assets-v1/UC_AdvancedMiniMaxH3ImageToVideo_QwenOnly_8Image_1024VLM_References.zip)
+
+This example uses eight chronological storyboard frames as 1024-resolution Qwen3-VL/DeepStack references. Each image becomes an ordered `<Picture N>` visual entry and the prompt associates it with a target timestamp. With `ref_image_size` set to `none`, no reference image is VAE-encoded or carried through the denoising steps. Extract the separately hosted reference-image ZIP into `ComfyUI/input` before loading either workflow.
+
+This approach preserves a separately prepared high-resolution visual presentation instead of reusing an image resized for VAE conditioning. It can provide strong subject, composition, and approximate timeline control at substantially lower memory and sampling cost than a native reference video. The included example reproduced the door reveal, stairwell framing, subject placement, and final corner close-up of a 12.25-second source sequence using eight images, seven sampling steps, and a 16 GB GPU. The picture timestamps are learned prompt instructions rather than hard frame anchors, so results remain stochastic and are not equivalent to direct video-reference conditioning.
+
+The workflow uses Core's **Create Video** and **Save Video** nodes and requires no other custom-node collection.
+
+For headless use, start ComfyUI with its API reachable, extract the reference ZIP, then run:
+
+```powershell
+python workflows/UC_AdvancedMiniMaxH3ImageToVideo/run_api_workflow.py C:\path\to\reference-images
+```
+
+The standard-library runner uploads the eight images, substitutes the returned server filenames into the unchanged API workflow, queues it, waits for completion, and prints the saved-output metadata. Use `--server http://host:8188` for another ComfyUI server and `--seed N` to override the workflow seed.
+
+<img src="workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_Overview.png" alt="UC Advanced MiniMax H3 Image to Video Qwen-only eight-image 1024 VLM workflow" width="1200">
+
 #### Advanced visual consensus
 
 `UC_AdvancedVisConEncoder` runs two sequential stages: it first constructs a

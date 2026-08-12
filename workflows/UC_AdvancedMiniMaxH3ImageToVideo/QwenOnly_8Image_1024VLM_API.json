@@ -1,0 +1,483 @@
+{
+  "13377": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "13379": {
+    "inputs": {
+      "value": "subject_definitions:\n- <Subject 1>: A anthropomorphic feline operative featuring dark grey fur with blue-and-magenta bioluminescent facial markings, vibrant purple hair, curled ram-like dark metallic horns, piercing light-blue eyes, and a bright teal nose, dressed in a sleek black suit jacket, white collared shirt, and black necktie, wielding a suppressed handgun. Linked to <Picture 2>, <Picture 3>, <Picture 4>, <Picture 5>, <Picture 6>, <Picture 7>, and <Picture 8>.\n\nsummary:\nA high-suspense, 90s-style cinematic thriller scene following <Subject 1> navigating a dark industrial stairwell, cautiously peering around corners with a suppressed pistol, establishing tense tactical movement and covert progression across eight continuous segments guided by <Picture 1> through <Picture 8>.\n\nretention_analysis:\nMaintain absolute visual consistency for <Subject 1>'s distinctive feline features, purple hair, horns, suit attire, and suppressed pistol across all dynamic action. Preserve the gritty, moody 90s thriller lighting and industrial concrete block architecture throughout all transitions.\n\ndetailed_description:\nTimeline:\n[00.00s-01.21s]:\n[VISUAL]: [Shot 1] The frame opens on a dark, closed wooden door filling the screen, matching <Picture 1>. Heavy rain pours down the surface. Slowly, the heavy door swings inward from left to right, revealing a sliver of warm light and disclosing <Subject 1> peering cautiously from behind the opening frame, transitioning into <Picture 2>.\n[SOUNDS]: Sound of a creaking wood door opening against falling rain.\n\n[01.21s-02.46s]:\n[VISUAL]: [Shot 2] Close-up shot tracking <Subject 1> as they lean past the doorframe, matching <Picture 3>. <Subject 1>'s purple-tufted ears twitch alertness and their bright blue eyes scan the hallway intensely, rain glistening on their dark fur and jacket shoulders.\n[SOUNDS]: Soft, wet footsteps and intense breathing, rain dampening in the background.\n\n[02.46s-05.30s]:\n[VISUAL]: [Shot 3] Medium-wide tracking shot along a stark concrete block stairwell as <Subject 1> crouches low behind metal pipe handrails, matching <Picture 4>. Holding a suppressed pistol in a two-handed tactical grip, <Subject 1> moves silently up the steps toward an open doorway labeled \"ВХОД\".\n[SOUNDS]: Squeak of rubber-soled boots on wet concrete, rustle of suit jacket fabric.\n\n[05.30s-06.55s]:\n[VISUAL]: <Subject 1> pivots fluidly into a defensive stance, leaning low against the rusted metal railing in the stairwell, matching <Picture 5>. Holding the suppressed handgun close to their chest, <Subject 1> glances sharply back down the steps to verify the area is clear.\n[SOUNDS]: Metallic clink of gun frame against suit buttons, faint distant echo.\n\n[06.55s-07.80s]:\n[VISUAL]: [Shot 4] Low-angle shot looking up at <Subject 1> descending a spiral stone staircase, matching <Picture 6>. <Subject 1> rests one gloved hand on the iron rail while keeping the raised, suppressed pistol ready, their plush purple-and-cyan tail swaying for balance.\n[SOUNDS]: Rhythmic, careful footsteps descending stone stairs.\n\n[07.80s-10.84s]:\n[VISUAL]: [Shot 5] Tight close-up frame as <Subject 1> presses firmly against a rough concrete wall corner, matching <Picture 7>. Holding the suppressor near face level, <Subject 1> slowly edges forward to peer into the dark corridor beyond.\n[SOUNDS]: Low rustle of suit fabric against rough concrete.\n\n[10.84s-12.10s]:\n[VISUAL]: Extreme close-up of <Subject 1> leaning around the wall corner, matching <Picture 8>. Light catches the sharp texture of <Subject 1>'s dark fur, purple hair bangs, and bright teal nose as their blue eyes widen slightly upon spotting a target ahead.\n[SOUNDS]: Soft, tense intake of breath.\n\n[12.10s-12.30s]:\n[VISUAL]: <Subject 1> quickly raises the suppressed pistol flush with their line of sight, fingers tightening on the grip as they prepare to take action, locking focus directly down the hallway.\n[SOUNDS]: Sharp metallic click of a handgun hammer cocking.\n\noverall_soundscape:\nAn immersive 90s atmospheric suspense soundscape featuring heavy rain external ambiance fading into echoing indoor concrete stairwell reverberations, subtle boot scrapes, suit fabric rustles, and precise mechanical weapon handling audio.\n\nnon_diegetic_music:\nA low, pulsing synthesizer bassline paired with slow, rhythmic percussion to build escalating cinematic tension typical of a 1990s neo-noir action thriller."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text (Multiline)"
+    }
+  },
+  "13380": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "13381": {
+    "inputs": {
+      "prompt": [
+        "13393",
+        0
+      ],
+      "width": 1024,
+      "height": 576,
+      "length": [
+        "13383",
+        1
+      ],
+      "multiplier": 1,
+      "ref_image_size": "none",
+      "vlm_resolution": 1024,
+      "clip": [
+        "13380",
+        0
+      ],
+      "vae": [
+        "13385",
+        0
+      ],
+      "visual_fusion_config": [
+        "13382",
+        0
+      ],
+      "reference_images.reference_image_1": [
+        "14775",
+        0
+      ],
+      "reference_images.reference_image_2": [
+        "14776",
+        0
+      ],
+      "reference_images.reference_image_3": [
+        "14777",
+        0
+      ],
+      "reference_images.reference_image_4": [
+        "14782",
+        0
+      ],
+      "reference_images.reference_image_5": [
+        "14783",
+        0
+      ],
+      "reference_images.reference_image_6": [
+        "14784",
+        0
+      ],
+      "reference_images.reference_image_7": [
+        "14785",
+        0
+      ],
+      "reference_images.reference_image_8": [
+        "14786",
+        0
+      ]
+    },
+    "class_type": "UC_AdvancedMiniMaxH3ImageToVideo",
+    "_meta": {
+      "title": "Advanced MiniMax H3 Image to Video"
+    }
+  },
+  "13382": {
+    "inputs": {
+      "visual_fusion_method": "off",
+      "visual_block_size": 2,
+      "dither_ratio": 0.5,
+      "save_blended_embeds": false,
+      "save_path": "qwen3vl_32b_spongebob.safetensors",
+      "seed": 36709679142653,
+      "visual_encoder_path": "grid-deepstack",
+      "dither_secondary_pattern": "checkerboard",
+      "dither_mask_cleanup": false,
+      "spatial_perturbation": 0
+    },
+    "class_type": "UC_VisualFusionConfig",
+    "_meta": {
+      "title": "Visual Component Fusion Configurator"
+    }
+  },
+  "13383": {
+    "inputs": {
+      "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+      "values.a": [
+        "13384",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "Math Expression"
+    }
+  },
+  "13384": {
+    "inputs": {
+      "value": 12
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Float (duration)"
+    }
+  },
+  "13385": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "13386": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "13388": {
+    "inputs": {
+      "scheduler": "power_shift",
+      "steps": 7,
+      "denoise": 1,
+      "model": [
+        "14787",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "BasicScheduler"
+    }
+  },
+  "13390": {
+    "inputs": {
+      "noise_seed": 863170813291631
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "13391": {
+    "inputs": {
+      "solver_type": "ODE",
+      "max_stage": 3,
+      "eta": 0,
+      "s_noise": 1
+    },
+    "class_type": "SamplerER_SDE",
+    "_meta": {
+      "title": "SamplerER_SDE"
+    }
+  },
+  "13392": {
+    "inputs": {
+      "value": "For the target video, at 00.00s into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nFor the target video, at 01.21s into the target video, <Picture 2> (from [Shot 2]) is fully referenced.\nFor the target video, at 02.46s into the target video, <Picture 3> (from [Shot 3]) is fully referenced.\nFor the target video, at 05.30s into the target video, <Picture 4> (from [Shot 4]) is fully referenced.\nFor the target video, at 06.55s into the target video, <Picture 5> (from [Shot 5]) is fully referenced.\nFor the target video, at 07.80s into the target video, <Picture 6> (from [Shot 6]) is fully referenced.\nFor the target video, at 10.84s into the target video, <Picture 7> (from [Shot 7]) is fully referenced.\nFor the target video, at 12.10s into the target video, <Picture 8> (from [Shot 8]) is fully referenced.\n"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text (Multiline)"
+    }
+  },
+  "13393": {
+    "inputs": {
+      "delimiter": [
+        "13457",
+        0
+      ],
+      "text_inputs.text_1": [
+        "13392",
+        0
+      ],
+      "text_inputs.text_2": [
+        "13379",
+        0
+      ]
+    },
+    "class_type": "UC_TextConcatenateAutogrow",
+    "_meta": {
+      "title": "Concatenate Text (Autogrow)"
+    }
+  },
+  "13394": {
+    "inputs": {
+      "noise": [
+        "13390",
+        0
+      ],
+      "guider": [
+        "13440",
+        0
+      ],
+      "sampler": [
+        "13391",
+        0
+      ],
+      "sigmas": [
+        "13388",
+        0
+      ],
+      "latent_image": [
+        "13381",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "13395": {
+    "inputs": {
+      "filename_prefix": "video/MiniMax_H3",
+      "format": "auto",
+      "codec": "auto",
+      "video-preview": "",
+      "video": [
+        "13398",
+        0
+      ]
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "Save Video"
+    }
+  },
+  "13396": {
+    "inputs": {
+      "samples": [
+        "13394",
+        0
+      ],
+      "vae": [
+        "13386",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "VAE Decode Audio"
+    }
+  },
+  "13397": {
+    "inputs": {
+      "samples": [
+        "13394",
+        0
+      ],
+      "vae": [
+        "13385",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "13398": {
+    "inputs": {
+      "fps": 24,
+      "bit_depth": 8,
+      "images": [
+        "13397",
+        0
+      ],
+      "audio": [
+        "13396",
+        0
+      ]
+    },
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "Create Video"
+    }
+  },
+  "13405": {
+    "inputs": {
+      "lora_name": "minimax_h3\\minimax_h3_fl2v_lightx2v_v0.1_dareties_v4_step600_comfy_fro.safetensors",
+      "strength_model": 0.8499999999999999,
+      "model": [
+        "13377",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "13420": {
+    "inputs": {
+      "reuse_threshold": 0.05,
+      "start_percent": 0.15,
+      "end_percent": 0.9,
+      "max_steps": 1,
+      "device": "auto",
+      "verbose": false,
+      "model": [
+        "13405",
+        0
+      ]
+    },
+    "class_type": "UC_MiniMaxH3Cache",
+    "_meta": {
+      "title": "MiniMax H3 Cache"
+    }
+  },
+  "13440": {
+    "inputs": {
+      "cfg": 1,
+      "model": [
+        "14787",
+        0
+      ],
+      "positive": [
+        "13381",
+        0
+      ],
+      "negative": [
+        "13441",
+        0
+      ]
+    },
+    "class_type": "CFGGuider",
+    "_meta": {
+      "title": "CFG Guider"
+    }
+  },
+  "13441": {
+    "inputs": {
+      "conditioning": [
+        "13381",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "Conditioning Zero Out"
+    }
+  },
+  "13457": {
+    "inputs": {},
+    "class_type": "UC_Newline",
+    "_meta": {
+      "title": "\\n"
+    }
+  },
+  "14775": {
+    "inputs": {
+      "image": "ComfyUI_withoutcat_ref_00.00s_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14776": {
+    "inputs": {
+      "image": "ComfyUI_withoutcat_ref_01.21s_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14777": {
+    "inputs": {
+      "image": "ComfyUI_withoutcat_ref_02.46s_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14782": {
+    "inputs": {
+      "image": "ComfyUI_withoutcat_ref_05.30s_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14783": {
+    "inputs": {
+      "image": "ComfyUI_withoutcat_ref_06.55s_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14784": {
+    "inputs": {
+      "image": "ComfyUI_withoutcat_ref_07.80s_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14785": {
+    "inputs": {
+      "image": "ComfyUI_withoutcat_ref_10.84s_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14786": {
+    "inputs": {
+      "image": "ComfyUI_withoutcat_ref_12.10s_00001_.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "14787": {
+    "inputs": {
+      "attention": "comfy kitchen attention",
+      "model": [
+        "13420",
+        0
+      ]
+    },
+    "class_type": "ModelAttentionBackend",
+    "_meta": {
+      "title": "ModelAttentionBackend"
+    }
+  },
+  "14788": {
+    "inputs": {
+      "source": [
+        "13393",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  }
+}
