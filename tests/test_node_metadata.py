@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import pathlib
 import re
 import sys
@@ -149,6 +150,49 @@ def test_readme_available_nodes_match_current_registration():
 
     assert len(listed) == len(set(listed))
     assert set(listed) == expected
+
+
+def test_executable_guides_reference_registered_node_ids():
+    package = _load_extension_package()
+    node_classes = asyncio.run(package.SamplingUtils().get_node_list())
+    schemas = {node_class.define_schema().node_id: node_class for node_class in node_classes}
+    references = set()
+
+    for guide_id in {
+        "UC_EncoderNodesGuide",
+        "UC_CompositeNodesGuide",
+        "UC_HighResolutionTilingGuide",
+    }:
+        guide = schemas[guide_id]
+        topic = next(value for value in guide.define_schema().inputs if value.id == "topic")
+        for option in topic.options:
+            markdown = guide.execute(option).args[0]
+            references.update(
+                node_id
+                for node_id in re.findall(r"\bUC_[A-Za-z0-9_]+\b", markdown)
+                if any(character.islower() for character in node_id.removeprefix("UC_"))
+            )
+
+    assert references
+    assert references <= schemas.keys()
+
+
+def test_shipped_workflows_reference_registered_node_ids():
+    package = _load_extension_package()
+    node_classes = asyncio.run(package.SamplingUtils().get_node_list())
+    registered = {node_class.define_schema().node_id for node_class in node_classes}
+    references = set()
+
+    for workflow_path in (CUSTOM_NODE_ROOT / "workflows").glob("*.json"):
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        references.update(
+            node["type"]
+            for node in workflow["nodes"]
+            if node.get("type", "").startswith("UC_")
+        )
+
+    assert references
+    assert references <= registered
 
 
 def test_legacy_nodes_do_not_inherit_canonical_search_metadata():

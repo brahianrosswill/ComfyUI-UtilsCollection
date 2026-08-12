@@ -105,6 +105,7 @@ python_tests = [
   "tests/test_markdown_preview.py",
   "tests/test_from_list.py",
   "tests/test_video_prompt_conversion.py",
+  "tests/test_node_metadata.py",
 ]
 frontend_tests = []
 
@@ -112,6 +113,7 @@ frontend_tests = []
 paths = [
   "__init__.py",
   "README.md",
+  "workflows/*.json",
   "legacy_nodes.py",
   "loader_nodes.py",
   "model_assets.py",
