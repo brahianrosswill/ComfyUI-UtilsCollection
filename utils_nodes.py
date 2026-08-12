@@ -1646,6 +1646,5 @@ class UC_MarkdownPreview(io.ComfyNode):
         return io.NodeOutput(value, ui={"markdown": (value,)})
 
 
-EncoderNodesGuide = UC_EncoderNodesGuide
 CompositeNodesGuide = UC_CompositeNodesGuide
 

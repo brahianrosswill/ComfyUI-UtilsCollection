@@ -130,6 +130,7 @@ def test_registered_non_deprecated_nodes_have_search_metadata():
     assert "UC_StaticFloat" in checked
     assert "UC_ConditioningConsensusBlend" in checked
     assert "UC_VLMSysQueryRawPresets" in checked
+    assert len(checked) == len(set(checked))
 
 
 def test_legacy_nodes_do_not_inherit_canonical_search_metadata():
@@ -180,3 +181,20 @@ def test_action_required_controls_have_targeted_tooltips():
     sampling_inputs = [value for option in sampling_mode.options for value in option.inputs]
     assert sampling_inputs
     assert all(value.tooltip for value in sampling_inputs)
+
+
+def test_corrected_metadata_matches_current_behavior():
+    package = _load_extension_package()
+    node_classes = asyncio.run(package.SamplingUtils().get_node_list())
+    schemas = {node.define_schema().node_id: node.define_schema() for node in node_classes}
+
+    unified = schemas["UC_UnifiedBackgroundReplace"]
+    foregrounds = next(value for value in unified.inputs if value.id == "foreground_images")
+    assert "independently places each" in unified.description
+    assert "each flattened image produces an independent output" in foregrounds.tooltip
+    assert "center" not in unified.description.lower()
+    assert "center" not in foregrounds.tooltip.lower()
+
+    adjusted_box = schemas["UC_AdjustBoundingBox"]
+    assert "around its center" in adjusted_box.description
+    assert "boundary" not in adjusted_box.description.lower()

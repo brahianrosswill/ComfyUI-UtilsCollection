@@ -210,7 +210,6 @@ class SamplingUtils(ComfyExtension):
             RandIntRange,
             TextGenerateQwen35SystemPrompt,
             ColorConvertNode,
-            EncoderNodesGuide,
             *LOGIC_MATH_NODES,
             *SCHEDULER_NODES,
         ])

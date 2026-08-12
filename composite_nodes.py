@@ -551,7 +551,7 @@ class UC_UnifiedBackgroundReplace(io.ComfyNode):
                 io.Autogrow.Input(
                     "foreground_images",
                     template=foreground_template,
-                    tooltip="Images to isolate, resize, center, and composite in socket order.",
+                    tooltip="Images to isolate, resize, and position over the background; each flattened image produces an independent output.",
                 ),
             ],
             outputs=[
