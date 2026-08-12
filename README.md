@@ -35,9 +35,11 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 
 [Workflow JSON](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_Workflow.json) | [API workflow JSON](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_API.json) | [Workflow overview](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_Overview.png) | [Reference images](https://github.com/silveroxides/ComfyUI-UtilsCollection/releases/download/advanced-minimax-h3-qwen-only-assets-v1/UC_AdvancedMiniMaxH3ImageToVideo_QwenOnly_8Image_1024VLM_References.zip)
 
-This example uses eight chronological storyboard frames as 1024-resolution Qwen3-VL/DeepStack references. Each image becomes an ordered `<Picture N>` visual entry and the prompt associates it with a target timestamp. With `ref_image_size` set to `none`, no reference image is VAE-encoded or carried through the denoising steps. Extract the separately hosted reference-image ZIP into `ComfyUI/input` before loading either workflow.
+This example uses eight chronological storyboard frames as 1024-resolution Qwen3-VL/DeepStack references. The prompt associates each ordered `<Picture N>` entry with a target timestamp. With `ref_image_size` set to `none`, the images provide visual-token conditioning without VAE reference encoding.
 
-This approach preserves a separately prepared high-resolution visual presentation instead of reusing an image resized for VAE conditioning. It can provide strong subject, composition, and approximate timeline control at substantially lower memory and sampling cost than a native reference video. The included example reproduced the door reveal, stairwell framing, subject placement, and final corner close-up of a 12.25-second source sequence using eight images, seven sampling steps, and a 16 GB GPU. The picture timestamps are learned prompt instructions rather than hard frame anchors, so results remain stochastic and are not equivalent to direct video-reference conditioning.
+The workflow demonstrates strong subject, composition, and approximate timeline control without a native reference video. Its eight images reproduced the main framing and progression of a 12.25-second source sequence in seven sampling steps on a 16 GB GPU. Picture timestamps are prompt instructions, not fixed frame anchors, so results remain stochastic.
+
+Extract the separately hosted reference-image ZIP into `ComfyUI/input` before loading either workflow.
 
 The workflow uses Core's **Create Video** and **Save Video** nodes and requires no other custom-node collection.
 

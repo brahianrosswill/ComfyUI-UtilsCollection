@@ -646,10 +646,10 @@ TIMELINE_CHANNEL_BALANCE_PRESETS = (
 
 EXPERIMENTAL_VIDEO_PRESET_HASHES = {
     "video_timeline_system_instruction": (
-        "9dd1d0728a2aa06b1869bffcae24c86b29a04fef691165de2d6a84071b545617"
+        "cc3f2d9f32894a190a1509f9406c30320bb81250b93af7f696207f6e17d58ca8"
     ),
     "video_timeline_system_instruction_crude": (
-        "5564fb8e194077d8ad3c2afd6c3c0f8a4f256c423b58bc6dc884e8d7dfd1f2b3"
+        "3bc602b0a6ef184e27002d3b6250a3b24a708dad92424a4159729881842f1a6f"
     ),
     "video_timeline_minimax_h3_base_system_instruction": (
         "951501e17444450e5946e4bf2f2f9e7998cbdf0724a9fb5e6ff08e49f7e63eef"
@@ -661,10 +661,10 @@ EXPERIMENTAL_VIDEO_PRESET_HASHES = {
 
 STABLE_VIDEO_PRESET_HASHES = {
     "video_timeline_system_instruction": (
-        "e0ac3632e3fb259fdcfb515dabc494e3eeccf08457b5d3fb9a27dc93407664c3"
+        "875e94f577cc22abc3cdaa028fccc69e66e2c490217211b2a294894614873644"
     ),
     "video_timeline_system_instruction_crude": (
-        "969bd1618c2ffffb5de140c8450985266a96670c5d4365b83e3d83952f79fe16"
+        "e37e61900d837d44071e47ddb5a821a082bbecdf35ae959df6d78bdf974b7efc"
     ),
     "video_timeline_minimax_h3_base_system_instruction": (
         "35e24a888ccd476b004e4e37c75f31dff0211273ebcc78bec2d8110760f1cae5"

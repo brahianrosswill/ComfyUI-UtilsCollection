@@ -99,7 +99,7 @@ def test_encoder_guide_covers_current_visual_fusion_contract():
 def test_encoder_guide_makes_primary_and_specialized_hierarchy_explicit():
     catalog = UC_EncoderNodesGuide.execute("node_catalog").args[0]
 
-    assert "### Primary encoder — use this by default" in catalog
+    assert "### Primary encoder: use this by default" in catalog
     assert "the recommended encoder for nearly all conditioning workflows" in catalog
     assert "no image connected" in catalog
     assert "text-only conditioning" in catalog

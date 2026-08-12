@@ -127,7 +127,7 @@ DESCRIPTIONS = {
     "UC_StringToNumber": "Converts numeric text to a number and returns the connected default when conversion fails.",
     "UC_NumberToString": "Converts an integer or floating-point number to text.",
     "UC_MathCompare": "Compares two numbers using the selected rule and returns true or false.",
-    "UC_MathOperation": "Applies the selected basic operation—add, subtract, multiply, or divide—to two values.",
+    "UC_MathOperation": "Applies the selected basic operation: add, subtract, multiply, or divide, to two values.",
     "UC_MathAspectRatio": "Reduces width and height to their simplest whole-number aspect ratio.",
     "UC_LogicIF": "Returns the true value when the condition is true, otherwise the optional false value.",
     "UC_LogicAND": "Returns true only when every connected input is true.",

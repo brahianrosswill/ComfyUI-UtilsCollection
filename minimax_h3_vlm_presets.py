@@ -168,7 +168,7 @@ Use non_diegetic_music only for audience-only music. Use one to three English se
 
 Alignment and output contract
 
-Before the top-level fields, output exactly one applicable alignment sentence. With one image, write: For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced. With two images, write: How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the S.SS-second mark of the target video. Replace N with the actual final shot number and S.SS with the effective video duration formatted to exactly two decimal places. Never output N or S.SS as literal placeholders. Follow the sentence with one blank line.
+Before the top-level fields, output exactly one applicable alignment sentence. With one image, write: For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced. With two images, write: How the reference pictures align with the target video: Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the S.SS-second mark of the target video. Replace N with the actual final shot number and S.SS with the effective video duration formatted to exactly two decimal places. Never output N or S.SS as literal placeholders. Follow the sentence with one blank line.
 
 Then output exactly these six top-level fields in this order and no others:
 subject_definitions:
@@ -336,12 +336,12 @@ You will provide an accurate cinematic description of the **scene captured in th
 
 ### Principle 4: Adaptive Timeline and Audio-Visual Structuring
 
-Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Section boundaries must follow meaningful changes in action, camera movement, speech, sound, or explicitly requested music—not a fixed part count and not mandatory one-second intervals.
+Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Section boundaries must follow meaningful changes in action, camera movement, speech, sound, or explicitly requested music, not a fixed part count and not mandatory one-second intervals.
 
 **Contrasting Format Examples:**
 The examples below demonstrate that section count and boundaries change with the requested duration and scene. They are syntax demonstrations only. Never reuse their duration, count, boundaries, or content unless `{user_query}` independently requires them.
 
-**Example A — a 3-second request using three meaningful sections:**
+**Example A: a 3-second request using three meaningful sections:**
 ```
 Timeline:
 [00:00.000-00:00.800]:
@@ -357,7 +357,7 @@ Timeline:
 [SOUNDS]: The synchronized sound progression reaches its final state.
 ```
 
-**Example B — a 5-second request using four differently timed sections:**
+**Example B: a 5-second request using four differently timed sections:**
 ```
 Timeline:
 [00:00.000-00:01.000]:
@@ -473,12 +473,12 @@ You will provide an accurate cinematic description of the **scene captured in th
 
 ### Principle 4: Adaptive Timeline and Audio-Visual Structuring
 
-Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Section boundaries must follow meaningful changes in action, camera movement, speech, sound, or explicitly requested music—not a fixed part count and not mandatory one-second intervals.
+Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Section boundaries must follow meaningful changes in action, camera movement, speech, sound, or explicitly requested music, not a fixed part count and not mandatory one-second intervals.
 
 **Contrasting Format Examples:**
 The examples below demonstrate that section count and boundaries change with the requested duration and scene. They are syntax demonstrations only. Never reuse their duration, count, boundaries, or content unless `{user_query}` independently requires them.
 
-**Example A — a 3-second request using three meaningful sections:**
+**Example A: a 3-second request using three meaningful sections:**
 ```
 Timeline:
 [00:00.000-00:00.800]:
@@ -494,7 +494,7 @@ Timeline:
 [SOUNDS]: The synchronized sound progression reaches its final state.
 ```
 
-**Example B — a 5-second request using four differently timed sections:**
+**Example B: a 5-second request using four differently timed sections:**
 ```
 Timeline:
 [00:00.000-00:01.000]:
@@ -609,12 +609,12 @@ You will provide a plain description of the visual setup of the **scene captured
 
 ### Principle 4: Adaptive Timeline and Audio-Visual Structuring
 
-Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Section boundaries must follow meaningful changes in action, camera movement, speech, sound, or explicitly requested music—not a fixed part count and not mandatory one-second intervals.
+Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Section boundaries must follow meaningful changes in action, camera movement, speech, sound, or explicitly requested music, not a fixed part count and not mandatory one-second intervals.
 
 **Contrasting Format Examples:**
 The examples below demonstrate that section count and boundaries change with the requested duration and scene. They are syntax demonstrations only. Never reuse their duration, count, boundaries, or content unless `{user_query}` independently requires them.
 
-**Example A — a 3-second request using three meaningful sections:**
+**Example A: a 3-second request using three meaningful sections:**
 ```
 Timeline:
 [00:00.000-00:00.800]:
@@ -630,7 +630,7 @@ Timeline:
 [SOUNDS]: The synchronized sound progression reaches its final state.
 ```
 
-**Example B — a 5-second request using four differently timed sections:**
+**Example B: a 5-second request using four differently timed sections:**
 ```
 Timeline:
 [00:00.000-00:01.000]:
@@ -744,12 +744,12 @@ You will provide a plain description of the visual setup of the **scene captured
 
 ### Principle 4: Adaptive Timeline and Audio-Visual Structuring
 
-Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Section boundaries must follow meaningful changes in action, camera movement, speech, sound, or explicitly requested music—not a fixed part count and not mandatory one-second intervals.
+Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Section boundaries must follow meaningful changes in action, camera movement, speech, sound, or explicitly requested music, not a fixed part count and not mandatory one-second intervals.
 
 **Contrasting Format Examples:**
 The examples below demonstrate that section count and boundaries change with the requested duration and scene. They are syntax demonstrations only. Never reuse their duration, count, boundaries, or content unless `{user_query}` independently requires them.
 
-**Example A — a 3-second request using three meaningful sections:**
+**Example A: a 3-second request using three meaningful sections:**
 ```
 Timeline:
 [00:00.000-00:00.800]:
@@ -765,7 +765,7 @@ Timeline:
 [SOUNDS]: The synchronized sound progression reaches its final state.
 ```
 
-**Example B — a 5-second request using four differently timed sections:**
+**Example B: a 5-second request using four differently timed sections:**
 ```
 Timeline:
 [00:00.000-00:01.000]:

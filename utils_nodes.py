@@ -1186,7 +1186,7 @@ class UC_EncoderNodesGuide(io.ComfyNode):
         topics = {
             "node_catalog": (
                 "## Encoder node catalog\n\n"
-                "### Primary encoder — use this by default\n\n"
+                "### Primary encoder: use this by default\n\n"
                 "- `UC_AdvancedVisualConditioningEncode`: the recommended encoder for nearly all conditioning workflows. With no image connected it encodes `prompt` and `system_prompt` as text-only conditioning. With images connected it supports one or more visual sources, inline image placement, formula fallback, spatial visual fusion, VLM resolution control, multiplier scaling, and optional VAE reference latents.\n"
                 "- `UC_VisualFusionConfig`: optional spatial-fusion configuration for `UC_AdvancedVisualConditioningEncode`. Leave it disconnected when spatial fusion is not required.\n\n"
                 "### Visual consensus pipeline\n\n"
