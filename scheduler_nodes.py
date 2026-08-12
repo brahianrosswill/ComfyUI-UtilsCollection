@@ -241,6 +241,7 @@ class UC_PowerShiftScheduler(io.ComfyNode):
                     min=0.0,
                     max=5.0,
                     step=0.001,
+                    tooltip="Controls the curvature of the denoising schedule; higher values reshape how strongly steps cluster across sigma levels.",
                 ),
                 io.Float.Input(
                     "midpoint_shift",
@@ -248,6 +249,7 @@ class UC_PowerShiftScheduler(io.ComfyNode):
                     min=0.0,
                     max=5.0,
                     step=0.001,
+                    tooltip="Shifts the schedule midpoint; higher values retain higher sigma levels for more of the schedule.",
                 ),
             ],
             outputs=[
@@ -301,6 +303,7 @@ class UC_RadianceShiftScheduler(io.ComfyNode):
                     min=0.0,
                     max=5.0,
                     step=0.001,
+                    tooltip="Controls the curvature of the Radiance denoising schedule; higher values reshape how strongly steps cluster across sigma levels.",
                 ),
                 io.Float.Input(
                     "midpoint_shift",
@@ -308,6 +311,7 @@ class UC_RadianceShiftScheduler(io.ComfyNode):
                     min=0.0,
                     max=5.0,
                     step=0.001,
+                    tooltip="Shifts the Radiance schedule midpoint; higher values retain higher sigma levels for more of the schedule.",
                 ),
             ],
             outputs=[

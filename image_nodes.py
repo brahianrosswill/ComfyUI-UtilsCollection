@@ -744,11 +744,11 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
             display_name="Image Match Properties",
             category="advanced/image",
             inputs=[
-                io.Image.Input("original_image"),
-                io.Image.Input("generated_image"),
-                io.Float.Input("overall_weight", default=1.0, min=0.0, max=1.0, step=0.001),
-                io.Float.Input("color_weight", default=1.0, min=0.0, max=1.0, step=0.001),
-                io.Float.Input("lighting_weight", default=1.0, min=0.0, max=1.0, step=0.001),
+                io.Image.Input("original_image", tooltip="Reference image whose color and lighting properties are matched."),
+                io.Image.Input("generated_image", tooltip="Image adjusted toward the reference while retaining its generated detail."),
+                io.Float.Input("overall_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Overall strength multiplying both color and lighting adjustments."),
+                io.Float.Input("color_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Strength of reference color matching before the overall weight is applied."),
+                io.Float.Input("lighting_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Strength of reference luminance matching before the overall weight is applied."),
                 io.Float.Input("texture_preservation", default=0.5, min=0.0, max=1.0, step=0.001, tooltip="Preserves edges and textures from the generated image by matching only low-frequency properties."),
                 io.Mask.Input("mask", optional=True, tooltip="Optional mask to softly blend the color/lighting changes onto the generated image."),
             ],
@@ -1186,23 +1186,23 @@ class UC_ModifyMask(io.ComfyNode):
             inputs=[
                 io.Mask.Input("mask"),
                 io.Int.Input(
-                    "expand", default=0, max=MAX_RESOLUTION, min=-MAX_RESOLUTION, step=1
+                    "expand", default=0, max=MAX_RESOLUTION, min=-MAX_RESOLUTION, step=1, tooltip="Pixels used to grow each mask; negative values shrink it."
                 ),
                 io.Float.Input(
-                    "incremental_expandrate", default=0.0, max=100.0, min=0.0, step=0.01
+                    "incremental_expandrate", default=0.0, max=100.0, min=0.0, step=0.01, tooltip="Additional grow or shrink amount applied after each mask in the batch."
                 ),
-                io.Boolean.Input("tapered_corners", default=True),
-                io.Boolean.Input("flip_input", default=False),
+                io.Boolean.Input("tapered_corners", default=True, tooltip="Uses a cross-shaped kernel for more tapered corners; disabled uses a square kernel."),
+                io.Boolean.Input("flip_input", default=False, tooltip="Inverts the input mask before all other processing."),
                 io.Float.Input(
-                    "blur_radius", default=0.0, max=100.0, min=0.0, step=0.01
+                    "blur_radius", default=0.0, max=100.0, min=0.0, step=0.01, tooltip="Gaussian blur radius applied after grow or shrink; zero disables blur."
                 ),
-                io.Float.Input("lerp_alpha", default=1.0, max=1.0, min=0.0, step=0.01),
+                io.Float.Input("lerp_alpha", default=1.0, max=1.0, min=0.0, step=0.01, tooltip="Blends each batch mask with the previous processed mask; 1 uses only the current mask."),
                 io.Float.Input(
-                    "decay_factor", default=1.0, max=1.0, min=0.0, step=0.01
+                    "decay_factor", default=1.0, max=1.0, min=0.0, step=0.01, tooltip="Adds a decayed previous batch mask before normalization; 1 preserves its full contribution."
                 ),
-                io.Boolean.Input("fill_holes", default=False, optional=True),
-                io.Float.Input("lower_clamp", default=0.0, max=100.0, min=0.0, step=0.1),
-                io.Float.Input("upper_clamp", default=100.0, max=100.0, min=0.0, step=0.1),
+                io.Boolean.Input("fill_holes", default=False, optional=True, tooltip="Fills enclosed zero-valued holes after grow or shrink."),
+                io.Float.Input("lower_clamp", default=0.0, max=100.0, min=0.0, step=0.1, tooltip="Minimum output mask value as a percentage."),
+                io.Float.Input("upper_clamp", default=100.0, max=100.0, min=0.0, step=0.1, tooltip="Maximum output mask value as a percentage."),
             ],
             outputs=[
                 io.Mask.Output(display_name="Mask"),
@@ -1403,8 +1403,8 @@ class UC_ImageBlendByMask(io.ComfyNode):
             category="utils/mask",
             display_name="Image Blend by Mask",
             inputs=[
-                io.Image.Input("destination"),
-                io.Image.Input("source"),
+                io.Image.Input("destination", tooltip="Base image retained where the mask or blend strength is zero."),
+                io.Image.Input("source", tooltip="Image combined with the destination using the selected blend mode."),
                 io.Combo.Input(
                     "mode",
                     options=[
@@ -1424,12 +1424,13 @@ class UC_ImageBlendByMask(io.ComfyNode):
                         "soft_light",
                     ],
                     default="add",
+                    tooltip="Color blend operation applied between the source and destination images.",
                 ),
                 io.Float.Input(
-                    "blend_percentage", default=1.0, max=1.0, min=0.0, step=0.01
+                    "blend_percentage", default=1.0, max=1.0, min=0.0, step=0.01, tooltip="Overall blend strength multiplied by the optional mask."
                 ),
-                io.Boolean.Input("resize_source", default=False),
-                io.Mask.Input("mask"),
+                io.Boolean.Input("resize_source", default=False, tooltip="Resizes the source to destination dimensions with bicubic interpolation; otherwise dimensions must match."),
+                io.Mask.Input("mask", tooltip="Controls where the blend is applied; it is resized and singleton batches broadcast to the image batch."),
             ],
             outputs=[
                 io.Image.Output(display_name="blended_image"),
@@ -1479,11 +1480,11 @@ class UC_ImagePad(io.ComfyNode):
             category="advanced/image",
             inputs=[
                 io.Image.Input("image"),
-                io.Int.Input("left", default=0, min=0, max=MAX_RESOLUTION, step=1),
-                io.Int.Input("right", default=0, min=0, max=MAX_RESOLUTION, step=1),
-                io.Int.Input("top", default=0, min=0, max=MAX_RESOLUTION, step=1),
-                io.Int.Input("bottom", default=0, min=0, max=MAX_RESOLUTION, step=1),
-                io.Int.Input("extra_padding", default=0, min=0, max=MAX_RESOLUTION, step=1),
+                io.Int.Input("left", default=0, min=0, max=MAX_RESOLUTION, step=1, tooltip="Pixels added to the left when target dimensions are not connected."),
+                io.Int.Input("right", default=0, min=0, max=MAX_RESOLUTION, step=1, tooltip="Pixels added to the right when target dimensions are not connected."),
+                io.Int.Input("top", default=0, min=0, max=MAX_RESOLUTION, step=1, tooltip="Pixels added above the image when target dimensions are not connected."),
+                io.Int.Input("bottom", default=0, min=0, max=MAX_RESOLUTION, step=1, tooltip="Pixels added below the image when target dimensions are not connected."),
+                io.Int.Input("extra_padding", default=0, min=0, max=MAX_RESOLUTION, step=1, tooltip="Additional padding on every side, or an inset margin when target dimensions are connected."),
                 io.Combo.Input(
                     "pad_mode",
                     default="edge",
@@ -1491,9 +1492,9 @@ class UC_ImagePad(io.ComfyNode):
                     tooltip="edge: Extend the edge pixels. edge_pixel: Extend the edge pixels but keep the original edge pixel color. color: Fill with a solid color. pillarbox_blur: Fill with a blurred version of the image."
                 ),
                 io.String.Input("color", multiline=False, default="0, 0, 0", tooltip="Color as RGB values in range 0-255 or 0.0-1.0, or color name or hex code"),
-                io.Mask.Input("mask", optional=True),
-                io.Int.Input("target_width", default=512, min=0, max=MAX_RESOLUTION, step=1, force_input=True, optional=True),
-                io.Int.Input("target_height", default=512, min=0, max=MAX_RESOLUTION, step=1, force_input=True, optional=True),
+                io.Mask.Input("mask", optional=True, tooltip="Optional source mask padded with value 1 outside the image; disconnected creates a mask for the added border."),
+                io.Int.Input("target_width", default=512, min=0, max=MAX_RESOLUTION, step=1, force_input=True, optional=True, tooltip="Optional final width. Connect both target dimensions to proportionally fit and center the image."),
+                io.Int.Input("target_height", default=512, min=0, max=MAX_RESOLUTION, step=1, force_input=True, optional=True, tooltip="Optional final height. Connect both target dimensions to proportionally fit and center the image."),
             ],
             outputs=[
                 io.Image.Output(display_name="image"),

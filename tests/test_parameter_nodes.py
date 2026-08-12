@@ -25,9 +25,12 @@ finally:
 def test_image_scale_picker_schema_uses_smooth_default_and_positive_scale():
     schema = parameter_nodes.UC_ImageScaleAndResolutionPicker.define_schema()
     inputs = {value.id: value for value in schema.inputs}
+    outputs = {value.id: value for value in schema.outputs if value.id}
 
     assert inputs["upscale_method"].default == "lanczos"
     assert inputs["scale_by"].min > 0
+    assert "scale_by" in outputs["upscaled_image"].tooltip
+    assert "upscale_by" not in outputs["upscaled_image"].tooltip
 
 
 def test_image_scale_picker_keeps_megapixel_fit_and_upscale_factor_separate():

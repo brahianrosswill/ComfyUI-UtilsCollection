@@ -316,13 +316,13 @@ class UC_TextGenerate(io.ComfyNode):
             io.DynamicCombo.Option(
                 key="on",
                 inputs=[
-                    io.Float.Input("temperature", default=0.7, min=0.01, max=2.0, step=0.000001),
-                    io.Int.Input("top_k", default=64, min=0, max=1000),
-                    io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
-                    io.Float.Input("min_p", default=0.05, min=0.0, max=1.0, step=0.01),
-                    io.Float.Input("repetition_penalty", default=1.05, min=0.0, max=5.0, step=0.01),
-                    io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff),
-                    io.Float.Input("presence_penalty", optional=True, default=0.0, min=0.0, max=5.0, step=0.01),
+                    io.Float.Input("temperature", default=0.7, min=0.01, max=2.0, step=0.000001, tooltip="Randomness of sampled tokens; lower values are more predictable and higher values are more varied."),
+                    io.Int.Input("top_k", default=64, min=0, max=1000, tooltip="Limits sampling to the most likely K tokens; zero leaves this filter disabled."),
+                    io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01, tooltip="Keeps the smallest set of likely tokens whose combined probability reaches this value."),
+                    io.Float.Input("min_p", default=0.05, min=0.0, max=1.0, step=0.01, tooltip="Removes tokens whose probability is too small relative to the most likely token; zero disables this filter."),
+                    io.Float.Input("repetition_penalty", default=1.05, min=0.0, max=5.0, step=0.01, tooltip="Penalizes tokens already generated; 1 applies no repetition penalty."),
+                    io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, tooltip="Seed used for reproducible token sampling."),
+                    io.Float.Input("presence_penalty", optional=True, default=0.0, min=0.0, max=5.0, step=0.01, tooltip="Penalizes tokens that have appeared at least once; zero disables the penalty."),
                     io.Int.Input(
                         "empty_response_retries",
                         default=4,
@@ -368,7 +368,7 @@ class UC_TextGenerate(io.ComfyNode):
                     default="Fast (384)",
                     tooltip="Rescales connected image inputs to optimize performance and VRAM allocation."
                 ),
-                io.Int.Input("max_length", default=512, min=1, max=32768),
+                io.Int.Input("max_length", default=512, min=1, max=32768, tooltip="Maximum number of new tokens generated for the response."),
                 io.String.Input(
                     "formula",
                     default="",
@@ -383,8 +383,8 @@ class UC_TextGenerate(io.ComfyNode):
                     tooltip="Backslash-escape generated parentheses as the final step, preserving them as literal text for downstream contextual-weight parsing.",
                 ),
                 VisualFusionConfig.Input("visual_fusion_config", display_name="Fusion Config", optional=True, tooltip="Optional pre-generation Qwen3-VL visual and DeepStack fusion configuration."),
-                io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode"),
-                io.Autogrow.Input("image_inputs", template=autogrow_template),
+                io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode", tooltip="On enables seeded probabilistic sampling and its controls; off uses deterministic generation."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Images are processed in ascending socket order and map sequentially to prompt placeholders and formula variables a, b, c, and onward."),
             ],
             outputs=[
                 io.String.Output("generated_text", display_name="Generated Text"),

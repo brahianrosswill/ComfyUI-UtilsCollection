@@ -183,7 +183,7 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
             ],
             outputs=[
                 io.Image.Output("image", tooltip="The adjusted/cropped base image"),
-                io.Image.Output("upscaled_image", display_name="Image", tooltip="The image after applying the upscale_by factor"),
+                io.Image.Output("upscaled_image", display_name="Image", tooltip="The image after applying the scale_by factor"),
                 io.Int.Output(display_name="Width"),
                 io.Int.Output(display_name="Height"),
                 io.Int.Output(display_name="Upscaled Width"),

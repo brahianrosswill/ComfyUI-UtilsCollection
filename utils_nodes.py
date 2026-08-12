@@ -97,9 +97,9 @@ class UC_FromList(io.ComfyNode):
             is_input_list=True,
             search_aliases=["List Slice", "Get List Items", "Select From List"],
             inputs=[
-                io.MatchType.Input("items", template=item_type),
-                io.Int.Input("start_index", default=0, min=0, step=1),
-                io.Int.Input("number_of_entries", default=1, min=1, step=1),
+                io.MatchType.Input("items", template=item_type, tooltip="Input list retained in its existing order."),
+                io.Int.Input("start_index", default=0, min=0, step=1, tooltip="Zero-based index of the first item returned."),
+                io.Int.Input("number_of_entries", default=1, min=1, step=1, tooltip="Maximum consecutive items returned from the start index; stops at the end of the list."),
             ],
             outputs=[
                 io.MatchType.Output(

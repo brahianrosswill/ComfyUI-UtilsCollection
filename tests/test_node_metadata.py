@@ -4,6 +4,99 @@ import pathlib
 import sys
 
 
+TARGETED_DESCRIPTION_IDS = {
+    "UC_VLMSysInstrPresetsExperimental",
+    "UC_VLMSysInstrLegacyPresets",
+    "UC_VLMSysInstrAdvPresetsExperimental",
+    "UC_MiniMaxH3VLMSysInstrPresetsExperimental",
+    "UC_MiniMaxH3VLMSysInstrAdvPresetsExperimental",
+    "UC_HighResolutionTilingGuide",
+    "UC_ExtractMask",
+    "UC_Ideogram4BoundingBoxCrop",
+    "UC_TextConcatenateListsAutogrow",
+    "UC_MathAdd",
+    "UC_MathSubtract",
+    "UC_MathMultiply",
+    "UC_MathDivide",
+    "UC_MathPower",
+    "UC_MathFloor",
+    "UC_MathCeil",
+    "UC_MathRound",
+    "UC_MathModulo",
+    "UC_MathAbs",
+    "UC_MathSqrt",
+    "UC_MathSin",
+    "UC_MathCos",
+    "UC_MathTan",
+    "UC_MathMin",
+    "UC_MathMax",
+    "UC_MathClamp",
+    "UC_MathNumberConvert",
+    "UC_StringToNumber",
+    "UC_NumberToString",
+    "UC_MathCompare",
+    "UC_MathOperation",
+    "UC_MathAspectRatio",
+    "UC_LogicIF",
+    "UC_LogicAND",
+    "UC_LogicOR",
+    "UC_LogicNOT",
+    "UC_LogicXOR",
+    "UC_SigmoidOffsetScheduler",
+}
+
+
+ACTION_REQUIRED_TOOLTIP_INPUTS = {
+    "UC_AdvancedConsensusConfiguration": {
+        "blend_method", "consensus_type", "alignment_threshold",
+        "similarity_threshold", "power_alpha", "diversity_beta",
+        "rescale_norm", "global_scale", "dynamic_similarity_contrast",
+        "soft_comfort_bandpass", "position_weight", "preserve_common_prefix",
+    },
+    "UC_ModifyMask": {
+        "expand", "incremental_expandrate", "tapered_corners", "flip_input",
+        "blur_radius", "lerp_alpha", "decay_factor", "fill_holes",
+        "lower_clamp", "upper_clamp",
+    },
+    "UC_ImageBlendByMask": {
+        "destination", "source", "mode", "blend_percentage", "resize_source", "mask",
+    },
+    "UC_ImagePad": {
+        "left", "right", "top", "bottom", "extra_padding", "mask",
+        "target_width", "target_height",
+    },
+    "UC_CropByMask": {"padding"},
+    "UC_ImageCropMerge": {
+        "cropped_image", "original_image", "crop_x", "crop_y", "crop_width",
+        "crop_height", "resize_method", "mask",
+    },
+    "UC_ImageAndMaskResize": {
+        "target", "resize_method", "crop", "mask_blur_radius", "width", "height",
+    },
+    "UC_ResizeMask": {"keep_proportions", "upscale_method", "crop"},
+    "UC_StagedLayeredBackgroundCompositeOptions": {
+        "border_cleanup_width", "artifact_cleanup_radius", "gap_fill_radius",
+        "feather_radius", "image_resize_method", "mask_resize_method",
+    },
+    "UC_StagedMediaPipeFaceOptions": {
+        "detection_threshold", "maximum_faces", "bbox_expansion", "mask_expansion",
+        "face_feather_radius", "initial_face_scale",
+    },
+    "UC_ImageMatchProperties": {
+        "original_image", "generated_image", "overall_weight", "color_weight",
+        "lighting_weight",
+    },
+    "UC_TextGenerate": {"max_length", "sampling_mode", "image_inputs"},
+    "UC_PowerShiftScheduler": {"power", "midpoint_shift"},
+    "UC_RadianceShiftScheduler": {"power", "midpoint_shift"},
+    "UC_StagedLayerCrops": {"layer_masks"},
+    "UC_FromList": {"items", "start_index", "number_of_entries"},
+    "UC_ConditioningConsensusBlend": {"conditioning_inputs"},
+    "UC_TextEncodeSystemEditAdvanced": {"image_inputs"},
+    "UC_TextEncodeGemmaSystemEditAdvanced": {"image_inputs"},
+}
+
+
 CUSTOM_NODE_ROOT = pathlib.Path(__file__).parents[1]
 PACKAGE_NAME = "utils_collection_metadata_test"
 
@@ -47,3 +140,43 @@ def test_legacy_nodes_do_not_inherit_canonical_search_metadata():
 
     assert "(Legacy)" in schema.display_name
     assert not schema.search_aliases
+
+
+def test_targeted_nodes_have_specific_plain_language_descriptions():
+    package = _load_extension_package()
+    node_classes = asyncio.run(package.SamplingUtils().get_node_list())
+    schemas = {node.define_schema().node_id: node.define_schema() for node in node_classes}
+
+    assert TARGETED_DESCRIPTION_IDS <= schemas.keys()
+    for node_id in TARGETED_DESCRIPTION_IDS:
+        schema = schemas[node_id]
+        assert schema.description != f"Provides {schema.display_name} functionality."
+
+    descriptions = {node_id: schemas[node_id].description.lower() for node_id in TARGETED_DESCRIPTION_IDS}
+    assert "broadcasting" in descriptions["UC_TextConcatenateListsAutogrow"]
+    assert "left to right" in descriptions["UC_MathDivide"]
+    assert "divisor is zero" in descriptions["UC_MathDivide"]
+    assert "divisor is zero" in descriptions["UC_MathModulo"]
+    assert "negative input" in descriptions["UC_MathSqrt"]
+    assert "odd number" in descriptions["UC_LogicXOR"]
+    assert "simplest whole-number aspect ratio" in descriptions["UC_MathAspectRatio"]
+    assert "originally made for the chroma model" in descriptions["UC_SigmoidOffsetScheduler"]
+
+
+def test_action_required_controls_have_targeted_tooltips():
+    package = _load_extension_package()
+    node_classes = asyncio.run(package.SamplingUtils().get_node_list())
+    schemas = {node.define_schema().node_id: node.define_schema() for node in node_classes}
+
+    for node_id, input_ids in ACTION_REQUIRED_TOOLTIP_INPUTS.items():
+        inputs = {value.id: value for value in schemas[node_id].inputs}
+        assert input_ids <= inputs.keys()
+        assert all(inputs[input_id].tooltip for input_id in input_ids)
+
+    sampling_mode = next(
+        value for value in schemas["UC_TextGenerate"].inputs
+        if value.id == "sampling_mode"
+    )
+    sampling_inputs = [value for option in sampling_mode.options for value in option.inputs]
+    assert sampling_inputs
+    assert all(value.tooltip for value in sampling_inputs)

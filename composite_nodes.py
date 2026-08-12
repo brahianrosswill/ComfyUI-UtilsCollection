@@ -94,7 +94,7 @@ class UC_CropByMask(io.ComfyNode):
             inputs=[
                 io.Image.Input("image"),
                 io.Mask.Input("mask"),
-                io.Int.Input("padding", default=64, min=0, max=MAX_RESOLUTION, step=8),
+                io.Int.Input("padding", default=64, min=0, max=MAX_RESOLUTION, step=8, tooltip="Pixels added around the combined nonzero mask bounds before alignment to the selected multiple."),
                 io.Int.Input(
                     "multiple",
                     default=8,
@@ -139,7 +139,7 @@ class UC_StagedLayerCrops(io.ComfyNode):
             category="utils/image",
             inputs=[
                 io.Image.Input("image", display_name="Composed Image"),
-                io.Mask.Input("layer_masks", display_name="Layer Masks"),
+                io.Mask.Input("layer_masks", display_name="Layer Masks", tooltip="Mask batch in staged compositor layer order; each selected index uses the matching mask to crop the composed image."),
                 io.String.Input(
                     "layer_indices",
                     multiline=False,
@@ -174,13 +174,13 @@ class UC_ImageCropMerge(io.ComfyNode):
             display_name="Image Crop Merge",
             category="utils/image",
             inputs=[
-                io.Image.Input("cropped_image"),
-                io.Image.Input("original_image"),
+                io.Image.Input("cropped_image", tooltip="Processed crop to resize and merge into the original image region."),
+                io.Image.Input("original_image", tooltip="Full image that receives the processed crop."),
                 io.Int.Input(
-                    "crop_x", default=0, min=0, max=MAX_RESOLUTION, force_input=True
+                    "crop_x", default=0, min=0, max=MAX_RESOLUTION, force_input=True, tooltip="Left edge of the crop region in original-image pixels."
                 ),
                 io.Int.Input(
-                    "crop_y", default=0, min=0, max=MAX_RESOLUTION, force_input=True
+                    "crop_y", default=0, min=0, max=MAX_RESOLUTION, force_input=True, tooltip="Top edge of the crop region in original-image pixels."
                 ),
                 io.Int.Input(
                     "crop_width",
@@ -188,6 +188,7 @@ class UC_ImageCropMerge(io.ComfyNode):
                     min=1,
                     max=MAX_RESOLUTION,
                     force_input=True,
+                    tooltip="Width of the destination crop region; the processed crop is resized to this width.",
                 ),
                 io.Int.Input(
                     "crop_height",
@@ -195,11 +196,12 @@ class UC_ImageCropMerge(io.ComfyNode):
                     min=1,
                     max=MAX_RESOLUTION,
                     force_input=True,
+                    tooltip="Height of the destination crop region; the processed crop is resized to this height.",
                 ),
                 io.Combo.Input(
-                    "resize_method", options=_RESIZE_METHODS, default="lanczos"
+                    "resize_method", options=_RESIZE_METHODS, default="lanczos", tooltip="Interpolation used when resizing the processed crop to the destination region."
                 ),
-                io.Mask.Input("mask", optional=True),
+                io.Mask.Input("mask", optional=True, tooltip="Optional blend mask for the crop region; disconnected replaces the region completely."),
             ],
             outputs=[io.Image.Output()],
         )
@@ -262,14 +264,14 @@ class UC_ImageAndMaskResize(io.ComfyNode):
             inputs=[
                 io.Image.Input("image"),
                 io.Mask.Input("mask"),
-                io.Image.Input("target"),
+                io.Image.Input("target", tooltip="Reference image whose width and height are used when explicit dimensions are disconnected."),
                 io.Combo.Input(
-                    "resize_method", options=_RESIZE_METHODS, default="lanczos"
+                    "resize_method", options=_RESIZE_METHODS, default="lanczos", tooltip="Interpolation used to resize the image to the target dimensions."
                 ),
                 io.Combo.Input(
-                    "crop", options=["disabled", "center"], default="disabled"
+                    "crop", options=["disabled", "center"], default="disabled", tooltip="Center crops while resizing when enabled; disabled stretches directly to the target dimensions."
                 ),
-                io.Int.Input("mask_blur_radius", default=0, min=0, max=256, step=1),
+                io.Int.Input("mask_blur_radius", default=0, min=0, max=256, step=1, tooltip="Gaussian blur radius applied to the resized mask; zero disables blur."),
                 io.Int.Input(
                     "width",
                     default=512,
@@ -277,6 +279,7 @@ class UC_ImageAndMaskResize(io.ComfyNode):
                     max=MAX_RESOLUTION,
                     force_input=True,
                     optional=True,
+                    tooltip="Optional output width overriding the target image width.",
                 ),
                 io.Int.Input(
                     "height",
@@ -285,6 +288,7 @@ class UC_ImageAndMaskResize(io.ComfyNode):
                     max=MAX_RESOLUTION,
                     force_input=True,
                     optional=True,
+                    tooltip="Optional output height overriding the target image height.",
                 ),
             ],
             outputs=[io.Image.Output(), io.Mask.Output()],
@@ -323,12 +327,12 @@ class UC_ResizeMask(io.ComfyNode):
                 io.Mask.Input("mask"),
                 io.Int.Input("width", default=512, min=0, max=MAX_RESOLUTION, step=1),
                 io.Int.Input("height", default=512, min=0, max=MAX_RESOLUTION, step=1),
-                io.Boolean.Input("keep_proportions", default=False),
+                io.Boolean.Input("keep_proportions", default=False, tooltip="Fits the mask inside the requested width and height while preserving its aspect ratio."),
                 io.Combo.Input(
-                    "upscale_method", options=_RESIZE_METHODS, default="bilinear"
+                    "upscale_method", options=_RESIZE_METHODS, default="bilinear", tooltip="Interpolation used to resize the mask."
                 ),
                 io.Combo.Input(
-                    "crop", options=["disabled", "center"], default="disabled"
+                    "crop", options=["disabled", "center"], default="disabled", tooltip="Center crops while resizing when enabled; disabled resizes to the calculated dimensions."
                 ),
             ],
             outputs=[io.Mask.Output(), io.Int.Output("width"), io.Int.Output("height")],
@@ -751,19 +755,21 @@ class UC_StagedLayeredBackgroundCompositeOptions(io.ComfyNode):
                         "embedded alpha. Embedded alpha values inside those bounds remain unchanged."
                     ),
                 ),
-                io.Int.Input("border_cleanup_width", default=2, min=0, max=64),
-                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64),
-                io.Int.Input("gap_fill_radius", default=2, min=0, max=64),
-                io.Int.Input("feather_radius", default=2, min=0, max=64),
+                io.Int.Input("border_cleanup_width", default=2, min=0, max=64, tooltip=_BORDER_CLEANUP_TOOLTIP),
+                io.Int.Input("artifact_cleanup_radius", default=2, min=0, max=64, tooltip=_ARTIFACT_CLEANUP_TOOLTIP),
+                io.Int.Input("gap_fill_radius", default=2, min=0, max=64, tooltip=_GAP_FILL_TOOLTIP),
+                io.Int.Input("feather_radius", default=2, min=0, max=64, tooltip=_FEATHER_TOOLTIP),
                 io.Combo.Input(
                     "image_resize_method",
                     options=_COMPOSITE_RESIZE_METHODS,
                     default="auto",
+                    tooltip=_IMAGE_RESIZE_TOOLTIP,
                 ),
                 io.Combo.Input(
                     "mask_resize_method",
                     options=_COMPOSITE_RESIZE_METHODS,
                     default="auto",
+                    tooltip=_MASK_RESIZE_TOOLTIP,
                 ),
                 io.Float.Input(
                     "foreground_blend",
@@ -818,16 +824,16 @@ class UC_StagedMediaPipeFaceOptions(io.ComfyNode):
             category="utils/image",
             inputs=[
                 io.Float.Input(
-                    "detection_threshold", default=0.55, min=0, max=1, step=0.01
+                    "detection_threshold", default=0.55, min=0, max=1, step=0.01, tooltip="Minimum MediaPipe confidence required to retain a detected face."
                 ),
-                io.Int.Input("maximum_faces", default=16, min=1, max=16),
-                io.Int.Input("bbox_expansion", default=64, min=0, max=MAX_RESOLUTION),
+                io.Int.Input("maximum_faces", default=16, min=1, max=16, tooltip="Maximum detected faces retained from each foreground image."),
+                io.Int.Input("bbox_expansion", default=64, min=0, max=MAX_RESOLUTION, tooltip="Pixels added around each detected face box before extraction."),
                 io.Int.Input(
-                    "mask_expansion", default=0, min=-MAX_RESOLUTION, max=MAX_RESOLUTION
+                    "mask_expansion", default=0, min=-MAX_RESOLUTION, max=MAX_RESOLUTION, tooltip="Pixels used to grow the face mask; negative values shrink it."
                 ),
-                io.Int.Input("face_feather_radius", default=8, min=0, max=512),
+                io.Int.Input("face_feather_radius", default=8, min=0, max=512, tooltip="Inward softness applied to the extracted face-mask edge."),
                 io.Float.Input(
-                    "initial_face_scale", default=0.25, min=0.05, max=10, step=0.01
+                    "initial_face_scale", default=0.25, min=0.05, max=10, step=0.01, tooltip="Initial face-layer size relative to the background's shortest side."
                 ),
                 io.Float.Input(
                     "face_blend",
