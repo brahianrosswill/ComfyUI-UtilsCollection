@@ -9,22 +9,14 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 ### Text encoding and conditioning
 
 - `UC_TextEncodeSystemPrompt`
-- `UC_TextEncodeFlux2SystemPrompt`
-- `UC_TextEncodeKleinSystemPrompt`
-- `UC_TextEncodeKrea2SystemPrompt`
 - `UC_TextEncodeLtxv2SystemPrompt`
-- `UC_TextEncodeZITSystemPrompt`
-- `UC_TextEncodeZImageThinkPrompt`
 - `UC_WeightedTextEncodeSystemPrompt`
-- `UC_ScaledBiasTextEncodeSystemPrompt`
-- `UC_ScaledBiasTextEncodeFlux2SystemPrompt`
-- `UC_ScaledBiasTextEncodeKleinSystemPrompt`
-- `UC_ScaledBiasTextEncodeLtxv2SystemPrompt`
-- `UC_ScaledBiasTextEncodeZITSystemPrompt`
-- `UC_ScaledBiasTextEncodeZImageThinkPrompt`
 - `UC_TextEncodeSystemEditAdvanced`
 - `UC_TextEncodeGemmaSystemEditAdvanced`
 - `UC_AdvancedVisualConditioningEncode`
+- `UC_AdvancedMiniMaxH3ImageToVideo`
+- `UC_AdvancedMiniMaxH3ImageToVideoCombined`
+- `UC_MiniMaxH3FirstFrameReferences`
 - `UC_AdvancedVisConEncoder`
 - `UC_VisualConsensusConfiguration`
 - `UC_AdvancedVisualConfiguration`
@@ -75,10 +67,12 @@ the base-resolution conditioning fusion.
 ### Image, mask, and compositing
 
 - `UC_Image_Color_Noise`
+- `UC_ExtractPrevalentColors`
 - `UC_ModifyMask`
 - `UC_ImageBlendByMask`
 - `UC_ImagePad`
 - `UC_CropByMask`
+- `UC_StagedLayerCrops`
 - `UC_ImageCropMerge`
 - `UC_ExtractMask`
 - `UC_ExtractImage`
@@ -95,11 +89,12 @@ the base-resolution conditioning fusion.
 - `UC_MediaPipeFaceCompositeOptions`
 - `UC_MediaPipeFaceComposite`
 - `UC_ListToImageBatch`
-- `UC_ImageMatchPropertiesNode`
+- `UC_ImageMatchProperties`
 - `UC_OpticalFlowComposite`
 - `UC_ImageInwardEdgeFill`
 - `UC_ImageIterativeStretchFill`
 - `UC_TextOverlayNode`
+- `UC_CompositeNodesGuide`
 
 `UC_StagedLayeredBackgroundComposite` builds a scene from a background and ordered foreground sockets. Use `run_staging` to retain cutouts and populate the placement editor. Use `run_staged` to composite retained cutouts without loading models or evaluating foreground branches. Use `full_run` to restage and composite in one queue. `foreground_0` is the backmost layer. Retained cutouts are held in server memory and must be recreated after restarting ComfyUI.
 
@@ -129,6 +124,9 @@ the base-resolution conditioning fusion.
 - `UC_ExtractBoundingBox`
 - `UC_AdjustBoundingBox`
 - `UC_Ideogram4BoundingBoxCrop`
+- `UC_HighResolutionTileSplit`
+- `UC_HighResolutionTileAccumulator`
+- `UC_HighResolutionTilingGuide`
 
 ### Prompt presets
 
@@ -142,8 +140,16 @@ the base-resolution conditioning fusion.
 - `UC_EditOpPresets`
 - `UC_CameraShotPresets`
 - `UC_VLMSysInstrPresets`
+- `UC_VLMSysInstrPresetsExperimental`
+- `UC_VLMSysInstrLegacyPresets`
 - `UC_VLMSysQueryAddPresets`
+- `UC_VLMSysQueryRawPresets`
 - `UC_VLMSysInstrAdvPresets`
+- `UC_VLMSysInstrAdvPresetsExperimental`
+- `UC_MiniMaxH3VLMSysInstrPresets`
+- `UC_MiniMaxH3VLMSysInstrPresetsExperimental`
+- `UC_MiniMaxH3VLMSysInstrAdvPresets`
+- `UC_MiniMaxH3VLMSysInstrAdvPresetsExperimental`
 - `UC_LegacyPromptPresets`
 - `UC_UnifiedPresets`
 
@@ -151,16 +157,27 @@ the base-resolution conditioning fusion.
 
 - `UC_LoadImagePath`
 - `UC_LoadImageDirectory`
+- `UC_LoadImageWithAlpha`
+- `UC_SampleVideoFramesAsImages`
 - `UC_LoraLoaderCLIPOnly`
 - `UC_TextGenerate`
 - `UC_TextGenerateQwen35SystemPrompt`
+- `UC_EmbeddingDetokenizerAnalysis`
+- `UC_ImageToVideoPrompt`
 - `UC_TagNormalizeCombine`
+- `UC_FromList`
+- `UC_GetJsonValue`
+- `UC_MiniMaxH3Cache`
+- `UC_MarkdownPreview`
 - `UC_BoldFrakturTextStyle`
 - `UC_UnBoldFrakturTextStyle`
 - `UC_WordJoiner`
 - `UC_UnWordJoiner`
 - `UC_JSONMinifyRepair`
 - `UC_StringUnescape`
+- `UC_TextConcatenateAutogrow`
+- `UC_TextConcatenateListsAutogrow`
+- `UC_Newline`
 
 ### Scheduler presets
 

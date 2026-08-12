@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import pathlib
+import re
 import sys
 
 
@@ -131,6 +132,23 @@ def test_registered_non_deprecated_nodes_have_search_metadata():
     assert "UC_ConditioningConsensusBlend" in checked
     assert "UC_VLMSysQueryRawPresets" in checked
     assert len(checked) == len(set(checked))
+
+
+def test_readme_available_nodes_match_current_registration():
+    package = _load_extension_package()
+    node_classes = asyncio.run(package.SamplingUtils().get_node_list())
+    expected = set()
+    for node_class in node_classes:
+        schema = node_class.define_schema()
+        if not schema.is_deprecated and "(Legacy)" not in (schema.display_name or ""):
+            expected.add(schema.node_id)
+
+    readme = (CUSTOM_NODE_ROOT / "README.md").read_text(encoding="utf-8")
+    available_nodes = readme.split("## Available nodes", 1)[1]
+    listed = re.findall(r"^- `([^`]+)`$", available_nodes, re.MULTILINE)
+
+    assert len(listed) == len(set(listed))
+    assert set(listed) == expected
 
 
 def test_legacy_nodes_do_not_inherit_canonical_search_metadata():

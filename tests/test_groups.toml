@@ -111,6 +111,7 @@ frontend_tests = []
 [groups.registration]
 paths = [
   "__init__.py",
+  "README.md",
   "legacy_nodes.py",
   "loader_nodes.py",
   "model_assets.py",

@@ -48,7 +48,7 @@ def test_changed_paths_select_only_dependent_groups_and_direct_tests():
         groups,
     )
 
-    assert selection.groups == {"composite", "encoder", "textgen"}
+    assert selection.groups == {"composite", "encoder", "registration", "textgen"}
     assert "tests/test_composite_nodes.py" in selection.python_tests
     assert "tests/test_advanced_visual_consensus.py" in selection.python_tests
     assert "tests/test_textgen_formula.py" in selection.python_tests
