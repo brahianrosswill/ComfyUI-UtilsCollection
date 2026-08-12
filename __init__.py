@@ -126,6 +126,7 @@ class SamplingUtils(ComfyExtension):
             UC_TextConsensusBlendConfig,
             UC_VisualFusionConfig,
             UC_MiniMaxH3Cache,
+            UC_MiniMaxH3Spectrum,
             UC_ConditioningConsensusBlend,
             UC_TextGenerate,
             UC_TextGenerateQwen35SystemPrompt,

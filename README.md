@@ -168,6 +168,7 @@ the base-resolution conditioning fusion.
 - `UC_FromList`
 - `UC_GetJsonValue`
 - `UC_MiniMaxH3Cache`
+- `UC_MiniMaxH3Spectrum`
 - `UC_MarkdownPreview`
 - `UC_BoldFrakturTextStyle`
 - `UC_UnBoldFrakturTextStyle`
