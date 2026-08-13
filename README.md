@@ -16,6 +16,7 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_AdvancedVisualConditioningEncode`
 - `UC_AdvancedMiniMaxH3ImageToVideo`
 - `UC_AdvancedMiniMaxH3ImageToVideoCombined`
+- `UC_MiniMaxH3MediaConfig`
 - `UC_MiniMaxH3FirstFrameReferences`
 - `UC_AdvancedVisConEncoder`
 - `UC_VisualConsensusConfiguration`
@@ -32,6 +33,8 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_EncoderNodesGuide`
 
 #### UC_AdvancedMiniMaxH3ImageToVideo: Qwen-only 1024 VLM example
+
+The optional MiniMax H3 Media Configurator adds ordered timestamped images as one Qwen Video timeline without VAE-encoding those images. Existing Pictures remain first and may still use Picture fusion; Video blocks are never fused. Optional audio is encoded by the connected MiniMax H3 audio VAE as native reference audio, while Qwen receives only an Audio label. User timestamp precision is preserved in Qwen's Video labels.
 
 [Workflow JSON](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_Workflow.json) | [API workflow JSON](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_API.json) | [Workflow overview](workflows/UC_AdvancedMiniMaxH3ImageToVideo/QwenOnly_8Image_1024VLM_Overview.png) | [Reference images](https://github.com/silveroxides/ComfyUI-UtilsCollection/releases/download/advanced-minimax-h3-qwen-only-assets-v1/UC_AdvancedMiniMaxH3ImageToVideo_QwenOnly_8Image_1024VLM_References.zip)
 

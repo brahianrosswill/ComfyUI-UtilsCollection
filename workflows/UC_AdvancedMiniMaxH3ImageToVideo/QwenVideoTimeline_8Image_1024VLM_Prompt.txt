@@ -1,0 +1,48 @@
+subject_definitions:
+- <Subject 1>: An anthropomorphic feline operative featuring dark grey fur with blue-and-magenta bioluminescent facial markings, vibrant purple hair, curled ram-like dark metallic horns, piercing light-blue eyes, and a bright teal nose, dressed in a sleek black suit jacket, white collared shirt, and black necktie, wielding a suppressed handgun. The supplied Video timeline begins at 00.00s; <Subject 1> is established by the following anchors from 01.21s through 12.10s.
+
+summary:
+A high-suspense, 90s-style cinematic thriller scene following <Subject 1> navigating a dark industrial stairwell, cautiously peering around corners with a suppressed pistol, establishing tense tactical movement and covert progression across the continuous sequence guided by the supplied Video timeline anchors.
+
+retention_analysis:
+Maintain absolute visual consistency for <Subject 1>'s distinctive feline features, purple hair, horns, suit attire, and suppressed pistol across all dynamic action. Preserve the gritty, moody 90s thriller lighting and industrial concrete block architecture throughout all transitions. Use each supplied Video timeline anchor as the visual target at its corresponding timestamp while maintaining continuous motion between anchors.
+
+detailed_description:
+Timeline:
+[00.00s-01.21s]:
+[VISUAL]: [Shot 1] At the 00.00s Video anchor, the frame opens on a dark, closed wooden door filling the screen. Heavy rain pours down the surface. Slowly, the heavy door swings inward from left to right, revealing a sliver of warm light and disclosing <Subject 1> peering cautiously from behind the opening frame, flowing continuously toward the 01.21s Video anchor.
+[SOUNDS]: Sound of a creaking wood door opening against falling rain.
+
+[01.21s-02.46s]:
+[VISUAL]: [Shot 2] From the 01.21s Video anchor, a close-up shot tracks <Subject 1> as they lean past the doorframe and flow continuously toward the 02.46s Video anchor. <Subject 1>'s purple-tufted ears twitch with alertness and their bright blue eyes scan the hallway intensely, rain glistening on their dark fur and jacket shoulders.
+[SOUNDS]: Soft, wet footsteps and intense breathing, rain dampening in the background.
+
+[02.46s-05.30s]:
+[VISUAL]: [Shot 3] From the 02.46s Video anchor, a medium-wide tracking shot follows <Subject 1> along a stark concrete block stairwell as they crouch low behind metal pipe handrails, flowing continuously toward the 05.30s Video anchor. Holding a suppressed pistol in a two-handed tactical grip, <Subject 1> moves silently up the steps toward an open doorway labeled "ВХОД".
+[SOUNDS]: Squeak of rubber-soled boots on wet concrete, rustle of suit jacket fabric.
+
+[05.30s-06.55s]:
+[VISUAL]: From the 05.30s Video anchor, <Subject 1> pivots fluidly into a defensive stance, leaning low against the rusted metal railing in the stairwell and flowing continuously toward the 06.55s Video anchor. Holding the suppressed handgun close to their chest, <Subject 1> glances sharply back down the steps to verify the area is clear.
+[SOUNDS]: Metallic clink of gun frame against suit buttons, faint distant echo.
+
+[06.55s-07.80s]:
+[VISUAL]: [Shot 4] From the 06.55s Video anchor, a low-angle shot looks up at <Subject 1> descending a spiral stone staircase and flows continuously toward the 07.80s Video anchor. <Subject 1> rests one gloved hand on the iron rail while keeping the raised, suppressed pistol ready, their plush purple-and-cyan tail swaying for balance.
+[SOUNDS]: Rhythmic, careful footsteps descending stone stairs.
+
+[07.80s-10.84s]:
+[VISUAL]: [Shot 5] From the 07.80s Video anchor, a tight close-up follows <Subject 1> pressing firmly against a rough concrete wall corner and flowing continuously toward the 10.84s Video anchor. Holding the suppressor near face level, <Subject 1> slowly edges forward to peer into the dark corridor beyond.
+[SOUNDS]: Low rustle of suit fabric against rough concrete.
+
+[10.84s-12.10s]:
+[VISUAL]: From the 10.84s Video anchor, an extreme close-up follows <Subject 1> leaning around the wall corner and flowing continuously toward the 12.10s Video anchor. Light catches the sharp texture of <Subject 1>'s dark fur, purple hair bangs, and bright teal nose as their blue eyes widen slightly upon spotting a target ahead.
+[SOUNDS]: Soft, tense intake of breath.
+
+[12.10s-12.30s]:
+[VISUAL]: Beginning at the 12.10s Video anchor, <Subject 1> quickly raises the suppressed pistol flush with their line of sight, fingers tightening on the grip as they prepare to take action, locking focus directly down the hallway.
+[SOUNDS]: Sharp metallic click of a handgun hammer cocking.
+
+overall_soundscape:
+An immersive 90s atmospheric suspense soundscape featuring heavy rain external ambiance fading into echoing indoor concrete stairwell reverberations, subtle boot scrapes, suit fabric rustles, and precise mechanical weapon handling audio.
+
+non_diegetic_music:
+A low, pulsing synthesizer bassline paired with slow, rhythmic percussion to build escalating cinematic tension typical of a 1990s neo-noir action thriller.

@@ -6,12 +6,14 @@ import os
 import math
 import re
 import torch
+import torchaudio
 import logging
 import numbers
 import threading
 from einops import rearrange
 from safetensors.torch import save_file
 from enum import Enum
+from fractions import Fraction
 from pathlib import Path
 import torch.nn.functional as F
 from PIL import Image, ImageOps, ImageSequence
@@ -26,6 +28,7 @@ import comfy.nested_tensor
 import comfy.patcher_extension
 import comfy.utils
 from .helper_functions import resize_nchw
+from .image_helpers import parse_video_timestamps
 
 from comfy.ldm.flux.math import apply_rope
 from comfy.ldm.modules.attention import optimized_attention
@@ -267,6 +270,121 @@ def _minimax_h3_visual_entries(clip, image, picture_number: int) -> list:
     return _minimax_h3_text_entries(
         clip, f"<Picture {picture_number}>: "
     ) + visual
+
+
+def _minimax_h3_video_block_entries(clip, image, timestamp, include_prefix):
+    pair = image.expand(2, -1, -1, -1)
+    full = _token_entries(clip.tokenize("", minimax_ref_items=[{
+        "type": "video", "data": pair, "timestamps": [timestamp, timestamp],
+    }]), "qwen3vl_32b")
+    prefix = _minimax_h3_text_entries(clip, "<Video 1>: ")
+    if len(full) <= len(prefix) or [item[0] for item in full[:len(prefix)]] != [item[0] for item in prefix]:
+        raise ValueError("MiniMax H3 tokenizer returned an unexpected video prefix.")
+    block = full[len(prefix):]
+    core_timestamp = _minimax_h3_text_entries(clip, f"<{float(timestamp):.1f} seconds>")
+    if len(block) <= len(core_timestamp) or [item[0] for item in block[:len(core_timestamp)]] != [item[0] for item in core_timestamp]:
+        raise ValueError("MiniMax H3 tokenizer returned an unexpected video timestamp.")
+    block = block[len(core_timestamp):]
+    visuals = [item for item in block if is_image_token(item)]
+    if len(visuals) != 1 or not visuals[0][0].get("minimax_video_block", False):
+        raise ValueError("MiniMax H3 tokenizer returned an invalid temporal video block.")
+    exact_timestamp = _minimax_h3_text_entries(clip, f"<{_format_minimax_h3_timestamp(timestamp)} seconds>")
+    return (prefix if include_prefix else []) + exact_timestamp + block
+
+
+def _format_minimax_h3_timestamp(timestamp):
+    if not isinstance(timestamp, Fraction):
+        timestamp = Fraction(str(timestamp))
+    denominator = timestamp.denominator
+    precision = 0
+    while denominator % 2 == 0:
+        denominator //= 2
+        precision += 1
+    fives = 0
+    while denominator % 5 == 0:
+        denominator //= 5
+        fives += 1
+    if denominator != 1:
+        raise ValueError("MiniMax H3 timestamps require finite decimal values.")
+    precision = max(2, precision, fives)
+    return f"{float(timestamp):.{precision}f}"
+
+
+def tokenize_minimax_h3_media_prompt(clip, text, pictures, timeline_images, timestamps, audio=False):
+    entries = []
+    for index, image in enumerate(pictures, start=1):
+        entries.extend(_minimax_h3_visual_entries(clip, image, index))
+    if audio:
+        entries.extend(_minimax_h3_text_entries(clip, "<Audio 1>: "))
+    for index, (image, timestamp) in enumerate(zip(timeline_images, timestamps)):
+        entries.extend(_minimax_h3_video_block_entries(clip, image, timestamp, index == 0))
+    entries.extend(_minimax_h3_text_entries(clip, text))
+    return {"qwen3vl_32b": [entries]}
+
+
+def build_minimax_h3_media_config(timestamps, video_images, audio=None, audio_vae=None):
+    if isinstance(video_images, list) and len(video_images) == 1:
+        video_images = video_images[0]
+    if isinstance(audio, list):
+        audio = audio[0] if audio else None
+    if isinstance(audio_vae, list):
+        audio_vae = audio_vae[0] if audio_vae else None
+    timestamps = parse_video_timestamps(timestamps)
+    _, images, _ = extract_and_flatten_images(video_images)
+    if not images:
+        raise ValueError("MiniMax H3 media config requires at least one video image.")
+    if len(timestamps) != len(images):
+        raise ValueError(f"MiniMax H3 media config received {len(timestamps)} timestamps for {len(images)} images.")
+    if (audio is None) != (audio_vae is None):
+        raise ValueError("MiniMax H3 media config requires audio and audio_vae together.")
+    return {
+        "schema_version": 1,
+        "image_timeline": {"images": tuple(images), "timestamps_seconds": tuple(timestamps)},
+        "audio": audio,
+        "audio_vae": audio_vae,
+    }
+
+
+def _validate_minimax_h3_media_config(media_config, frame_count, vlm_resolution):
+    if not isinstance(media_config, dict) or media_config.get("schema_version") != 1:
+        raise ValueError("Unsupported MiniMax H3 media config payload.")
+    timeline = media_config.get("image_timeline")
+    if not isinstance(timeline, dict):
+        raise ValueError("MiniMax H3 media config has no image timeline.")
+    images = list(timeline.get("images", ()))
+    timestamps = list(timeline.get("timestamps_seconds", ()))
+    if not images or len(images) != len(timestamps):
+        raise ValueError("MiniMax H3 media config image and timestamp counts must match and be non-empty.")
+    for index, image in enumerate(images, start=1):
+        if not torch.is_tensor(image) or image.ndim != 4 or image.shape[0] != 1 or min(image.shape[1:3]) < 1 or image.shape[3] < 3:
+            raise ValueError(f"MiniMax H3 timeline image {index} must be one BHWC image with at least three channels.")
+    if any(not isinstance(timestamp, Fraction) or timestamp < 0 for timestamp in timestamps):
+        raise ValueError("MiniMax H3 media config timestamps must be parsed nonnegative exact seconds.")
+    duration = Fraction(frame_count, 24)
+    if any(timestamp > duration for timestamp in timestamps):
+        raise ValueError(f"MiniMax H3 timeline timestamps must not exceed output duration {float(duration):.3f}s.")
+    return [prepare_vlm_image(image, vlm_resolution) for image in images], timestamps
+
+
+def _encode_minimax_h3_audio_reference(media_config):
+    audio, audio_vae = media_config.get("audio"), media_config.get("audio_vae")
+    if (audio is None) != (audio_vae is None):
+        raise ValueError("MiniMax H3 media config requires audio and audio_vae together.")
+    if audio is None:
+        return None
+    if not isinstance(audio, dict) or not torch.is_tensor(audio.get("waveform")):
+        raise ValueError("MiniMax H3 audio must contain a waveform tensor.")
+    waveform = audio["waveform"]
+    sample_rate = audio.get("sample_rate")
+    if waveform.ndim != 3 or waveform.shape[-1] < 1 or not torch.isfinite(waveform).all() or not isinstance(sample_rate, (int, float)) or sample_rate <= 0:
+        raise ValueError("MiniMax H3 audio requires a finite [batch, channels, samples] waveform and positive sample rate.")
+    target_rate = getattr(audio_vae, "audio_sample_rate", 32000)
+    if sample_rate != target_rate:
+        waveform = torchaudio.functional.resample(waveform, sample_rate, target_rate)
+    latent = audio_vae.encode(waveform[:1].movedim(1, -1))
+    if not torch.is_tensor(latent) or latent.ndim < 1 or latent.shape[-1] < 1:
+        raise ValueError("MiniMax H3 audio VAE returned an invalid latent.")
+    return {"kind": "audio", "ref_audio_t": latent.shape[-1], "audio_latent": latent}
 
 
 def tokenize_minimax_h3_prompt(clip, text: str, images) -> dict:
@@ -2270,6 +2388,7 @@ def _execute_advanced_minimax_h3_image_to_video(
     multiplier=1.0,
     ref_image_size="match",
     vlm_resolution=384,
+    media_config=None,
     allow_combined_reference_routing=False,
 ):
     """Build coordinated Qwen conditioning, H3 image controls, and AV latent."""
@@ -2345,6 +2464,14 @@ def _execute_advanced_minimax_h3_image_to_video(
             )
 
     latent, frame_count = minimax_h3_empty_av_latent(width, height, length)
+    timeline_images = []
+    timeline_timestamps = []
+    audio_reference = None
+    if media_config is not None:
+        timeline_images, timeline_timestamps = _validate_minimax_h3_media_config(
+            media_config, frame_count, vlm_resolution
+        )
+        audio_reference = _encode_minimax_h3_audio_reference(media_config)
     prepared_first = (
         prepare_minimax_h3_frame(keyframe_first_image, width, height, "disabled")
         if keyframe_first_image is not None and frame_vae_enabled
@@ -2382,8 +2509,15 @@ def _execute_advanced_minimax_h3_image_to_video(
     visual_method = config.get("visual_fusion_method", "off")
     fusion_active = visual_method != "off" and bool(fusion_vlm_images)
     visual_encoder_path = config.get("visual_encoder_path", "grid-deepstack")
+    if media_config is not None and fusion_active and visual_encoder_path == "legacy-flat":
+        raise ValueError("MiniMax H3 mixed Picture and Video fusion requires grid-deepstack.")
 
     def tokenize_presentation(text, images):
+        if media_config is not None:
+            return tokenize_minimax_h3_media_prompt(
+                clip, text, images, timeline_images, timeline_timestamps,
+                audio=audio_reference is not None,
+            )
         if native_reference_mode:
             return clip.tokenize(
                 text,
@@ -2584,6 +2718,8 @@ def _execute_advanced_minimax_h3_image_to_video(
         }
         for image in prepared_references
     ] if native_reference_mode else []
+    if audio_reference is not None:
+        references.append(audio_reference)
     metadata = {}
     if keyframes:
         metadata["minimax_keyframes"] = keyframes
@@ -2592,7 +2728,7 @@ def _execute_advanced_minimax_h3_image_to_video(
         metadata["minimax_refs"] = references
     if metadata:
         conditioning = node_helpers.conditioning_set_values(conditioning, metadata)
-    return conditioning, latent, bool(keyframes and references)
+    return conditioning, latent, bool(keyframes and prepared_references)
 
 
 def execute_advanced_minimax_h3_image_to_video(
@@ -2610,6 +2746,7 @@ def execute_advanced_minimax_h3_image_to_video(
     multiplier=1.0,
     ref_image_size="match",
     vlm_resolution=384,
+    media_config=None,
 ):
     conditioning, latent, _requires_combined_wrapper = (
         _execute_advanced_minimax_h3_image_to_video(
@@ -2627,6 +2764,7 @@ def execute_advanced_minimax_h3_image_to_video(
             multiplier=multiplier,
             ref_image_size=ref_image_size,
             vlm_resolution=vlm_resolution,
+            media_config=media_config,
         )
     )
     return conditioning, latent
@@ -2648,6 +2786,7 @@ def execute_advanced_minimax_h3_image_to_video_combined(
     multiplier=1.0,
     ref_image_size="match",
     vlm_resolution=384,
+    media_config=None,
 ):
     """Build Advanced H3 conditioning and patch only mixed visual payloads."""
     validate_minimax_h3_model_patcher(
@@ -2669,6 +2808,7 @@ def execute_advanced_minimax_h3_image_to_video_combined(
             multiplier=multiplier,
             ref_image_size=ref_image_size,
             vlm_resolution=vlm_resolution,
+            media_config=media_config,
             allow_combined_reference_routing=True,
         )
     )

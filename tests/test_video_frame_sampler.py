@@ -20,10 +20,38 @@ from utils_collection_video_frame_sampler_test.image_helpers import (
     VideoFrameRecord,
     build_video_timeline_text,
     format_video_timestamp,
+    parse_video_timestamp,
+    parse_video_timestamps,
     sample_video_frames_as_images,
     scan_video_frame_records,
     select_video_frame_records,
 )
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("01:02:03.250", Fraction(14893, 4)),
+    ("02:03:250", Fraction(493, 4)),
+    ("02:03.250", Fraction(493, 4)),
+    ("00.125s", Fraction(1, 8)),
+    (1.25, Fraction(5, 4)),
+])
+def test_parse_video_timestamp_formats(value, expected):
+    assert parse_video_timestamp(value) == expected
+
+
+def test_parse_video_timestamps_flattens_delimited_and_nested_values():
+    assert parse_video_timestamps([["0; 1.2"], ("2.5s",)]) == [Fraction(0), Fraction(6, 5), Fraction(5, 2)]
+
+
+@pytest.mark.parametrize("value", [True, -1, float("inf"), "", "1;;2", "00:00:60.0"])
+def test_parse_video_timestamps_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        parse_video_timestamps(value)
+
+
+def test_parse_video_timestamps_rejects_decreasing_order():
+    with pytest.raises(ValueError, match="earlier"):
+        parse_video_timestamps([1, 0])
 from utils_collection_video_frame_sampler_test.image_nodes import (
     UC_SampleVideoFramesAsImages,
 )

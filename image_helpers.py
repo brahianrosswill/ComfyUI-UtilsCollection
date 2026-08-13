@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import math
 import os
+import re
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Callable, Iterator, Sequence
@@ -31,6 +33,100 @@ VIDEO_FRAME_TIMELINE_STYLES = (
     "indexed",
     "timestamps only",
 )
+
+_VIDEO_TIMESTAMP_COLON_PATTERN = re.compile(
+    r"^(?:(?P<hours>\d+):)?(?P<minutes>\d+):(?P<seconds>\d+)(?P<fraction>[.:]\d+)?$"
+)
+
+
+def parse_video_timestamp(value) -> Fraction:
+    """Parse one supported video timestamp into exact nonnegative seconds."""
+    if isinstance(value, bool):
+        raise ValueError("boolean values are not timestamps")
+    if isinstance(value, Fraction):
+        result = value
+    elif isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            raise ValueError("timestamp must be finite")
+        result = Fraction(str(value))
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError("timestamp is empty")
+        suffix = re.fullmatch(r"(.+?)\s*(?:s|seconds?)", text, re.IGNORECASE)
+        if suffix:
+            text = suffix.group(1).strip()
+        colon_parts = text.split(":")
+        if len(colon_parts) in (3, 4) and all(part.isdigit() for part in colon_parts):
+            if len(colon_parts) == 4:
+                hours, minutes, seconds, milliseconds = map(int, colon_parts)
+            else:
+                hours = 0
+                minutes, seconds, milliseconds = map(int, colon_parts)
+            if minutes >= 60 and hours:
+                raise ValueError("minute component must be below 60")
+            if seconds >= 60:
+                raise ValueError("second component must be below 60")
+            result = Fraction(hours * 3600 + minutes * 60 + seconds) + Fraction(milliseconds, 10 ** len(colon_parts[-1]))
+            if result < 0:
+                raise ValueError("timestamp must not be negative")
+            return result
+        match = _VIDEO_TIMESTAMP_COLON_PATTERN.fullmatch(text)
+        if match:
+            hours = int(match.group("hours") or 0)
+            minutes = int(match.group("minutes"))
+            seconds = int(match.group("seconds"))
+            if minutes >= 60 and match.group("hours") is not None:
+                raise ValueError("minute component must be below 60")
+            if seconds >= 60:
+                raise ValueError("second component must be below 60")
+            fraction = match.group("fraction")
+            fractional = Fraction(0)
+            if fraction:
+                digits = fraction[1:]
+                fractional = Fraction(int(digits), 10 ** len(digits))
+            result = Fraction(hours * 3600 + minutes * 60 + seconds) + fractional
+        else:
+            try:
+                result = Fraction(text)
+            except (ValueError, ZeroDivisionError) as exc:
+                raise ValueError(f"unsupported timestamp {value!r}") from exc
+    else:
+        raise ValueError(f"unsupported timestamp type {type(value).__name__}")
+    if result < 0:
+        raise ValueError("timestamp must not be negative")
+    return result
+
+
+def parse_video_timestamps(value) -> list[Fraction]:
+    """Flatten and parse timestamp containers while preserving source order."""
+    raw = []
+
+    def collect(item):
+        if isinstance(item, (list, tuple)):
+            for child in item:
+                collect(child)
+        elif isinstance(item, str) and re.search(r"[,;\n]", item):
+            parts = re.split(r"[,;\n]", item)
+            if any(not part.strip() for part in parts):
+                raise ValueError("timestamp list contains an empty item")
+            raw.extend(parts)
+        else:
+            raw.append(item)
+
+    collect(value)
+    if not raw:
+        raise ValueError("at least one timestamp is required")
+    parsed = []
+    for index, item in enumerate(raw, start=1):
+        try:
+            parsed.append(parse_video_timestamp(item))
+        except ValueError as exc:
+            raise ValueError(f"timestamp {index}: {exc}") from exc
+    for index in range(1, len(parsed)):
+        if parsed[index] < parsed[index - 1]:
+            raise ValueError(f"timestamp {index + 1} is earlier than timestamp {index}")
+    return parsed
 
 
 @dataclass(frozen=True)

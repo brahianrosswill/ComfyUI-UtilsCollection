@@ -47,6 +47,7 @@ from .encoder_helpers import(
     execute_advanced_visual_consensus,
     execute_advanced_minimax_h3_image_to_video,
     execute_advanced_minimax_h3_image_to_video_combined,
+    build_minimax_h3_media_config,
     execute_minimax_h3_first_frame_references,
 )
 
@@ -190,6 +191,7 @@ VisualFusionConfig = io.Custom("VISUAL_FUSION_CONFIG")
 AdvancedVisualConfig = io.Custom("ADVANCED_VISUAL_CONFIG")
 AdvancedConsensusConfig = io.Custom("ADVANCED_CONSENSUS_CONFIG")
 VisualConsensusConfig = io.Custom("VISUAL_CONSENSUS_CONFIG")
+MiniMaxH3MediaConfig = io.Custom("MINIMAX_H3_MEDIA_CONFIG")
 
 class UC_TextConsensusBlendConfig(io.ComfyNode):
     @classmethod
@@ -3347,6 +3349,31 @@ class UC_AdvancedVisualConditioningEncode(TextEncodeKrea2SystemEditScaledAdv):
         return schema
 
 
+class UC_MiniMaxH3MediaConfig(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        image_template = io.Autogrow.TemplateNames(
+            io.Image.Input("video_image", tooltip="Ordered Qwen-only timeline image. Each batch item becomes one duplicated-frame temporal block; images are not VAE encoded or fused."),
+            names=[f"video_image_{index}" for index in range(1, 65)], min=1,
+        )
+        return io.Schema(
+            node_id="UC_MiniMaxH3MediaConfig", display_name="MiniMax H3 Media Configurator",
+            category="advanced/conditioning", is_input_list=True, is_experimental=True,
+            description="Packages timestamped images as one Qwen Video sequence and can add optional native MiniMax H3 audio conditioning.",
+            inputs=[
+                io.AnyType.Input("timestamps", tooltip="One exact timestamp per flattened image. Accepts lists or comma, semicolon, or newline-delimited seconds and HH:MM:SS formats. Values must be chronological and within the output duration."),
+                io.Autogrow.Input("video_images", template=image_template, tooltip="Images flatten in numeric socket and batch order. The encoder applies vlm_resolution, duplicates each image into one Qwen temporal block, and never VAE encodes or fuses these Video blocks."),
+                io.Audio.Input("audio", optional=True, tooltip="Optional native H3 reference audio. Qwen receives only an Audio label; hard synchronization with Video timestamps is not guaranteed."),
+                io.Vae.Input("audio_vae", optional=True, tooltip="Required with audio. Resamples to this MiniMax H3 audio VAE rate and creates native audio reference rows."),
+            ],
+            outputs=[MiniMaxH3MediaConfig.Output(display_name="media_config", tooltip="Runtime media configuration for the Advanced MiniMax H3 encoder nodes.")],
+        )
+
+    @classmethod
+    def execute(cls, timestamps, video_images, audio=None, audio_vae=None):
+        return io.NodeOutput(build_minimax_h3_media_config(timestamps, video_images, audio, audio_vae))
+
+
 class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -3372,7 +3399,8 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             category="advanced/conditioning",
             description=(
                 "Creates coordinated MiniMax H3 Qwen conditioning from independent frame, reference, and fusion "
-                "inputs together with native visual controls and the matching joint video/audio latent."
+                "inputs together with native visual controls and the matching joint video/audio latent. Optional media "
+                "configuration adds Qwen-only Video timeline images and native audio conditioning."
             ),
             inputs=[
                 io.Clip.Input(
@@ -3468,6 +3496,10 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                         "Without frames, an active method combines this group into Picture 1."
                     ),
                 ),
+                MiniMaxH3MediaConfig.Input(
+                    "media_config", optional=True,
+                    tooltip="Adds a Qwen-only Video after existing Pictures and optional native audio. It creates no native video latent and excludes Video blocks from fusion; active mixed-media fusion requires grid-deepstack.",
+                ),
             ],
             outputs=[
                 io.Conditioning.Output(display_name="positive"),
@@ -3493,6 +3525,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
         multiplier=1.0,
         ref_image_size="match",
         vlm_resolution=384,
+        media_config=None,
     ) -> io.NodeOutput:
         conditioning, latent = execute_advanced_minimax_h3_image_to_video(
             clip,
@@ -3509,6 +3542,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             multiplier=multiplier,
             ref_image_size=ref_image_size,
             vlm_resolution=vlm_resolution,
+            media_config=media_config,
         )
         return io.NodeOutput(conditioning, latent)
 
@@ -3524,7 +3558,8 @@ class UC_AdvancedMiniMaxH3ImageToVideoCombined(
         schema.description = (
             "Extends the Advanced MiniMax H3 encoder with reference-derived first/final "
             "VAE keyframes and native references. Connect the returned model to the same "
-            "sampling branch as the positive conditioning and latent."
+            "sampling branch as the positive conditioning and latent. The inherited media "
+            "configuration adds Qwen-only Video blocks and optional native audio conditioning."
         )
         schema.inputs.insert(
             0,
@@ -3578,6 +3613,7 @@ class UC_AdvancedMiniMaxH3ImageToVideoCombined(
         multiplier=1.0,
         ref_image_size="match",
         vlm_resolution=384,
+        media_config=None,
     ) -> io.NodeOutput:
         patched_model, conditioning, latent = (
             execute_advanced_minimax_h3_image_to_video_combined(
@@ -3596,6 +3632,7 @@ class UC_AdvancedMiniMaxH3ImageToVideoCombined(
                 multiplier=multiplier,
                 ref_image_size=ref_image_size,
                 vlm_resolution=vlm_resolution,
+                media_config=media_config,
             )
         )
         return io.NodeOutput(patched_model, conditioning, latent)
