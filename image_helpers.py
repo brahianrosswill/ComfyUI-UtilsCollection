@@ -147,6 +147,7 @@ class SampledVideoFrames:
     timestamps_text: str
     timeline_text: str
     video_runtime: float
+    structured_timeline_text: str
 
 
 def _as_fraction(value: Fraction | float | int) -> Fraction:
@@ -585,6 +586,7 @@ def format_video_timestamp(timestamp: Fraction | float, timestamp_format: str) -
 def build_video_timeline_text(
     timestamps: Sequence[str],
     timeline_style: str,
+    index_offset: int = 0,
 ) -> str:
     if timeline_style not in VIDEO_FRAME_TIMELINE_STYLES:
         raise ValueError(f"Unsupported video timeline style: {timeline_style}")
@@ -594,18 +596,41 @@ def build_video_timeline_text(
         lines = [f"{index}: {timestamp}" for index, timestamp in enumerate(timestamps)]
     elif timeline_style == "H3 pictures":
         lines = [
-            f"<Picture {index}> at {timestamp}"
+            f"<Picture {index + index_offset}> at {timestamp}"
             for index, timestamp in enumerate(timestamps, start=1)
         ]
     else:
         lines = [
             (
                 f"For the target video, at {timestamp} into the target video, "
-                f"<Picture {index}> is fully referenced."
+                f"<Picture {index + index_offset}> is fully referenced."
             )
             for index, timestamp in enumerate(timestamps, start=1)
         ]
     return "\n".join(lines)
+
+
+def build_structured_video_timeline_text(
+    video_runtime: float,
+    timestamps: Sequence[str],
+    index_offset: int = 0,
+) -> str:
+    segment_count = len(timestamps)
+    introduction = (
+        f"Target video duration is {video_runtime:g} seconds divided into "
+        f"{segment_count} segments."
+    )
+    references = [
+        f"<Picture {index + index_offset}> at {timestamp}"
+        for index, timestamp in enumerate(timestamps, start=1)
+    ]
+    if not references:
+        return introduction
+    if len(references) == 1:
+        reference_text = references[0]
+    else:
+        reference_text = f"{', '.join(references[:-1])} and {references[-1]}"
+    return f"{introduction} Reference each image with {reference_text}."
 
 
 def sample_video_frames_as_images(
@@ -617,6 +642,7 @@ def sample_video_frames_as_images(
     keyframe_stride: int,
     timestamp_format: str,
     timeline_style: str,
+    index_offset: int = 0,
 ) -> SampledVideoFrames:
     video_runtime = float(video.get_duration())
     source_factory = _video_source_factory(video)
@@ -643,6 +669,11 @@ def sample_video_frames_as_images(
         image_list=image_list,
         timestamps=timestamps,
         timestamps_text=", ".join(timestamps),
-        timeline_text=build_video_timeline_text(timestamps, timeline_style),
+        timeline_text=build_video_timeline_text(
+            timestamps, timeline_style, index_offset
+        ),
         video_runtime=video_runtime,
+        structured_timeline_text=build_structured_video_timeline_text(
+            video_runtime, timestamps, index_offset
+        ),
     )

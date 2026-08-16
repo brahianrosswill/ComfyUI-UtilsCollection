@@ -18,6 +18,7 @@ sys.modules.setdefault(PACKAGE_NAME, package)
 from utils_collection_video_frame_sampler_test import image_helpers
 from utils_collection_video_frame_sampler_test.image_helpers import (
     VideoFrameRecord,
+    build_structured_video_timeline_text,
     build_video_timeline_text,
     format_video_timestamp,
     parse_video_timestamp,
@@ -80,6 +81,7 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
         "keyframe_stride",
         "timestamp_format",
         "timeline_style",
+        "index_offset",
     ]
     assert schema.inputs[1].default == "codec keyframes"
     assert schema.inputs[2].default == 16
@@ -91,6 +93,8 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
     assert "0.00s" in schema.inputs[6].options
     assert "00.00s" not in schema.inputs[6].options
     assert schema.inputs[7].default == "H3 alignment prefix"
+    assert schema.inputs[8].default == 0
+    assert schema.inputs[8].min == 0
     assert [output.id for output in schema.outputs] == [
         "image_batch",
         "images",
@@ -98,6 +102,7 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
         "timestamps_text",
         "timeline_text",
         "video_runtime",
+        "structured_timeline_text",
     ]
     assert [output.is_output_list for output in schema.outputs] == [
         False,
@@ -106,9 +111,50 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
         False,
         False,
         False,
+        False,
     ]
 
 
+def test_structured_timeline_text_describes_duration_segments_and_references():
+    assert build_structured_video_timeline_text(
+        12.3,
+        [
+            "00.00s",
+            "01.21s",
+            "02.46s",
+            "05.30s",
+            "06.55s",
+            "07.80s",
+            "10.84s",
+            "12.10s",
+        ],
+    ) == (
+        "Target video duration is 12.3 seconds divided into 8 segments. "
+        "Reference each image with <Picture 1> at 00.00s, "
+        "<Picture 2> at 01.21s, <Picture 3> at 02.46s, "
+        "<Picture 4> at 05.30s, <Picture 5> at 06.55s, "
+        "<Picture 6> at 07.80s, <Picture 7> at 10.84s and "
+        "<Picture 8> at 12.10s."
+    )
+
+
+def test_index_offset_shifts_all_picture_references():
+    timestamps = ["00.00s", "01.21s"]
+
+    assert build_structured_video_timeline_text(12.3, timestamps, 1) == (
+        "Target video duration is 12.3 seconds divided into 2 segments. "
+        "Reference each image with <Picture 2> at 00.00s and "
+        "<Picture 3> at 01.21s."
+    )
+    assert build_video_timeline_text(timestamps, "H3 pictures", 1) == (
+        "<Picture 2> at 00.00s\n<Picture 3> at 01.21s"
+    )
+    assert build_video_timeline_text(timestamps, "H3 alignment prefix", 1) == (
+        "For the target video, at 00.00s into the target video, "
+        "<Picture 2> is fully referenced.\n"
+        "For the target video, at 01.21s into the target video, "
+        "<Picture 3> is fully referenced."
+    )
 def test_zero_time_is_output_position_zero_and_spacing_removes_near_duplicate():
     selected = select_video_frame_records(
         _records([0, 0.01, 0.25, 0.49, 0.5]),
@@ -337,6 +383,11 @@ def test_sampler_outputs_aligned_batch_list_and_metadata(monkeypatch):
         "<Picture 3> at 01.000s"
     )
     assert sampled.video_runtime == 1.25
+    assert sampled.structured_timeline_text == (
+        "Target video duration is 1.25 seconds divided into 3 segments. "
+        "Reference each image with <Picture 1> at 00.000s, "
+        "<Picture 2> at 00.250s and <Picture 3> at 01.000s."
+    )
     assert torch.allclose(sampled.image_batch[1], torch.full((2, 3, 3), 20 / 255))
     assert video.source_calls == 1
 

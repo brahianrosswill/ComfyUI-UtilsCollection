@@ -673,6 +673,16 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                         "H3 <Picture N>, zero-based indexed, or timestamps only."
                     ),
                 ),
+                io.Int.Input(
+                    "index_offset",
+                    default=0,
+                    min=0,
+                    step=1,
+                    tooltip=(
+                        "Adds this value to every <Picture N> reference so "
+                        "earlier reference images can occupy the first indices."
+                    ),
+                ),
             ],
             outputs=[
                 io.Image.Output(
@@ -707,6 +717,14 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                     display_name="video runtime",
                     tooltip="Full active VIDEO duration in seconds, including the active trim.",
                 ),
+                io.String.Output(
+                    "structured_timeline_text",
+                    display_name="structured timeline text",
+                    tooltip=(
+                        "Video duration, segment count, and chronological "
+                        "<Picture N> timestamp references in one sentence."
+                    ),
+                ),
             ],
         )
 
@@ -721,6 +739,7 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
         keyframe_stride: int,
         timestamp_format: str,
         timeline_style: str,
+        index_offset: int,
     ) -> io.NodeOutput:
         sampled = sample_video_frames_as_images(
             video,
@@ -731,6 +750,7 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
             keyframe_stride,
             timestamp_format,
             timeline_style,
+            index_offset,
         )
         return io.NodeOutput(
             sampled.image_batch,
@@ -739,6 +759,7 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
             sampled.timestamps_text,
             sampled.timeline_text,
             sampled.video_runtime,
+            sampled.structured_timeline_text,
         )
 
 
