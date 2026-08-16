@@ -87,6 +87,7 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
     assert schema.inputs[4].default == 0.25
     assert schema.inputs[5].default == 1
     assert schema.inputs[6].default == "00.000s"
+    assert "0.0s" in schema.inputs[6].options
     assert "0.00s" in schema.inputs[6].options
     assert "00.00s" not in schema.inputs[6].options
     assert schema.inputs[7].default == "H3 alignment prefix"
@@ -96,11 +97,13 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
         "timestamps",
         "timestamps_text",
         "timeline_text",
+        "video_runtime",
     ]
     assert [output.is_output_list for output in schema.outputs] == [
         False,
         True,
         True,
+        False,
         False,
         False,
     ]
@@ -169,6 +172,7 @@ def test_uniform_pts_uses_irregular_presentation_times():
         ("MM:SS.mmm", "02:03.456"),
         ("MM:SS:mmm", "02:03:456"),
         ("00.000s", "123.456s"),
+        ("0.0s", "123.5s"),
         ("0.00s", "123.46s"),
     ],
 )
@@ -177,6 +181,9 @@ def test_timestamp_formats_are_deterministic(timestamp_format, expected):
 
 
 def test_two_decimal_seconds_use_minimal_integer_width():
+    assert format_video_timestamp(Fraction(0), "0.0s") == "0.0s"
+    assert format_video_timestamp(Fraction(1234, 1000), "0.0s") == "1.2s"
+    assert format_video_timestamp(Fraction(125, 100), "0.0s") == "1.3s"
     assert format_video_timestamp(Fraction(0), "0.00s") == "0.00s"
     assert format_video_timestamp(Fraction(1234, 1000), "0.00s") == "1.23s"
     assert format_video_timestamp(Fraction(12304, 1000), "0.00s") == "12.30s"
@@ -204,9 +211,9 @@ def test_timeline_reuses_formatted_timestamp_literals_without_unit_rewriting():
     )
     assert build_video_timeline_text(timestamps, "H3 alignment prefix") == (
         "For the target video, at 00.000s into the target video, "
-        "<Picture 1> (from [Shot 1]) is fully referenced.\n"
+        "<Picture 1> is fully referenced.\n"
         "For the target video, at 2.50s into the target video, "
-        "<Picture 2> (from [Shot 2]) is fully referenced."
+        "<Picture 2> is fully referenced."
     )
 
 
@@ -250,8 +257,9 @@ class _FakeContainer:
 
 
 class _FakeVideo:
-    def __init__(self, start_time=0.0, duration=0.0):
+    def __init__(self, start_time=0.0, duration=0.0, runtime=1.25):
         self._trim = (start_time, duration)
+        self._runtime = runtime
         self.source_calls = 0
 
     def get_stream_source(self):
@@ -260,6 +268,9 @@ class _FakeVideo:
 
     def get_active_trim_window(self):
         return self._trim
+
+    def get_duration(self):
+        return self._runtime
 
 
 def test_pts_scan_normalizes_the_first_visible_trim_frame(monkeypatch):
@@ -325,8 +336,97 @@ def test_sampler_outputs_aligned_batch_list_and_metadata(monkeypatch):
         "<Picture 2> at 00.250s\n"
         "<Picture 3> at 01.000s"
     )
+    assert sampled.video_runtime == 1.25
     assert torch.allclose(sampled.image_batch[1], torch.full((2, 3, 3), 20 / 255))
     assert video.source_calls == 1
+
+
+def test_single_decimal_timestamps_stay_aligned_with_selected_images(monkeypatch):
+    frames = [
+        _FakeFrame(0, True, 0),
+        _FakeFrame(250, True, 20),
+        _FakeFrame(999, True, 30),
+    ]
+    stream = _FakeStream()
+    monkeypatch.setattr(
+        image_helpers.av,
+        "open",
+        lambda source, mode: _FakeContainer(frames, stream),
+    )
+
+    sampled = sample_video_frames_as_images(
+        _FakeVideo(),
+        "codec keyframes",
+        maximum_frames=0,
+        include_zero_time=True,
+        minimum_spacing_seconds=0,
+        keyframe_stride=1,
+        timestamp_format="0.0s",
+        timeline_style="timestamps only",
+    )
+
+    assert sampled.timestamps == ["0.0s", "0.3s", "1.0s"]
+    assert torch.allclose(sampled.image_batch[0], torch.zeros((2, 3, 3)))
+    assert torch.allclose(sampled.image_batch[1], torch.full((2, 3, 3), 20 / 255))
+    assert torch.allclose(sampled.image_batch[2], torch.full((2, 3, 3), 30 / 255))
+
+
+def test_uniform_pts_selects_frames_after_rounding_targets(monkeypatch):
+    frames = [
+        _FakeFrame(0, True, 0),
+        _FakeFrame(360, False, 10),
+        _FakeFrame(410, False, 20),
+        _FakeFrame(740, False, 30),
+    ]
+    stream = _FakeStream()
+    monkeypatch.setattr(
+        image_helpers.av,
+        "open",
+        lambda source, mode: _FakeContainer(frames, stream),
+    )
+
+    sampled = sample_video_frames_as_images(
+        _FakeVideo(runtime=0.75),
+        "uniform PTS",
+        maximum_frames=3,
+        include_zero_time=True,
+        minimum_spacing_seconds=0,
+        keyframe_stride=1,
+        timestamp_format="0.0s",
+        timeline_style="timestamps only",
+    )
+
+    assert sampled.timestamps == ["0.0s", "0.4s", "0.7s"]
+    assert torch.allclose(sampled.image_batch[0], torch.zeros((2, 3, 3)))
+    assert torch.allclose(sampled.image_batch[1], torch.full((2, 3, 3), 20 / 255))
+    assert torch.allclose(sampled.image_batch[2], torch.full((2, 3, 3), 30 / 255))
+
+
+def test_sampler_rejects_timestamp_shift_between_selection_and_decode(monkeypatch):
+    scan_frames = [_FakeFrame(0, True, 0), _FakeFrame(250, True, 20)]
+    decode_frames = [_FakeFrame(0, True, 0), _FakeFrame(251, True, 20)]
+    stream = _FakeStream()
+    calls = iter((scan_frames, decode_frames))
+    monkeypatch.setattr(
+        image_helpers.av,
+        "open",
+        lambda source, mode: _FakeContainer(next(calls), stream),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Video timestamps changed between selection and decoding",
+    ):
+        sample_video_frames_as_images(
+            _FakeVideo(),
+            "codec keyframes",
+            maximum_frames=0,
+            include_zero_time=True,
+            minimum_spacing_seconds=0,
+            keyframe_stride=1,
+            timestamp_format="0.0s",
+            timeline_style="timestamps only",
+        )
 
 
 def test_missing_pts_is_rejected_instead_of_estimated(monkeypatch):

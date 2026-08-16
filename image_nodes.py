@@ -702,6 +702,11 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                     display_name="timeline text",
                     tooltip="One concatenation-ready timeline string.",
                 ),
+                io.Float.Output(
+                    "video_runtime",
+                    display_name="video runtime",
+                    tooltip="Full active VIDEO duration in seconds, including the active trim.",
+                ),
             ],
         )
 
@@ -733,6 +738,7 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
             sampled.timestamps,
             sampled.timestamps_text,
             sampled.timeline_text,
+            sampled.video_runtime,
         )
 
 

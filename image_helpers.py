@@ -24,6 +24,7 @@ VIDEO_FRAME_TIMESTAMP_FORMATS = (
     "MM:SS.mmm",
     "MM:SS:mmm",
     "00.000s",
+    "0.0s",
     "0.00s",
 )
 
@@ -145,6 +146,7 @@ class SampledVideoFrames:
     timestamps: list[str]
     timestamps_text: str
     timeline_text: str
+    video_runtime: float
 
 
 def _as_fraction(value: Fraction | float | int) -> Fraction:
@@ -283,28 +285,32 @@ def _evenly_thin(
     return [records[index] for index in indices]
 
 
-def _select_uniform_records(
+def _select_uniform_samples(
     records: Sequence[VideoFrameRecord],
     maximum_frames: int,
     include_zero_time: bool,
     minimum_spacing: Fraction,
-) -> list[VideoFrameRecord]:
+    timestamp_format: str | None,
+) -> tuple[list[VideoFrameRecord], list[Fraction]]:
     zero_record = records[0]
     candidates = [record for record in records if record.frame_index != zero_record.frame_index]
 
     if maximum_frames == 0:
         combined = ([zero_record] if include_zero_time else []) + candidates
-        return _spacing_filter(combined, minimum_spacing)
+        selected = _spacing_filter(combined, minimum_spacing)
+        return selected, [record.timestamp for record in selected]
 
     if not candidates:
-        return [zero_record] if include_zero_time else []
+        selected = [zero_record] if include_zero_time else []
+        return selected, [record.timestamp for record in selected]
 
     if include_zero_time and maximum_frames == 1:
-        return [zero_record]
+        return [zero_record], [Fraction(0)]
 
     duration = records[-1].timestamp
     if duration <= 0:
-        return [zero_record] if include_zero_time else []
+        selected = [zero_record] if include_zero_time else []
+        return selected, [record.timestamp for record in selected]
 
     if include_zero_time:
         target_count = maximum_frames - 1
@@ -312,30 +318,65 @@ def _select_uniform_records(
             duration * Fraction(position, target_count)
             for position in range(1, target_count + 1)
         ]
-        selected = [zero_record]
+        selected_pairs = [(zero_record, Fraction(0))]
     else:
         target_count = maximum_frames
         targets = [
             duration * Fraction(position, target_count + 1)
             for position in range(1, target_count + 1)
         ]
-        selected = []
+        selected_pairs = []
 
-    nearest = []
+    if timestamp_format is not None:
+        targets = [
+            round_video_timestamp(target, timestamp_format)
+            for target in targets
+        ]
+
     for target in targets:
-        nearest.append(
-            min(
-                candidates,
-                key=lambda record: (
-                    abs(record.timestamp - target),
-                    record.timestamp,
-                    record.frame_index,
+        selected_pairs.append(
+            (
+                min(
+                    candidates,
+                    key=lambda record: (
+                        abs(record.timestamp - target),
+                        record.timestamp,
+                        record.frame_index,
+                    ),
                 ),
+                target,
             )
         )
 
-    unique = {record.frame_index: record for record in selected + nearest}
-    return _spacing_filter(list(unique.values()), minimum_spacing)
+    unique = {
+        record.frame_index: (record, timestamp)
+        for record, timestamp in selected_pairs
+    }
+    spaced = _spacing_filter(
+        [record for record, _ in unique.values()],
+        minimum_spacing,
+    )
+    timestamps_by_index = {
+        record.frame_index: timestamp
+        for record, timestamp in unique.values()
+    }
+    return spaced, [timestamps_by_index[record.frame_index] for record in spaced]
+
+
+def _select_uniform_records(
+    records: Sequence[VideoFrameRecord],
+    maximum_frames: int,
+    include_zero_time: bool,
+    minimum_spacing: Fraction,
+) -> list[VideoFrameRecord]:
+    selected, _ = _select_uniform_samples(
+        records,
+        maximum_frames,
+        include_zero_time,
+        minimum_spacing,
+        timestamp_format=None,
+    )
+    return selected
 
 
 def _select_keyframe_records(
@@ -376,14 +417,15 @@ def _select_keyframe_records(
     )
 
 
-def select_video_frame_records(
+def _select_video_frame_records_and_timestamps(
     records: Sequence[VideoFrameRecord],
     strategy: str,
     maximum_frames: int,
     include_zero_time: bool,
     minimum_spacing_seconds: float,
     keyframe_stride: int,
-) -> list[VideoFrameRecord]:
+    timestamp_format: str | None,
+) -> tuple[list[VideoFrameRecord], list[Fraction]]:
     if strategy not in VIDEO_FRAME_SAMPLING_STRATEGIES:
         raise ValueError(f"Unsupported video-frame sampling strategy: {strategy}")
     if maximum_frames < 0:
@@ -399,11 +441,12 @@ def select_video_frame_records(
     minimum_spacing = _as_fraction(minimum_spacing_seconds)
 
     if strategy == "uniform PTS":
-        selected = _select_uniform_records(
+        selected, output_timestamps = _select_uniform_samples(
             ordered,
             maximum_frames,
             include_zero_time,
             minimum_spacing,
+            timestamp_format,
         )
     else:
         selected = _select_keyframe_records(
@@ -413,9 +456,30 @@ def select_video_frame_records(
             minimum_spacing,
             keyframe_stride,
         )
+        output_timestamps = [record.timestamp for record in selected]
 
     if not selected:
         raise ValueError("No video frames satisfy the selected sampling controls.")
+    return selected, output_timestamps
+
+
+def select_video_frame_records(
+    records: Sequence[VideoFrameRecord],
+    strategy: str,
+    maximum_frames: int,
+    include_zero_time: bool,
+    minimum_spacing_seconds: float,
+    keyframe_stride: int,
+) -> list[VideoFrameRecord]:
+    selected, _ = _select_video_frame_records_and_timestamps(
+        records,
+        strategy,
+        maximum_frames,
+        include_zero_time,
+        minimum_spacing_seconds,
+        keyframe_stride,
+        timestamp_format=None,
+    )
     return selected
 
 
@@ -471,11 +535,31 @@ def _rounded_units(timestamp: Fraction, units_per_second: int) -> int:
     return (2 * numerator + denominator) // (2 * denominator)
 
 
+def round_video_timestamp(
+    timestamp: Fraction | float,
+    timestamp_format: str,
+) -> Fraction:
+    if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
+        raise ValueError(f"Unsupported video timestamp format: {timestamp_format}")
+    units_per_second = 10 if timestamp_format == "0.0s" else (
+        100 if timestamp_format == "0.00s" else 1000
+    )
+    return Fraction(
+        _rounded_units(_as_fraction(timestamp), units_per_second),
+        units_per_second,
+    )
+
+
 def format_video_timestamp(timestamp: Fraction | float, timestamp_format: str) -> str:
     if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
         raise ValueError(f"Unsupported video timestamp format: {timestamp_format}")
 
     value = _as_fraction(timestamp)
+    if timestamp_format == "0.0s":
+        total_deciseconds = _rounded_units(value, 10)
+        seconds, deciseconds = divmod(total_deciseconds, 10)
+        return f"{seconds}.{deciseconds}s"
+
     if timestamp_format == "0.00s":
         total_centiseconds = _rounded_units(value, 100)
         seconds, centiseconds = divmod(total_centiseconds, 100)
@@ -517,7 +601,7 @@ def build_video_timeline_text(
         lines = [
             (
                 f"For the target video, at {timestamp} into the target video, "
-                f"<Picture {index}> (from [Shot {index}]) is fully referenced."
+                f"<Picture {index}> is fully referenced."
             )
             for index, timestamp in enumerate(timestamps, start=1)
         ]
@@ -534,22 +618,24 @@ def sample_video_frames_as_images(
     timestamp_format: str,
     timeline_style: str,
 ) -> SampledVideoFrames:
+    video_runtime = float(video.get_duration())
     source_factory = _video_source_factory(video)
     records = scan_video_frame_records(video, source_factory)
-    selected = select_video_frame_records(
+    selected, output_timestamps = _select_video_frame_records_and_timestamps(
         records,
         sampling_strategy,
         maximum_frames,
         include_zero_time,
         minimum_spacing_seconds,
         keyframe_stride,
+        timestamp_format,
     )
     image_batch, image_list = decode_selected_video_frames(
         video, selected, source_factory
     )
     timestamps = [
-        format_video_timestamp(record.timestamp, timestamp_format)
-        for record in selected
+        format_video_timestamp(timestamp, timestamp_format)
+        for timestamp in output_timestamps
     ]
 
     return SampledVideoFrames(
@@ -558,4 +644,5 @@ def sample_video_frames_as_images(
         timestamps=timestamps,
         timestamps_text=", ".join(timestamps),
         timeline_text=build_video_timeline_text(timestamps, timeline_style),
+        video_runtime=video_runtime,
     )
