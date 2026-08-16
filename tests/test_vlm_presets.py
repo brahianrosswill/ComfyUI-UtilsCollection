@@ -403,8 +403,16 @@ def test_h3_t2va_query_uses_images_only_as_prompt_evidence():
     assert "only as visual evidence" in prefix
     assert "not supplied to downstream MiniMax H3" in prefix
     assert "The completed prompt must stand on its text alone." in prefix
+    assert "requested target visual direction" in prefix
+    assert "overrides conflicting source rendering style" in prefix
+    assert "concrete target-appropriate visual vocabulary" in prefix
+    assert "state the governing target visual direction in `summary:`" in prefix
+    assert "Do not invent production methods or unsupported visual additions" in prefix
     assert "never output `<Picture N>`" in prefix
     assert "MiniMax H3 receives this text and none of the supplied VLM images" in suffix
+    assert "governs every subject definition and `summary:`" in suffix
+    assert "without being restated inside [VISUAL]" in suffix
+    assert "cannot substitute for requested visual-style adherence in those fields" in suffix
     assert "Do not output `<Picture N>`" in suffix
     assert "ComfyUI has already assigned" not in prefix
     assert "first frame" not in prefix.lower()
@@ -416,6 +424,11 @@ def test_h3_t2va_query_uses_images_only_as_prompt_evidence():
         value.count("\n") == value.count("\r\n")
         for value in (prefix, suffix, raw["h3_t2va"])
     )
+    for value in (prefix, suffix, raw["h3_t2va"]):
+        lowered = value.lower()
+        assert "example:" not in lowered
+        assert "e.g." not in lowered
+        assert "i.e." not in lowered
     assert "h3_t2va" in vlm_nodes.UC_VLMSysQueryAddPresets.get_presets()
     assert "h3_t2va" in vlm_nodes.UC_VLMSysQueryRawPresets.define_schema().inputs[0].options
 
@@ -467,6 +480,7 @@ def test_h3_fl2va_query_preset_enforces_available_boundary_pictures():
 
 def test_h3_ref2va_query_preset_restores_material_reference_use():
     presets = vlm_presets.system_query_additional_vlm
+    raw = vlm_presets.system_query_raw_vlm["h3_ref2va"]
     prefix = presets["h3_ref2va_prefix"]
     suffix = presets["h3_ref2va_suffix"]
 
@@ -475,12 +489,30 @@ def test_h3_ref2va_query_preset_restores_material_reference_use():
     assert "Use `<Picture N>` as source provenance" in prefix
     assert "only in that subject or reference's first complete definition" in prefix
     assert "Use every supplied picture deliberately" in prefix
+    assert "Determine the governing visual style" in prefix
+    assert "Preserve supported source rendering style when no conflict exists" in prefix
+    assert "explicit requested style conflicts with source rendering" in prefix
+    assert "rendering medium as style evidence rather than immutable subject identity" in prefix
+    assert "vocabulary appropriate to the governing style" in prefix
+    assert "Do not invent production methods or unsupported additions" in prefix
     assert "Use every supplied picture as visual evidence" in suffix
+    assert "governing style in `summary:`" in suffix
+    assert "Keep `retention_analysis:` limited to concise media roles" in suffix
+    assert "retained and intentionally changed properties" in suffix
+    assert "style retention or replacement" in suffix
+    assert "Exclude choreography, event progression, transformation timing" in suffix
+    assert "production methods, construction details, repeated definitions" in suffix
+    assert "without restating the global style" in suffix
     assert "never mention an unsupplied identifier" in suffix
     assert "Do not assign first-frame or final-frame status" in suffix
     assert "never as a timeline-segment anchor" in prefix
     assert "Do not repeat picture identifiers at each timeline interval" in suffix
     assert "wherever that reference materially controls" not in prefix
+    for value in (prefix, suffix, raw):
+        lowered = value.lower()
+        assert "example:" not in lowered
+        assert "e.g." not in lowered
+        assert "i.e." not in lowered
 
 
 def test_h3_ref2va_experimental_query_keeps_regression_snapshot():
@@ -502,9 +534,9 @@ def test_h3_query_experimental_snapshots_are_static_and_complete():
     assert wrapped["h3_fl2va_experimental_prefix"] == wrapped["h3_fl2va_prefix"]
     assert wrapped["h3_fl2va_experimental_suffix"] == wrapped["h3_fl2va_suffix"]
     assert raw["h3_fl2va_experimental"] == raw["h3_fl2va"]
-    assert wrapped["h3_ref2va_prefix"] == wrapped["h3_ref2va_experimental_prefix"]
-    assert wrapped["h3_ref2va_suffix"] == wrapped["h3_ref2va_experimental_suffix"]
-    assert raw["h3_ref2va"] == raw["h3_ref2va_experimental"]
+    assert wrapped["h3_ref2va_prefix"] != wrapped["h3_ref2va_experimental_prefix"]
+    assert wrapped["h3_ref2va_suffix"] != wrapped["h3_ref2va_experimental_suffix"]
+    assert raw["h3_ref2va"] != raw["h3_ref2va_experimental"]
     assert hashlib.sha256(
         wrapped["h3_ref2va_experimental_prefix"].encode()
     ).hexdigest() == "49069b640d3b721871205cd3fe1b74d962bcef42fb77bed5b257a92f88a1ef4a"
@@ -637,6 +669,12 @@ H3_TIMELINE_PRESETS = (
     "video_timeline_minimax_h3_reference_system_instruction",
 )
 
+H3_CAMERA_CONTINUITY_PRESETS = (
+    "video_timeline_minimax_h3_base_system_instruction",
+    "video_timeline_minimax_h3_t2va_system_instruction",
+    "video_timeline_minimax_h3_reference_system_instruction",
+)
+
 TIMELINE_CHANNEL_BALANCE_PRESETS = (
     "video_timeline_system_instruction",
     "video_timeline_system_instruction_crude",
@@ -667,10 +705,10 @@ STABLE_VIDEO_PRESET_HASHES = {
         "e37e61900d837d44071e47ddb5a821a082bbecdf35ae959df6d78bdf974b7efc"
     ),
     "video_timeline_minimax_h3_base_system_instruction": (
-        "35e24a888ccd476b004e4e37c75f31dff0211273ebcc78bec2d8110760f1cae5"
+        "a57d572905850bf6e51bfc292064826a70a4c89a6065f86356993b68e0f16ee6"
     ),
     "video_timeline_minimax_h3_reference_system_instruction": (
-        "faebee99983a396c3e3b2e016f7d9c58f2a661d0225dbd089c73b35badd2b4f2"
+        "7f85667740d51670182fe505421020939bad512881a3da5a5f84064cee640046"
     ),
 }
 
@@ -820,7 +858,28 @@ def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():
         assert "[00.00s-00.00s]:" in instruction
         assert "[SPEECH]:" in instruction
         assert "<d>[Language]" in instruction
-        assert "The timestamp range remains the authoritative timing structure" in instruction
+
+
+def test_minimax_h3_timeline_segments_do_not_imply_camera_shots():
+    for name in H3_CAMERA_CONTINUITY_PRESETS:
+        instruction = vlm_presets.system_instructions_vlm[name]
+
+        assert "**Timeline Segment and Camera Continuity:**" in instruction
+        assert (
+            "Timestamp blocks divide time, action, sound, or foreground priority; "
+            "they are not shot declarations."
+        ) in instruction
+        assert "Never add `[Shot N]` markers merely because" in instruction
+        assert "one continuous camera take by default" in instruction
+        assert "the same movement continues rather than restarting it" in instruction
+        assert "only when `{user_query}` explicitly schedules one" in instruction
+        assert "without assigning a `[Shot N]` label" in instruction
+        assert (
+            'Neither the phrases "first shot" or "opening shot" nor a requested '
+            "segment count authorizes one shot per segment."
+        ) in instruction
+        assert "explicitly requests a multi-shot structure or named cuts" in instruction
+        assert "Introduce sequential `[Shot N]` markers" not in instruction
 
 
 def test_stable_timeline_presets_require_zero_padded_two_decimal_seconds():
@@ -876,7 +935,42 @@ def test_minimax_h3_t2va_uses_general_standalone_timeline_contract():
     assert "Never emit `<Picture N>`" in instruction
     assert instruction.count("<Picture N>") == 1
     assert "Complete First-Use Definitions" in instruction
-    assert "Never attach possessive" in instruction
+    assert "**Requested Target Visual Style:**" in instruction
+    assert "target direction governs the completed video" in instruction
+    assert "overrides conflicting source-image rendering style" in instruction
+    assert "concrete visual language appropriate to the requested target style" in instruction
+    assert "Do not invent production methods or unsupported visual additions" in instruction
+    assert "State the governing target visual style" in instruction
+    assert "Do not restate the global target style inside [VISUAL]" in instruction
+    assert "Concrete lighting or color changes may appear there only when materially relevant" in instruction
+    assert "cannot substitute for target-style information in the subject definitions and summary" in instruction
+    assert "preserve supported source-image style evidence" in instruction
+    assert "requested target-style adherence in every subject definition and in `summary:`" in instruction
+    assert "no global target-style restatement inside [VISUAL]" in instruction
+    assert "opening [VISUAL] block" not in instruction
+    assert "maintain it through every later [VISUAL] block" not in instruction
+    assert "visual style, and physical state" not in instruction
+    assert "Keep [VISUAL] focused on scene state, action, interaction, camera movement" in instruction
+    assert "Write `summary:` immediately after the completed timeline" in instruction
+    assert "governing target visual style, medium, era, and subject presentation" in instruction
+    assert (
+        "subject_definitions:\r\n<Subject 1>: complete definition\r\n"
+        "<Subject 2>: complete definition"
+    ) in instruction
+    assert "beginning in column one" in instruction
+    assert "Do not place a bullet, numbering prefix, indentation" in instruction
+    assert "`<Subject N>`" not in instruction
+    assert "immutable semantic reference token, never as a word or name" in instruction
+    assert "Never place an apostrophe, possessive marker" in instruction
+    assert "Correct possession form: the red sash worn by <Subject 1>." in instruction
+    assert "Forbidden possession form: <Subject 1>'s red sash." in instruction
+    assert "place surrounding grammar outside it" not in instruction
+    assert instruction.count("{user_query}") == 7
+    assert instruction.count("{system_query}") == 1
+    lowered_instruction = instruction.lower()
+    assert "example:" not in lowered_instruction
+    assert "e.g." not in lowered_instruction
+    assert "i.e." not in lowered_instruction
 
     fields = (
         "subject_definitions:",
@@ -988,7 +1082,7 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "Refer to those existing identifiers only" in instruction
     assert "Never create or reproduce a media prefix declaration" in instruction
     assert "assign a media number, or renumber an existing media identifier" in instruction
-    assert "Create and number `<Subject N>` aliases only" in instruction
+    assert "Create and number <Subject N> aliases only" in instruction
     assert "Assign `<Picture N>`" not in instruction
     assert "Number each category independently" not in instruction
     assert "<Subject N>" in instruction
@@ -996,9 +1090,35 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "<Video N>" in instruction
     assert "<Audio N>" in instruction
     assert "A label never replaces the full subject" in instruction
+    assert "**Governing Reference Style:**" in instruction
+    assert "explicit requested style takes priority only where it conflicts" in instruction
+    assert "When no conflict exists, preserve and state the supported source rendering style" in instruction
+    assert "rendering medium as style evidence rather than immutable subject identity" in instruction
+    assert "MiniMax H3 receives the referenced images" in instruction
+    assert "visual vocabulary appropriate to the governing style" in instruction
+    assert "Retain accurate source rendering-medium descriptions when that style remains active" in instruction
+    assert "do not carry them into a conflicting requested target style" in instruction
+    assert "Do not invent production methods or unsupported additions" in instruction
     assert "Place `Timeline:` immediately beneath `detailed_description:`" in instruction
     assert "In `summary:`, state the intended target video" in instruction
-    assert "established reference relationships concisely" in instruction
+    assert "established reference relationships" in instruction
+    assert "governing visual style, medium, era, and subject presentation" in instruction
+    assert "write one concise paragraph limited to the semantic role of each supplied medium" in instruction
+    assert "the properties that remain consistent" in instruction
+    assert "the properties intentionally changed" in instruction
+    assert "whether source rendering style is retained or replaced" in instruction
+    assert "reference relationships that must remain coherent" in instruction
+    assert "Do not include action choreography, event progression, transformation timing" in instruction
+    assert "Do not repeat subject definitions, summary content, or exhaustive source description" in instruction
+    assert "Do not invent production methods, construction details" in instruction
+    assert "without restating the global governing style" in instruction
+    assert "conditional source-style retention" in instruction
+    assert "requested target-style precedence only where conflicts exist" in instruction
+    assert "governing style in `summary:`" in instruction
+    assert "concise media roles and continuity constraints only in `retention_analysis:`" in instruction
+    assert "Keep action, transformation, event order, and timing exclusively inside" in instruction
+    assert "no choreography, progression, timing, production methods" in instruction
+    assert "correct use of downstream reference-image availability" in instruction
     assert "Do not invent task classifications or asset roles" in instruction
     assert "use the literal alias only at the subject's first introduction" in instruction
     assert "Otherwise use the subject's concise ordinary name" in instruction
@@ -1008,10 +1128,25 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "Preserve each subject alias throughout the output" not in instruction
     assert "wherever its role materially affects the current interval" not in instruction
     assert "**Atomic Subject Labels:**" in instruction
-    assert "Never append possessive markers" in instruction
-    assert "without modifying the alias" in instruction
+    assert (
+        "subject_definitions:\r\n<Subject 1>: complete definition\r\n"
+        "<Subject 2>: complete definition"
+    ) in instruction
+    assert "beginning in column one" in instruction
+    assert "Do not place a bullet, numbering prefix, indentation" in instruction
+    assert "`<Subject N>`" not in instruction
+    assert "immutable semantic reference token, never as a word or name" in instruction
+    assert "Never place an apostrophe, possessive marker" in instruction
+    assert "Correct possession form: the red sash worn by <Subject 1>." in instruction
+    assert "Forbidden possession form: <Subject 1>'s red sash." in instruction
     assert "\r\n" in instruction
     assert not re.search(r"(?<!\r)\n", instruction)
+    assert instruction.count("{user_query}") == 10
+    assert instruction.count("{system_query}") == 1
+    lowered_instruction = instruction.lower()
+    assert "example:" not in lowered_instruction
+    assert "e.g." not in lowered_instruction
+    assert "i.e." not in lowered_instruction
     source = (CUSTOM_NODE_ROOT / "vlm_presets.py").read_text(encoding="utf-8")
     assert re.search(
         r'^    "video_timeline_minimax_h3_reference_system_instruction": "',
