@@ -353,6 +353,7 @@ def test_h3_query_presets_are_paired_and_wrap_the_request_once():
         "h3_t2va",
         "h3_fl2va",
         "h3_ref2va",
+        "h3_mixed_ref2va",
         "h3_fl2va_experimental",
         "h3_ref2va_experimental",
     } <= base_names
@@ -361,6 +362,7 @@ def test_h3_query_presets_are_paired_and_wrap_the_request_once():
     for name in (
         "h3_fl2va",
         "h3_ref2va",
+        "h3_mixed_ref2va",
         "h3_fl2va_experimental",
         "h3_ref2va_experimental",
     ):
@@ -515,6 +517,61 @@ def test_h3_ref2va_query_preset_restores_material_reference_use():
         assert "i.e." not in lowered
 
 
+def test_h3_mixed_ref2va_query_matches_mixed_media_partition():
+    wrapped = vlm_presets.system_query_additional_vlm
+    raw = vlm_presets.system_query_raw_vlm["h3_mixed_ref2va"]
+    prefix = wrapped["h3_mixed_ref2va_prefix"]
+    suffix = wrapped["h3_mixed_ref2va_suffix"]
+
+    assert "Count the timestamps stated inside the regular video request" in prefix
+    assert "exactly that many leading images" in prefix
+    assert "chronological samples in the existing `<Video 1>` sequence" in prefix
+    assert "every later image as an existing Picture reference" in prefix
+    assert "numbered `<Picture 1>`, `<Picture 2>`, and onward" in prefix
+    assert "Never derive a Picture number from an image's absolute VLM input position" in prefix
+    assert "Never write `<Video N>` inside a timestamp block" in suffix
+    assert "use `<Video 1>` in `subject_definitions:`" in suffix
+    assert "reference audio is supplied separately through the audio input" in suffix
+    assert "treat `<Audio 1>` as authoritative" in suffix
+    assert "omit [SOUNDS], [SPEECH], lyrics, and invented audio descriptions" in suffix
+    assert "overall_soundscape: Supplied by <Audio 1>." in suffix
+    assert "non_diegetic_music: No additional music requested." in suffix
+    assert "Use every supplied Picture as visual evidence" in suffix
+    assert "Do not output the upstream media-prefix declaration" in suffix
+    assert "In `subject_definitions:`, define the final subject" in prefix
+    assert "and cite both sources" in prefix
+    assert "Show that subject from the first frame through the final frame" in prefix
+    assert "never narrate an original or source subject being replaced" in prefix
+    assert "In `retention_analysis:`, state the identity or appearance transfer" in prefix
+    assert "keep that transfer relationship out of the depicted events" in prefix
+    assert "without displaying the source Video subject's identity" in prefix
+    assert "an on-screen transformation, an identity swap, or a reversion" in prefix
+    assert "do not state that an original or source subject is replaced" in suffix
+    assert "every interval depicts that final subject" in suffix
+    assert "no interval depicts a source identity" in suffix
+    assert "replacement subject" not in prefix + suffix
+    assert "displaced Video subject" not in prefix + suffix
+    assert "{user_query}" not in prefix + suffix
+    assert "{system_query}" not in prefix + suffix
+    assert raw == (
+        prefix.removesuffix("\n\nBEGIN VIDEO REQUEST:\n")
+        + "\n\n"
+        + suffix.removeprefix("\nEND VIDEO REQUEST.\n\n")
+    )
+    assert "video_timeline_minimax_h3_mixed_system_instruction" in (
+        vlm_presets.system_instructions_vlm
+    )
+    assert "every ordered image supplied with this request" in wrapped[
+        "h3_ref2va_prefix"
+    ]
+    assert "Count the timestamps stated inside" not in wrapped["h3_ref2va_prefix"]
+    for value in (prefix, suffix, raw):
+        lowered = value.lower()
+        assert "example:" not in lowered
+        assert "e.g." not in lowered
+        assert "i.e." not in lowered
+
+
 def test_h3_ref2va_experimental_query_keeps_regression_snapshot():
     presets = vlm_presets.system_query_additional_vlm
     prefix = presets["h3_ref2va_experimental_prefix"]
@@ -662,6 +719,7 @@ STRUCTURED_VIDEO_PRESETS = (
     "video_timeline_system_instruction",
     "video_timeline_minimax_h3_base_system_instruction",
     "video_timeline_minimax_h3_reference_system_instruction",
+    "video_timeline_minimax_h3_mixed_system_instruction",
 )
 
 H3_TIMELINE_PRESETS = (
@@ -673,6 +731,7 @@ H3_CAMERA_CONTINUITY_PRESETS = (
     "video_timeline_minimax_h3_base_system_instruction",
     "video_timeline_minimax_h3_t2va_system_instruction",
     "video_timeline_minimax_h3_reference_system_instruction",
+    "video_timeline_minimax_h3_mixed_system_instruction",
 )
 
 TIMELINE_CHANNEL_BALANCE_PRESETS = (
@@ -680,6 +739,7 @@ TIMELINE_CHANNEL_BALANCE_PRESETS = (
     "video_timeline_system_instruction_crude",
     "video_timeline_minimax_h3_base_system_instruction",
     "video_timeline_minimax_h3_reference_system_instruction",
+    "video_timeline_minimax_h3_mixed_system_instruction",
 )
 
 EXPERIMENTAL_VIDEO_PRESET_HASHES = {
@@ -709,6 +769,9 @@ STABLE_VIDEO_PRESET_HASHES = {
     ),
     "video_timeline_minimax_h3_reference_system_instruction": (
         "7f85667740d51670182fe505421020939bad512881a3da5a5f84064cee640046"
+    ),
+    "video_timeline_minimax_h3_mixed_system_instruction": (
+        "14e89b388fafbd3a8bed5e6e6e381b00eeda0410e8d0a1f9c4d226f0924ae3c5"
     ),
 }
 
@@ -1162,6 +1225,63 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "fixed ordinal pairing" not in instruction
     assert "shot mapping was supplied" not in instruction
     assert "Sample Video Frames" not in instruction
+
+
+def test_minimax_h3_mixed_media_partition_contract():
+    instruction = vlm_presets.system_instructions_vlm[
+        "video_timeline_minimax_h3_mixed_system_instruction"
+    ]
+    reference = vlm_presets.system_instructions_vlm[
+        "video_timeline_minimax_h3_reference_system_instruction"
+    ]
+    fields = (
+        "subject_definitions:",
+        "summary:",
+        "retention_analysis:",
+        "detailed_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+
+    assert [instruction.index(field) for field in fields] == sorted(
+        instruction.index(field) for field in fields
+    )
+    assert "Count the timestamps supplied by the regular user request" in instruction
+    assert "exactly that many images from the beginning of the ordered inputs" in instruction
+    assert "Every later image is a Picture reference numbered from `<Picture 1>`" in instruction
+    assert "Never derive a Picture number from an image's absolute VLM input position" in instruction
+    assert "Never write `<Video N>` inside a timestamp block" in instruction
+    assert "Use `<Video 1>` in `subject_definitions:`" in instruction
+    assert "reference audio is supplied separately through the audio input" in instruction
+    assert "treat `<Audio 1>` as authoritative" in instruction
+    assert "Omit [SOUNDS], [SPEECH], lyrics, and invented audio descriptions" in instruction
+    assert "overall_soundscape: Supplied by <Audio 1>." in instruction
+    assert "non_diegetic_music: No additional music requested." in instruction
+    assert "In `subject_definitions:`, define the final subject" in instruction
+    assert "and cite both sources" in instruction
+    assert "Show that subject from the first frame through the final frame" in instruction
+    assert "never narrate an original or source subject being replaced" in instruction
+    assert "In `retention_analysis:`, state the identity or appearance transfer" in instruction
+    assert "keep that transfer relationship out of the depicted events" in instruction
+    assert "without displaying the source Video subject's identity" in instruction
+    assert "an on-screen transformation, an identity swap, or a reversion" in instruction
+    assert "replacement subject" not in instruction
+    assert "displaced Video subject" not in instruction
+    assert "Do not use it as the source of the mixed-media partition" in instruction
+    assert instruction.count("{user_query}") == reference.count("{user_query}")
+    assert instruction.count("{system_query}") == reference.count("{system_query}")
+    assert "\r\n" in instruction
+    assert not re.search(r"(?<!\r)\n", instruction)
+    lowered = instruction.lower()
+    assert "example:" not in lowered
+    assert "e.g." not in lowered
+    assert "i.e." not in lowered
+    source = (CUSTOM_NODE_ROOT / "vlm_presets.py").read_text(encoding="utf-8")
+    assert re.search(
+        r'^    "video_timeline_minimax_h3_mixed_system_instruction": "',
+        source,
+        re.MULTILINE,
+    )
 
 
 def test_experimental_h3_reference_keeps_regression_contract():
