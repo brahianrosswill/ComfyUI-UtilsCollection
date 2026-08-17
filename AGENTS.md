@@ -80,6 +80,10 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
 
 - Treat serialized values in `vlm_presets.py` as managed runtime data. Never
   hand-edit a serialized VLM preset literal.
+- Treat whitespace inside serialized or triple-quoted preset values as content.
+  A `git diff --check` trailing-whitespace warning may originate inside a preset
+  string; report it, but never trim, normalize, format, or otherwise alter that
+  whitespace without explicit user authorization.
 - Before changing a VLM preset, inspect `vlm_presets_vars.py` and the narrowly
   relevant `scripts/sync_vlm_*.py` utility. Edit the readable variable first,
   run the synchronizer without `--apply`, then run it with `--apply` only after

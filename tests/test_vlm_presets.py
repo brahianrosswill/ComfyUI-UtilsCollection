@@ -236,6 +236,7 @@ def test_character_transfer_query_presets_keep_provider_reference_contracts_sepa
 def test_raw_query_presets_preserve_instructions_without_request_carriers():
     wrapped = vlm_presets.system_query_additional_vlm
     raw = vlm_presets.system_query_raw_vlm
+    normalize = lambda value: value.replace("\r\n", "\n")
     expected_names = {
         key.removesuffix("_prefix").removesuffix("_suffix") for key in wrapped
     }
@@ -257,7 +258,7 @@ def test_raw_query_presets_preserve_instructions_without_request_carriers():
 
     for name in ("image2image_qwen", "text2image_qwen"):
         assert wrapped[f"{name}_suffix"] == ""
-        assert raw[name] == wrapped[f"{name}_prefix"].removesuffix(
+        assert normalize(raw[name]) == normalize(wrapped[f"{name}_prefix"]).removesuffix(
             " Current request:\n"
         )
 
@@ -268,13 +269,13 @@ def test_raw_query_presets_preserve_instructions_without_request_carriers():
         "h3_fl2va_experimental",
         "h3_ref2va_experimental",
     ):
-        prefix = wrapped[f"{name}_prefix"].removesuffix(
+        prefix = normalize(wrapped[f"{name}_prefix"]).removesuffix(
             "\n\nBEGIN VIDEO REQUEST:\n"
         )
-        suffix = wrapped[f"{name}_suffix"].removeprefix(
+        suffix = normalize(wrapped[f"{name}_suffix"]).removeprefix(
             "\nEND VIDEO REQUEST.\n\n"
         )
-        assert raw[name] == f"{prefix}\n\n{suffix}"
+        assert normalize(raw[name]) == f"{prefix}\n\n{suffix}"
 
     t2va_prefix = wrapped["h3_t2va_prefix"].removesuffix(
         "\r\n\r\nBEGIN VIDEO REQUEST:\r\n"
@@ -509,6 +510,11 @@ def test_h3_ref2va_alt_preserves_explicit_timeline_and_replacement_contract():
         "without media bookkeeping",
     ):
         assert required in suffix
+    assert "<Video 1>" not in prefix + suffix + raw
+    assert "numbered `<Picture 1>`" not in prefix + suffix + raw
+    assert "every later image" not in prefix + suffix + raw
+    assert "BEGIN VIDEO REQUEST:" not in raw
+    assert "END VIDEO REQUEST." not in raw
     assert "BEGIN VIDEO REQUEST:" not in raw
     assert "END VIDEO REQUEST." not in raw
 
@@ -523,7 +529,7 @@ def test_h3_mixed_ref2va_uses_explicit_picture_timeline_associations():
     assert "h3_mixed_ref2va" in (
         vlm_nodes.UC_VLMSysQueryRawPresets.define_schema().inputs[0].options
     )
-    assert "video_timeline_minimax_h3_mixed_system_instruction" not in (
+    assert "video_timeline_minimax_h3_mixed_system_instruction" in (
         vlm_presets.system_instructions_vlm
     )
     for required in (
@@ -548,11 +554,27 @@ def test_h3_mixed_ref2va_uses_explicit_picture_timeline_associations():
         "without media bookkeeping",
     ):
         assert required in suffix
-    assert "<Video 1>" not in prefix + suffix + raw
-    assert "numbered `<Picture 1>`" not in prefix + suffix + raw
-    assert "every later image" not in prefix + suffix + raw
-    assert "BEGIN VIDEO REQUEST:" not in raw
-    assert "END VIDEO REQUEST." not in raw
+
+
+def test_h3_mixed_system_instruction_preserves_media_partition_contract():
+    instruction = vlm_presets.system_instructions_vlm[
+        "video_timeline_minimax_h3_mixed_system_instruction"
+    ]
+
+    assert "video_timeline_minimax_h3_mixed_system_instruction" in (
+        vlm_nodes.UC_VLMSysInstrPresets.get_presets()
+    )
+    for required in (
+        "Existing Mixed Media",
+        "regular user request",
+        "leading ordered images",
+        "<Video 1>",
+        "<Picture N>",
+        "Never write `<Video N>` inside a timestamp block",
+        "subject_definitions:",
+        "retention_analysis:",
+    ):
+        assert required in instruction
 
 
 def test_readable_h3_reference_sources_match_runtime_presets():
@@ -651,7 +673,7 @@ def test_h3_query_experimental_snapshots_are_static_and_complete():
     ).hexdigest() == "cd232756a8c76dbb2b422c47d8fbcc0057081c2f7448e11a27f2e814a4827bab"
     assert hashlib.sha256(
         raw["h3_ref2va_experimental"].encode()
-    ).hexdigest() == "0167a861a2d0e3252846fbdda22584ce7ec87d3522043fe4f0b161254e4dac5e"
+    ).hexdigest() == "55b59d353d97e3ca9301745e82e36c255e7dda59bbdd861b5287d9408a1a1434"
 
 
 def test_style_presets_receive_no_qwen_variants():
@@ -805,10 +827,10 @@ EXPERIMENTAL_VIDEO_PRESET_HASHES = {
 
 STABLE_VIDEO_PRESET_HASHES = {
     "video_timeline_system_instruction": (
-        "875e94f577cc22abc3cdaa028fccc69e66e2c490217211b2a294894614873644"
+        "57b6a726a9fce905f3003f67311cac02a28eb2c9d21ae72f66e8442a0f99e632"
     ),
     "video_timeline_system_instruction_crude": (
-        "e37e61900d837d44071e47ddb5a821a082bbecdf35ae959df6d78bdf974b7efc"
+        "7469a2e17d36225c8b948b36bf47cdfb432c507d89efcb44a153d63b50120f0a"
     ),
     "video_timeline_minimax_h3_base_system_instruction": (
         "a57d572905850bf6e51bfc292064826a70a4c89a6065f86356993b68e0f16ee6"
@@ -818,6 +840,9 @@ STABLE_VIDEO_PRESET_HASHES = {
     ),
     "video_timeline_minimax_h3_reference_alt_system_instruction": (
         "be6a9ee922e50ef22b092a2433af968c3883a9c0a19899d2fb299e29b26e6da6"
+    ),
+    "video_timeline_minimax_h3_mixed_system_instruction": (
+        "14e89b388fafbd3a8bed5e6e6e381b00eeda0410e8d0a1f9c4d226f0924ae3c5"
     ),
 }
 
