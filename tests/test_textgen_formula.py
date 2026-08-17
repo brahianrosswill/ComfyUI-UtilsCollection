@@ -1,6 +1,7 @@
 import ast
 import inspect
 import pathlib
+import subprocess
 import sys
 import types
 
@@ -395,7 +396,19 @@ def test_qwen_template_families_use_exact_thinking_suppression():
 
 def test_project_source_has_no_builtin_eval_calls():
     offenders = []
-    for source_path in CUSTOM_NODE_ROOT.glob("*.py"):
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "*.py"],
+        cwd=CUSTOM_NODE_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    source_paths = (
+        CUSTOM_NODE_ROOT / relative_path
+        for relative_path in tracked
+        if pathlib.PurePosixPath(relative_path).parent == pathlib.PurePosixPath(".")
+    )
+    for source_path in source_paths:
         tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "eval":

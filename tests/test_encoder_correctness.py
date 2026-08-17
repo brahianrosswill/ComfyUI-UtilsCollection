@@ -1121,8 +1121,8 @@ def test_advanced_combined_minimax_h3_uses_installed_core_payload_order(monkeypa
     )
     core_model = object.__new__(comfy.model_base.MiniMaxH3)
     core_model.latent_shapes = None
-    keyframe_latent = torch.tensor([1.0])
-    reference_latent = torch.tensor([2.0])
+    keyframe_latent = torch.tensor([[[1.0]]])
+    reference_latent = torch.tensor([[[2.0]]])
     keyframes = [{"resolved_frame_index": 0, "latent": keyframe_latent}]
     references = [
         {
@@ -1140,7 +1140,7 @@ def test_advanced_combined_minimax_h3_uses_installed_core_payload_order(monkeypa
         minimax_refs=references,
     )
     payload = core_conds["minimax_payload"].cond
-    assert payload["cond_video_latents"] == [reference_latent]
+    assert payload["cond_video_latents"] == [keyframe_latent, reference_latent]
 
     layout = comfy.ldm.minimax.model.PackedLayout(
         2,
@@ -1150,7 +1150,6 @@ def test_advanced_combined_minimax_h3_uses_installed_core_payload_order(monkeypa
         2,
         keyframes=keyframes,
         refs=references,
-        frame_count=5,
     )
     payload["layout"] = layout
     observed = {}
@@ -1161,9 +1160,9 @@ def test_advanced_combined_minimax_h3_uses_installed_core_payload_order(monkeypa
     encoder_helpers.minimax_h3_combined_payload_wrapper(
         executor, minimax_payload=payload
     )
-    repaired = observed["minimax_payload"]
-    assert repaired["cond_video_latents"] == [keyframe_latent, reference_latent]
-    assert repaired["layout"] is layout
+    forwarded = observed["minimax_payload"]
+    assert forwarded["cond_video_latents"] == [keyframe_latent, reference_latent]
+    assert forwarded["layout"] is layout
     assert [kind for _start, _stop, kind in layout.segments] == [
         "text",
         "cond",

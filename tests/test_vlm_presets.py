@@ -2,6 +2,7 @@ import ast
 import hashlib
 import pathlib
 import re
+import runpy
 import sys
 import types
 
@@ -263,6 +264,7 @@ def test_raw_query_presets_preserve_instructions_without_request_carriers():
     for name in (
         "h3_fl2va",
         "h3_ref2va",
+        "h3_ref2va_alt",
         "h3_fl2va_experimental",
         "h3_ref2va_experimental",
     ):
@@ -478,41 +480,145 @@ def test_h3_fl2va_query_preset_enforces_available_boundary_pictures():
     assert "use `<Picture 2>` as the fixed ending only when it exists" in suffix
 
 
-def test_h3_ref2va_query_preset_restores_material_reference_use():
-    presets = vlm_presets.system_query_additional_vlm
-    raw = vlm_presets.system_query_raw_vlm["h3_ref2va"]
-    prefix = presets["h3_ref2va_prefix"]
-    suffix = presets["h3_ref2va_suffix"]
+def test_h3_ref2va_alt_preserves_explicit_timeline_and_replacement_contract():
+    wrapped = vlm_presets.system_query_additional_vlm
+    raw = vlm_presets.system_query_raw_vlm["h3_ref2va_alt"]
+    prefix = wrapped["h3_ref2va_alt_prefix"]
+    suffix = wrapped["h3_ref2va_alt_suffix"]
 
-    assert "use only identifiers that exist" in prefix
-    assert "Do not automatically classify any picture as the first or final frame" in prefix
-    assert "Use `<Picture N>` as source provenance" in prefix
-    assert "only in that subject or reference's first complete definition" in prefix
-    assert "Use every supplied picture deliberately" in prefix
-    assert "Determine the governing visual style" in prefix
-    assert "Preserve supported source rendering style when no conflict exists" in prefix
-    assert "explicit requested style conflicts with source rendering" in prefix
-    assert "rendering medium as style evidence rather than immutable subject identity" in prefix
-    assert "vocabulary appropriate to the governing style" in prefix
-    assert "Do not invent production methods or unsupported additions" in prefix
-    assert "Use every supplied picture as visual evidence" in suffix
-    assert "governing style in `summary:`" in suffix
-    assert "Keep `retention_analysis:` limited to concise media roles" in suffix
-    assert "retained and intentionally changed properties" in suffix
-    assert "style retention or replacement" in suffix
-    assert "Exclude choreography, event progression, transformation timing" in suffix
-    assert "production methods, construction details, repeated definitions" in suffix
-    assert "without restating the global style" in suffix
-    assert "never mention an unsupplied identifier" in suffix
-    assert "Do not assign first-frame or final-frame status" in suffix
-    assert "never as a timeline-segment anchor" in prefix
-    assert "Do not repeat picture identifiers at each timeline interval" in suffix
-    assert "wherever that reference materially controls" not in prefix
-    for value in (prefix, suffix, raw):
-        lowered = value.lower()
-        assert "example:" not in lowered
-        assert "e.g." not in lowered
-        assert "i.e." not in lowered
+    for required in (
+        "explicitly states `<Picture N> at TIMESTAMP`",
+        "Preserve every explicit association",
+        "without explicit timestamp associations as independent references",
+        "references that precede all timeline samples",
+        "Never infer this partition from input position",
+        "source motion, pose progression, interaction",
+        "Use independent `<Picture N>` references as provenance",
+        "create one final subject",
+        "identity and appearance come from the independent Picture",
+        "Describe the final subject as continuously present",
+        "Determine the governing visual style",
+    ):
+        assert required in prefix
+    for required in (
+        "Preserve every explicit Picture/timestamp association",
+        "output exactly that segment count",
+        "copy each supplied start literally",
+        "Do not replace supplied starts with equal-duration divisions",
+        "Depict the completed final subject continuously",
+        "without media bookkeeping",
+    ):
+        assert required in suffix
+    assert "BEGIN VIDEO REQUEST:" not in raw
+    assert "END VIDEO REQUEST." not in raw
+
+
+def test_h3_mixed_ref2va_uses_explicit_picture_timeline_associations():
+    wrapped = vlm_presets.system_query_additional_vlm
+    raw = vlm_presets.system_query_raw_vlm["h3_mixed_ref2va"]
+    prefix = wrapped["h3_mixed_ref2va_prefix"]
+    suffix = wrapped["h3_mixed_ref2va_suffix"]
+
+    assert "h3_mixed_ref2va" in vlm_nodes.UC_VLMSysQueryAddPresets.get_presets()
+    assert "h3_mixed_ref2va" in (
+        vlm_nodes.UC_VLMSysQueryRawPresets.define_schema().inputs[0].options
+    )
+    assert "video_timeline_minimax_h3_mixed_system_instruction" not in (
+        vlm_presets.system_instructions_vlm
+    )
+    for required in (
+        "exact `<Picture N>` identifier already assigned by ComfyUI",
+        "explicit `<Picture N> at TIMESTAMP` associations",
+        "exactly the Pictures named",
+        "reference Pictures before the first timeline sample",
+        "segment count only to validate",
+        "Never infer the partition from input position",
+        "assumed contiguous identifier range",
+        "source motion, pose progression, interaction",
+        "create one final subject",
+    ):
+        assert required in prefix
+    for required in (
+        "Output exactly the declared segment count",
+        "Copy each supplied start timestamp literally",
+        "Retain every existing `<Picture N>` identifier",
+        "Never emit `<Video N>`",
+        "Depict the final subject continuously",
+        "final subject's identity, appearance, motion, scene, style, and continuity",
+        "without media bookkeeping",
+    ):
+        assert required in suffix
+    assert "<Video 1>" not in prefix + suffix + raw
+    assert "numbered `<Picture 1>`" not in prefix + suffix + raw
+    assert "every later image" not in prefix + suffix + raw
+    assert "BEGIN VIDEO REQUEST:" not in raw
+    assert "END VIDEO REQUEST." not in raw
+
+
+def test_readable_h3_reference_sources_match_runtime_presets():
+    readable = runpy.run_path(str(CUSTOM_NODE_ROOT / "vlm_presets_vars.py"))
+
+    def normalize(value):
+        return value.replace("\r\n", "\n").replace("\r", "\n")
+
+    assert normalize(
+        vlm_presets.system_instructions_vlm[
+            "video_timeline_minimax_h3_reference_system_instruction"
+        ]
+    ) == normalize(readable["VIDEO_TIMELINE_MINIMAX_H3_REFERENCE_SYSTEM_INSTRUCTION"])
+    for name in ("H3_REF2VA", "H3_REF2VA_ALT", "H3_MIXED_REF2VA"):
+        key = name.lower()
+        prefix = normalize(readable[f"{name}_PREFIX"])
+        suffix = normalize(readable[f"{name}_SUFFIX"])
+        assert normalize(
+            vlm_presets.system_query_additional_vlm[f"{key}_prefix"]
+        ) == prefix
+        assert normalize(
+            vlm_presets.system_query_additional_vlm[f"{key}_suffix"]
+        ) == suffix
+        expected_raw = (
+            prefix.removesuffix("\n\nBEGIN VIDEO REQUEST:\n")
+            + "\n\n"
+            + suffix.removeprefix("\nEND VIDEO REQUEST.\n\n")
+        )
+        assert normalize(vlm_presets.system_query_raw_vlm[key]) == expected_raw
+
+
+def test_h3_reference_alt_assembled_context_matches_structured_picture_request():
+    instruction = vlm_presets.system_instructions_vlm[
+        "video_timeline_minimax_h3_reference_alt_system_instruction"
+    ]
+    prefix = vlm_presets.system_query_additional_vlm["h3_ref2va_alt_prefix"]
+    suffix = vlm_presets.system_query_additional_vlm["h3_ref2va_alt_suffix"]
+    request = (
+        "Subject in <Picture 1> should replace subject in segment images. "
+        "Target video duration is 12.309 seconds divided into 5 segments. "
+        "Reference each image with <Picture 2> at 00.000s, <Picture 3> at "
+        "03.066s, <Picture 4> at 06.131s, <Picture 5> at 09.197s and "
+        "<Picture 6> at 12.262s."
+    )
+    assembled = instruction + prefix + request + suffix
+
+    assert assembled.count(request) == 1
+    assert instruction.count("{user_query}") == 10
+    assert instruction.count("{system_query}") == 1
+    assert "regular user request, not this marker, is authoritative" in instruction
+    assert "exactly those starts and no additional section boundaries" in instruction
+    assert "copy each start literally" in instruction
+    assert "exact requested duration as the final end" in instruction
+    assert "Preserve the request's timestamp precision" in instruction
+    assert "sample identity is analysis-only and receives no subject alias" in instruction
+    assert "final Picture-defined subject from the first frame through the last" in instruction
+    assert "without emitting `<Picture N>` or `<Video N>` identifiers" in instruction
+    assert "Do not replace supplied starts with equal-duration divisions" in suffix
+    for competing in (
+        "replacement subject",
+        "displaced sample identity",
+        "on-screen swap",
+        "identity swap",
+        "transformation, or reversion",
+    ):
+        assert competing not in instruction + prefix + suffix
 
 
 def test_h3_ref2va_experimental_query_keeps_regression_snapshot():
@@ -667,6 +773,7 @@ STRUCTURED_VIDEO_PRESETS = (
 H3_TIMELINE_PRESETS = (
     "video_timeline_minimax_h3_base_system_instruction",
     "video_timeline_minimax_h3_reference_system_instruction",
+    "video_timeline_minimax_h3_reference_alt_system_instruction",
 )
 
 H3_CAMERA_CONTINUITY_PRESETS = (
@@ -679,7 +786,6 @@ TIMELINE_CHANNEL_BALANCE_PRESETS = (
     "video_timeline_system_instruction",
     "video_timeline_system_instruction_crude",
     "video_timeline_minimax_h3_base_system_instruction",
-    "video_timeline_minimax_h3_reference_system_instruction",
 )
 
 EXPERIMENTAL_VIDEO_PRESET_HASHES = {
@@ -709,6 +815,9 @@ STABLE_VIDEO_PRESET_HASHES = {
     ),
     "video_timeline_minimax_h3_reference_system_instruction": (
         "7f85667740d51670182fe505421020939bad512881a3da5a5f84064cee640046"
+    ),
+    "video_timeline_minimax_h3_reference_alt_system_instruction": (
+        "be6a9ee922e50ef22b092a2433af968c3883a9c0a19899d2fb299e29b26e6da6"
     ),
 }
 
@@ -852,10 +961,14 @@ def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():
         assert "Determine the prompt role of each image" in instruction
         assert "must not depend on the downstream video model receiving the images" in instruction
         assert "Fully specify the subjects" in instruction or "concrete written specifications" in instruction
-        assert "Use no fixed number of sections" in instruction
+        assert "use no fixed number of sections" in instruction.lower()
         assert "Every range touches the next without a gap or overlap" in instruction
         assert "final range ends at the exact total duration" in instruction
-        assert "[00.00s-00.00s]:" in instruction
+        if name == "video_timeline_minimax_h3_reference_alt_system_instruction":
+            assert "[START-END]:" in instruction
+            assert "copy each start literally" in instruction
+        else:
+            assert "[00.00s-00.00s]:" in instruction
         assert "[SPEECH]:" in instruction
         assert "<d>[Language]" in instruction
 
@@ -1064,7 +1177,7 @@ def test_minimax_h3_base_timeline_field_order():
 
 def test_minimax_h3_reference_timeline_field_and_label_contracts():
     instruction = vlm_presets.system_instructions_vlm[
-        "video_timeline_minimax_h3_reference_system_instruction"
+        "video_timeline_minimax_h3_reference_alt_system_instruction"
     ]
     fields = (
         "subject_definitions:",
@@ -1081,7 +1194,8 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "ComfyUI constructs and numbers the `<Picture N>`, `<Video N>`, and `<Audio N>`" in instruction
     assert "Refer to those existing identifiers only" in instruction
     assert "Never create or reproduce a media prefix declaration" in instruction
-    assert "assign a media number, or renumber an existing media identifier" in instruction
+    assert "assign a media number" in instruction
+    assert "renumber an existing media identifier" in instruction
     assert "Create and number <Subject N> aliases only" in instruction
     assert "Assign `<Picture N>`" not in instruction
     assert "Number each category independently" not in instruction
@@ -1103,11 +1217,10 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "In `summary:`, state the intended target video" in instruction
     assert "established reference relationships" in instruction
     assert "governing visual style, medium, era, and subject presentation" in instruction
-    assert "write one concise paragraph limited to the semantic role of each supplied medium" in instruction
-    assert "the properties that remain consistent" in instruction
-    assert "the properties intentionally changed" in instruction
-    assert "whether source rendering style is retained or replaced" in instruction
-    assert "reference relationships that must remain coherent" in instruction
+    assert "write one concise paragraph using established <Subject N> aliases" in instruction
+    assert "final subjects' identity, appearance, motion, scene, style, and continuity" in instruction
+    assert "without emitting `<Picture N>` or `<Video N>` identifiers" in instruction
+    assert "source identity that is absent from the completed target" in instruction
     assert "Do not include action choreography, event progression, transformation timing" in instruction
     assert "Do not repeat subject definitions, summary content, or exhaustive source description" in instruction
     assert "Do not invent production methods, construction details" in instruction

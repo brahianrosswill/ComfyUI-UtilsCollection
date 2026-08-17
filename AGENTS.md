@@ -75,3 +75,53 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
 - Local untracked artifacts are intentionally excluded. Stage a new production
   source file before relying on `--changed`, or run its intended `--group`
   explicitly while creating it.
+
+### Managed VLM presets
+
+- Treat serialized values in `vlm_presets.py` as managed runtime data. Never
+  hand-edit a serialized VLM preset literal.
+- Before changing a VLM preset, inspect `vlm_presets_vars.py` and the narrowly
+  relevant `scripts/sync_vlm_*.py` utility. Edit the readable variable first,
+  run the synchronizer without `--apply`, then run it with `--apply` only after
+  its validation succeeds.
+- When an existing synchronizer does not cover the requested preset, extend or
+  add deterministic synchronization tooling before changing runtime data. Do
+  not fall back to ambiguous dictionary-boundary patches or manual replacement
+  of generated literals.
+- Inspect the resulting bounded runtime diff and test both readable/runtime
+  synchronization and the consuming node's exposed preset options.
+- Treat `{user_query}` and `{system_query}` as legacy injection markers unless
+  the currently verified assembly path proves otherwise. Do not use either as
+  a substitute for the regular user message when assigning image roles,
+  timestamps, segment structure, or mixed-media intent.
+- Audit the complete assembled prompt seen by the VLM: system instruction,
+  system-query prefix, regular user request, suffix, legacy injected values,
+  and downstream consumer. Rules in named sections are not isolated; repeated
+  or contradictory wording affects the whole response.
+- Phrase-presence and snapshot tests do not establish prompt behavior. Add an
+  assembled-context contract test for field allocation, media-label scope,
+  timestamp preservation, final-subject continuity, and forbidden competing
+  instructions. Treat direct generation output supplied by the user as
+  first-level evidence of remaining prompt defects.
+- Do not perform repeated speculative repair attempts. After one synchronization,
+  syntax, or escaping failure, stop that command shape, inspect the exact scoped
+  diff and established utility contract, correct the deterministic workflow,
+  and validate it in dry-run mode before another mutation.
+- Never restore a dirty managed preset from `HEAD` merely because generated
+  syntax is damaged. First establish whether the file contains other legitimate
+  changes and use its readable authority plus synchronizer for recovery. Ask
+  before discarding any change whose ownership or recoverability is uncertain.
+
+### Session continuity
+
+- Treat an automatic context summary as a non-authoritative index. Before any
+  post-compaction mutation, re-read applicable rules and required skills, then
+  verify scoped status, the current user contract, affected files, and the
+  intended deterministic tooling from direct evidence.
+- Do not claim recovered state from a preserved session unless the preservation
+  result identifies the intended source. Read only its generated delta, and use
+  historical messages to recover execution constraints and known failures—not
+  as authority over a newer user request.
+- A brief user correction is steering to apply while continuing. Do not stop,
+  produce another plan, repeat what the user said, or substitute discussion for
+  the requested repository work.
