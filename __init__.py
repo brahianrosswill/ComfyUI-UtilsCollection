@@ -28,6 +28,7 @@ class SamplingUtils(ComfyExtension):
         return enrich_node_list([
             UC_AdjustedResolutionParameters,
             UC_ResolutionSelectorExtended,
+            UC_VideoResolutionSelector,
             UC_ImageScaleAndResolutionPicker,
             UC_Image_Color_Noise,
             UC_ExtractPrevalentColors,

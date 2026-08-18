@@ -7,6 +7,7 @@ import comfy.model_management as mm
 import nodes
 
 from .helper_functions import round_to_nearest, AspectRatio, ASPECT_RATIOS, resize_nchw
+from .parameter_helpers import select_video_resolution
 
 
 class UC_AdjustedResolutionParameters(io.ComfyNode):
@@ -98,14 +99,6 @@ class UC_ResolutionSelectorExtended(io.ComfyNode):
                     step=4,
                     tooltip="Nearest multiple of the result to set the selected resolution to.",
                 ),
-                io.Int.Input(
-                    id="minimum",
-                    default=256,
-                    min=32,
-                    max=4096,
-                    step=32,
-                    tooltip="Set minimum resolution for any side to be used",
-                ),
             ],
             outputs=[
                 io.Int.Output(
@@ -118,7 +111,7 @@ class UC_ResolutionSelectorExtended(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, aspect_ratio: str, megapixels: float, multiple: int, minimum: int) -> io.NodeOutput:
+    def execute(cls, aspect_ratio: str, megapixels: float, multiple: int, minimum: int = 256) -> io.NodeOutput:
         w_ratio, h_ratio = ASPECT_RATIOS[aspect_ratio]
         total_pixels = megapixels * 1024 * 1024
         scale = math.sqrt(total_pixels / (w_ratio * h_ratio))
@@ -132,7 +125,70 @@ class UC_ResolutionSelectorExtended(io.ComfyNode):
             k = math.ceil(min_k / k_step) * k_step
             width = w_ratio * k
             height = h_ratio * k
-        return io.NodeOutput(width, height)
+        return io.NodeOutput(width, height, ui={"resolution": (f"{width}×{height}",)})
+
+
+class UC_VideoResolutionSelector(io.ComfyNode):
+    """Select a multiple-aligned video resolution near a nominal megapixel target."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="UC_VideoResolutionSelector",
+            display_name="Video Resolution Selector",
+            category="utilities",
+            description=(
+                "Select a video resolution near the target megapixels while keeping "
+                "the chosen aspect ratio within the selected tolerance."
+            ),
+            inputs=[
+                io.Combo.Input(
+                    "aspect_ratio",
+                    options=AspectRatio,
+                    default=AspectRatio.WIDESCREEN_H,
+                    tooltip="The preferred output aspect ratio.",
+                ),
+                io.Float.Input(
+                    "megapixels",
+                    default=1.0,
+                    min=0.1,
+                    max=16.0,
+                    step=0.1,
+                    tooltip="Nominal target total megapixels used to choose the nearest viable resolution.",
+                ),
+                io.Int.Input(
+                    "multiple",
+                    default=32,
+                    min=8,
+                    max=128,
+                    step=4,
+                    tooltip="Required pixel multiple for both output dimensions.",
+                ),
+            ],
+            outputs=[
+                io.Int.Output("width", tooltip="Selected video width in pixels."),
+                io.Int.Output("height", tooltip="Selected video height in pixels."),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        aspect_ratio: str,
+        megapixels: float,
+        multiple: int,
+        minimum: int = 256,
+    ) -> io.NodeOutput:
+        ratio_width, ratio_height = ASPECT_RATIOS[aspect_ratio]
+        width, height = select_video_resolution(
+            ratio_width,
+            ratio_height,
+            megapixels,
+            multiple,
+            minimum,
+            nodes.MAX_RESOLUTION,
+        )
+        return io.NodeOutput(width, height, ui={"resolution": (f"{width}×{height}",)})
 
 
 class UC_ImageScaleAndResolutionPicker(io.ComfyNode):

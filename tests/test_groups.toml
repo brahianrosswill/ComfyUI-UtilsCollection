@@ -95,7 +95,7 @@ python_tests = ["tests/test_logic_math_nodes.py"]
 frontend_tests = []
 
 [groups.parameters]
-paths = ["parameter_nodes.py"]
+paths = ["parameter_nodes.py", "parameter_helpers.py", "web/resolution_preview.js"]
 python_tests = ["tests/test_parameter_nodes.py", "tests/test_primitive_nodes.py"]
 frontend_tests = []
 

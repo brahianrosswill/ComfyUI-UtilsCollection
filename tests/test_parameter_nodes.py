@@ -18,6 +18,7 @@ cli_args.cpu = True
 try:
     from utils_collection_parameter_test import parameter_nodes
     from utils_collection_parameter_test.helper_functions import AspectRatio
+    from utils_collection_parameter_test.parameter_helpers import select_video_resolution
 finally:
     cli_args.cpu = prior_cpu
 
@@ -31,6 +32,99 @@ def test_image_scale_picker_schema_uses_smooth_default_and_positive_scale():
     assert inputs["scale_by"].min > 0
     assert "scale_by" in outputs["upscaled_image"].tooltip
     assert "upscale_by" not in outputs["upscaled_image"].tooltip
+
+
+def test_video_resolution_selector_uses_nominal_megapixel_target_with_ratio_tolerance():
+    width, height = select_video_resolution(
+        16,
+        9,
+        megapixels=0.4,
+        multiple=32,
+        minimum=256,
+        maximum=4096,
+    )
+
+    assert (width, height) == (864, 480)
+    assert width % 32 == height % 32 == 0
+
+
+def test_video_resolution_selector_uses_middle_band_video_rungs():
+    selected = {
+        megapixels: select_video_resolution(
+            16,
+            9,
+            megapixels=megapixels,
+            multiple=32,
+            minimum=256,
+            maximum=4096,
+        )
+        for megapixels in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
+    }
+
+    assert selected == {
+        0.3: (768, 416),
+        0.4: (864, 480),
+        0.5: (1024, 576),
+        0.6: (1024, 576),
+        0.7: (1152, 672),
+        0.8: (1152, 672),
+    }
+
+
+def test_video_resolution_selector_schema_defaults_to_video_multiple():
+    schema = parameter_nodes.UC_VideoResolutionSelector.define_schema()
+    inputs = {value.id: value for value in schema.inputs}
+
+    assert inputs["multiple"].default == 32
+    assert "minimum" not in inputs
+
+
+def test_video_resolution_selector_returns_resolution_preview():
+    output = parameter_nodes.UC_VideoResolutionSelector.execute(
+        aspect_ratio=AspectRatio.WIDESCREEN_H,
+        megapixels=0.4,
+        multiple=32,
+        minimum=256,
+    )
+
+    assert output.result == (864, 480)
+    assert output.ui == {"resolution": ("864×480",)}
+
+
+def test_regular_resolution_selector_returns_resolution_preview():
+    output = parameter_nodes.UC_ResolutionSelectorExtended.execute(
+        aspect_ratio=AspectRatio.WIDESCREEN_H,
+        megapixels=0.4,
+        multiple=32,
+        minimum=256,
+    )
+
+    assert output.result == (864, 480)
+    assert output.ui == {"resolution": ("864×480",)}
+
+
+def test_resolution_preview_frontend_is_display_only_and_live():
+    frontend = (CUSTOM_NODE_ROOT / "web" / "resolution_preview.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "onDrawForeground" in frontend
+    assert "onWidgetChanged" in frontend
+    assert "addWidget" not in frontend
+
+
+def test_video_resolution_selector_keeps_an_aspect_ratio_axis_exact():
+    width, height = select_video_resolution(
+        21,
+        9,
+        megapixels=0.5,
+        multiple=32,
+        minimum=256,
+        maximum=4096,
+    )
+
+    assert (width, height) == (1120, 480)
+    assert width % 7 == 0
 
 
 def test_image_scale_picker_keeps_megapixel_fit_and_upscale_factor_separate():

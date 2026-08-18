@@ -135,6 +135,7 @@ the base-resolution conditioning fusion.
 
 - `UC_AdjustedResolutionParameters`
 - `UC_ResolutionSelectorExtended`
+- `UC_VideoResolutionSelector`
 - `UC_ImageScaleAndResolutionPicker`
 - `UC_SwitchInverseNode`
 - `UC_SoftSwitchInverseNode`
