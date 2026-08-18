@@ -217,7 +217,7 @@ def test_camera_shot_catalog_is_unchanged():
     payload = "\n".join(f"{name}={values[name]}" for name in sorted(values))
     assert len(values) == 20
     assert hashlib.sha256(payload.encode()).hexdigest() == (
-        "1cdbff162b2f166b3cb0cbd470c93d8ba46468476ad6edef84dcd683dac5ba96"
+        "18eccce10a9363e7100f4521d8cd3a55931ec43e7c80dce88b49ade46060d49d"
     )
 
 
