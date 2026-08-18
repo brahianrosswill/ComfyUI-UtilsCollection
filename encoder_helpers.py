@@ -622,16 +622,17 @@ def prepare_image_placeholder_prompt(prompt: str, image_count: int, fusion_activ
         )
     return rewritten, tuple(valid_numbers)
 
+def _token_value(token):
+    return token[0] if isinstance(token, tuple) and token else token
+
+
 def is_image_token(t):
-    if isinstance(t, tuple) and len(t) > 0:
-        val = t[0]
-    else:
-        val = t
+    val = _token_value(t)
 
     if isinstance(val, dict) and val.get("type") == "image":
         return True
 
-    if val in (151655, 262144): # Qwen & Gemma image pad IDs
+    if isinstance(val, numbers.Integral) and val in (151655, 262144): # Qwen & Gemma image pad IDs
         return True
 
     return False
@@ -641,7 +642,7 @@ _QWEN_IM_START, _QWEN_USER, _QWEN_NL, _QWEN_IM_END = 151644, 872, 198, 151645
 
 
 def _token_id(token):
-    value = token[0] if isinstance(token, tuple) and token else token
+    value = _token_value(token)
     return int(value) if isinstance(value, numbers.Integral) else None
 
 
@@ -778,7 +779,7 @@ def vlm_resolution_samples(
 
 
 def _qwen3vl_image_span(token) -> int | None:
-    value = token[0] if isinstance(token, tuple) and token else token
+    value = _token_value(token)
     if not isinstance(value, dict) or value.get("type") != "image":
         return None
     image = value.get("data")
@@ -787,6 +788,17 @@ def _qwen3vl_image_span(token) -> int | None:
     height, width = image.shape[1:3]
     resized_height, resized_width = _qwen3vl_resized_dimensions(height, width)
     return (resized_height // 16) * (resized_width // 16) // 4
+
+
+def _conditioning_token_span(token) -> int | None:
+    if is_image_token(token):
+        return _qwen3vl_image_span(token)
+    value = _token_value(token)
+    if not torch.is_tensor(value):
+        return 1
+    if value.ndim < 1 or value.shape[-1] < 1:
+        return None
+    return value.numel() // value.shape[-1]
 
 
 def qwen3vl_visual_grid(image) -> tuple[int, int]:
@@ -812,7 +824,7 @@ def visual_fusion_grid(image, visual_length: int, legacy_flat: bool = False) -> 
 def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, int]]:
     """Map raw tokenizer entries to conditioning spans, validating all inferred lengths."""
     cond_len = cond_tensor.shape[1]
-    exact_spans = [_qwen3vl_image_span(token) if is_image_token(token) else 1 for token in token_list]
+    exact_spans = [_conditioning_token_span(token) for token in token_list]
     if not all(span is not None for span in exact_spans):
         raise ValueError("Cannot derive token positions because an image token has no usable Qwen3-VL tensor payload.")
 

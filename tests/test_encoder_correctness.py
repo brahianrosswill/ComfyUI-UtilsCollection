@@ -1744,6 +1744,17 @@ def test_krea2_mapping_mirrors_core_prefix_strip():
     assert mapping[8:] == [(0, 1), (1, 2), (2, 3)]
 
 
+def test_token_mapping_expands_prompt_embedding_entries():
+    embedding = torch.zeros(3, 5120)
+    tokens = [(100, 1.0), (embedding, 1.0), (101, 1.0)]
+    conditioning = torch.zeros(1, 5, 5120)
+
+    mapping = encoder_helpers.build_token_to_conditioning_map(tokens, conditioning)
+
+    assert encoder_helpers.is_image_token(tokens[1]) is False
+    assert mapping == [(0, 1), (1, 4), (4, 5)]
+
+
 def test_mage_flow_mapping_mirrors_core_prefix_strip():
     image = torch.zeros(1, 832, 1248, 3)
     tokens = [(151644, 1.0), (8948, 1.0), (198, 1.0)]
