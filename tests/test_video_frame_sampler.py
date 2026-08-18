@@ -151,9 +151,9 @@ def test_index_offset_shifts_all_picture_references():
     )
     assert build_video_timeline_text(timestamps, "H3 alignment prefix", 1) == (
         "For the target video, at 00.00s into the target video, "
-        "<Picture 2> is fully referenced.\n"
+        "<Picture 2> (from [Shot 1]) is fully referenced.\n"
         "For the target video, at 01.21s into the target video, "
-        "<Picture 3> is fully referenced."
+        "<Picture 3> (from [Shot 2]) is fully referenced."
     )
 def test_zero_time_is_output_position_zero_and_spacing_removes_near_duplicate():
     selected = select_video_frame_records(
@@ -257,9 +257,9 @@ def test_timeline_reuses_formatted_timestamp_literals_without_unit_rewriting():
     )
     assert build_video_timeline_text(timestamps, "H3 alignment prefix") == (
         "For the target video, at 00.000s into the target video, "
-        "<Picture 1> is fully referenced.\n"
+        "<Picture 1> (from [Shot 1]) is fully referenced.\n"
         "For the target video, at 2.50s into the target video, "
-        "<Picture 2> is fully referenced."
+        "<Picture 2> (from [Shot 2]) is fully referenced."
     )
 
 

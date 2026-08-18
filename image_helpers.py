@@ -603,7 +603,7 @@ def build_video_timeline_text(
         lines = [
             (
                 f"For the target video, at {timestamp} into the target video, "
-                f"<Picture {index + index_offset}> is fully referenced."
+                f"<Picture {index + index_offset}> (from [Shot {index}]) is fully referenced."
             )
             for index, timestamp in enumerate(timestamps, start=1)
         ]
