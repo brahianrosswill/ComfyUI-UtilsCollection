@@ -20,7 +20,7 @@ from .encoder_helpers import(
     evaluate_formula,
     evaluate_conditioning_formula,
     evaluate_conditioning_consensus_blend,
-    save_conditioning_visual_embeddings,
+    save_source_visual_embeddings,
     blend_text_vectors,
     find_visual_token_range,
     build_token_to_conditioning_map,
@@ -2335,7 +2335,16 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                 key_name = next(iter(tokens.keys()))
 
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, mask_cache=fusion_mask_cache, visual_grids=visual_grids
+                sequence_tensors,
+                pooled_tensors,
+                visual_fusion_config=visual_fusion_config,
+                device=device,
+                visual_ranges=visual_ranges,
+                embedding_key=key_name,
+                clip=clip,
+                tokens_dict=tokens_dict,
+                mask_cache=fusion_mask_cache,
+                visual_grids=visual_grids,
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -2346,11 +2355,12 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
                     raise ValueError(
                         "Saving an unfused visual embedding requires the default visual input."
                     )
-                save_conditioning_visual_embeddings(
-                    sequence_tensors[default_key],
-                    visual_ranges[default_key],
+                save_source_visual_embeddings(
+                    clip,
+                    source_tokens,
                     visual_fusion_config,
                     next(iter(source_tokens.keys())),
+                    comfy.model_management.get_torch_device(),
                 )
 
         # Build final conditioning dictionary
@@ -2557,7 +2567,16 @@ class TextEncodeEditScaledAdv(io.ComfyNode):
                 key_name = next(iter(tokens.keys()))
 
             C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, mask_cache=fusion_mask_cache, visual_grids=visual_grids
+                sequence_tensors,
+                pooled_tensors,
+                visual_fusion_config=visual_fusion_config,
+                device=device,
+                visual_ranges=visual_ranges,
+                embedding_key=key_name,
+                clip=clip,
+                tokens_dict=tokens_dict,
+                mask_cache=fusion_mask_cache,
+                visual_grids=visual_grids,
             )
         else:
             C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)
@@ -3263,7 +3282,16 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
                     key_name = next(iter(tokens.keys()))
 
                 C_blended, P_blended = evaluate_conditioning_consensus_blend(
-                    sequence_tensors, pooled_tensors, visual_fusion_config=visual_fusion_config, device=device, visual_ranges=visual_ranges, embedding_key=key_name, mask_cache=fusion_mask_cache, visual_grids=visual_grids
+                    sequence_tensors,
+                    pooled_tensors,
+                    visual_fusion_config=visual_fusion_config,
+                    device=device,
+                    visual_ranges=visual_ranges,
+                    embedding_key=key_name,
+                    clip=clip,
+                    tokens_dict=tokens_dict,
+                    mask_cache=fusion_mask_cache,
+                    visual_grids=visual_grids,
                 )
             else:
                 C_blended, P_blended = evaluate_conditioning_formula(formula.strip() or "a", sequence_tensors, pooled_tensors, padding_method=padding_method)

@@ -4,6 +4,7 @@ import types
 
 import pytest
 import torch
+from comfy.sd1_clip import load_embed
 
 
 CUSTOM_NODE_ROOT = pathlib.Path(__file__).parents[1]
@@ -17,7 +18,7 @@ from comfy.cli_args import args as cli_args
 prior_cpu = cli_args.cpu
 cli_args.cpu = True
 try:
-    from utils_collection_test import encoder_helpers, encoder_nodes
+    from utils_collection_test import embedding_helpers, encoder_helpers, encoder_nodes
     from utils_collection_test.encoder_nodes import (
         TextEncodeEditScaledAdv,
         UC_AdvancedVisualConditioningEncode,
@@ -101,7 +102,7 @@ def test_deepstack_reuses_main_spatial_mask():
     assert torch.equal(main.bool(), layers[1].eq(200.0))
 
 
-def test_saved_embedding_is_exact_fused_conditioning_visual_span(monkeypatch):
+def test_saved_embedding_is_complete_fused_visual_block(monkeypatch):
     config = {
         **_config(seed=31),
         "save_blended_embeds": True,
@@ -112,6 +113,26 @@ def test_saved_embedding_is_exact_fused_conditioning_visual_span(monkeypatch):
         "b": torch.stack([torch.ones(6, 1), torch.full((6, 1), 3.0)]),
     }
     visual_ranges = {"a": (1, 5), "b": (1, 5)}
+    raw_sources = {
+        1: torch.stack([torch.arange(4), torch.arange(10, 14)]).unsqueeze(-1).float(),
+        2: torch.stack([torch.arange(20, 24), torch.arange(30, 34)]).unsqueeze(-1).float(),
+    }
+
+    class RawClipModel:
+        @staticmethod
+        def process_tokens(tokens, _device):
+            source_id = tokens[0][1]["source"]
+            raw = raw_sources[source_id]
+            embeds = torch.cat([torch.full((raw.shape[0], 1, 1), -10.0), raw, torch.full((raw.shape[0], 1, 1), 10.0)], dim=1)
+            return embeds, None, None, [{"type": "image", "index": 1, "size": 4}]
+
+    class Clip:
+        cond_stage_model = type("CondStage", (), {"clip": "clip_model", "clip_model": RawClipModel()})()
+
+    tokens_dict = {
+        "a": {"qwen3vl_4b": [[(151652, 1.0), ({"type": "image", "source": 1}, 1.0), (151653, 1.0)]]},
+        "b": {"qwen3vl_4b": [[(151652, 1.0), ({"type": "image", "source": 2}, 1.0), (151653, 1.0)]]},
+    }
 
     saved = []
     monkeypatch.setattr(
@@ -126,6 +147,8 @@ def test_saved_embedding_is_exact_fused_conditioning_visual_span(monkeypatch):
         config,
         "cpu",
         visual_ranges,
+        clip=Clip(),
+        tokens_dict=tokens_dict,
         mask_cache=cache,
         visual_grids={"a": (2, 2), "b": (2, 2)},
     )
@@ -133,11 +156,21 @@ def test_saved_embedding_is_exact_fused_conditioning_visual_span(monkeypatch):
     assert len(cache) == 1
     assert len(saved) == 2
     for batch in range(2):
-        assert torch.equal(conditioning[batch, 1:5, :], saved[batch])
+        expected = encoder_helpers.fuse_visual_token_sources(
+            [raw_sources[1][batch], raw_sources[2][batch]],
+            config,
+            "cpu",
+            cache,
+            source_grids=[(2, 2), (2, 2)],
+        )
+        assert torch.equal(saved[batch][0], torch.tensor([-10.0]))
+        assert torch.equal(saved[batch][-1], torch.tensor([10.0]))
+        assert torch.equal(expected, saved[batch][1:-1])
+        assert not torch.equal(conditioning[batch, 1:5, :], saved[batch][1:-1])
 
 
-def test_unfused_visual_export_preserves_only_visual_batches(monkeypatch):
-    conditioning = torch.arange(24, dtype=torch.float32).reshape(2, 6, 2)
+def test_unfused_visual_export_preserves_complete_visual_blocks(monkeypatch):
+    raw = torch.arange(16, dtype=torch.float32).reshape(2, 4, 2)
     saved = []
     monkeypatch.setattr(
         encoder_helpers,
@@ -145,16 +178,101 @@ def test_unfused_visual_export_preserves_only_visual_batches(monkeypatch):
         lambda tensors, config, key: saved.extend(tensors),
     )
 
-    encoder_helpers.save_conditioning_visual_embeddings(
-        conditioning,
-        (1, 5),
+    class RawClipModel:
+        @staticmethod
+        def process_tokens(_tokens, _device):
+            embeds = torch.cat([torch.full((2, 1, 2), -1.0), raw, torch.full((2, 1, 2), 1.0)], dim=1)
+            return embeds, None, None, [{"type": "image", "index": 1, "size": 4}]
+
+    class Clip:
+        cond_stage_model = type("CondStage", (), {"clip": "clip_model", "clip_model": RawClipModel()})()
+
+    encoder_helpers.save_source_visual_embeddings(
+        Clip(),
+        {"qwen3vl_4b": [[(151652, 1.0), ({"type": "image"}, 1.0), (151653, 1.0)]]},
         {"save_path": "unused.safetensors"},
         "qwen3vl_4b",
+        "cpu",
     )
 
     assert len(saved) == 2
-    assert torch.equal(saved[0], conditioning[0, 1:5, :])
-    assert torch.equal(saved[1], conditioning[1, 1:5, :])
+    assert torch.equal(saved[0][1:-1], raw[0])
+    assert torch.equal(saved[1][1:-1], raw[1])
+    assert torch.equal(saved[0][0], torch.full((2,), -1.0))
+    assert torch.equal(saved[0][-1], torch.full((2,), 1.0))
+
+
+def test_saved_visual_block_detokenizes_without_template_tokens(monkeypatch):
+    saved = []
+    monkeypatch.setattr(
+        encoder_helpers,
+        "save_blended_visual_embeddings",
+        lambda tensors, _config, _key: saved.extend(tensors),
+    )
+
+    class RawClipModel:
+        @staticmethod
+        def process_tokens(_tokens, _device):
+            embeds = torch.tensor([[[0.0], [2.0], [3.0], [1.0]]])
+            return embeds, None, None, [{"type": "image", "index": 1, "size": 2}]
+
+    class Clip:
+        cond_stage_model = type("CondStage", (), {"clip": "clip_model", "clip_model": RawClipModel()})()
+
+    encoder_helpers.save_source_visual_embeddings(
+        Clip(),
+        {"qwen3vl_4b": [[(151652, 1.0), ({"type": "image"}, 1.0), (151653, 1.0)]]},
+        {"save_path": "unused.safetensors"},
+        "qwen3vl_4b",
+        "cpu",
+    )
+
+    embedding_module = torch.nn.Embedding.from_pretrained(
+        torch.tensor([[0.0], [1.0], [2.0], [3.0]])
+    )
+    branch = embedding_helpers.ModelBranch((), embedding_module, 4, 1)
+    candidates = embedding_helpers.nearest_vocabulary_tokens(
+        saved[0], branch, [0, 1, 2, 3], 1, "euclidean"
+    )
+
+    assert [row[0].token_id for row in candidates] == [0, 2, 3, 1]
+
+
+def test_saved_visual_block_loads_through_core_embedding_key(monkeypatch, tmp_path):
+    block = torch.tensor([[-1.0, -1.0], [2.0, 2.0], [3.0, 3.0], [1.0, 1.0]])
+    monkeypatch.setattr(
+        encoder_helpers.folder_paths,
+        "get_folder_paths",
+        lambda category: [str(tmp_path)] if category == "embeddings" else [],
+    )
+
+    encoder_helpers.save_blended_visual_embeddings(
+        [block],
+        {"save_path": "visual/block"},
+        "qwen3vl_4b",
+    )
+
+    loaded = load_embed("visual/block", [str(tmp_path)], 2, "qwen3vl_4b")
+    assert torch.equal(loaded, block)
+
+
+def test_visual_block_export_rejects_unframed_placeholder():
+    class RawClipModel:
+        @staticmethod
+        def process_tokens(_tokens, _device):
+            return torch.zeros(1, 4, 2), None, None, [{"type": "image", "index": 1, "size": 2}]
+
+    class Clip:
+        cond_stage_model = type("CondStage", (), {"clip": "clip_model", "clip_model": RawClipModel()})()
+
+    with pytest.raises(ValueError, match="unframed image placeholder"):
+        encoder_helpers.save_source_visual_embeddings(
+            Clip(),
+            {"qwen3vl_4b": [[({"type": "image"}, 1.0)]]},
+            {"save_path": "unused.safetensors"},
+            "qwen3vl_4b",
+            "cpu",
+        )
 
 
 @pytest.mark.parametrize("method", ["index-consensus", "similarity-consensus", "unknown"])
@@ -476,9 +594,9 @@ def test_advanced_visual_encoder_exports_default_unfused_visual_input(monkeypatc
     )
     monkeypatch.setattr(
         encoder_nodes,
-        "save_conditioning_visual_embeddings",
-        lambda tensor, visual_range, config, key: exported.append(
-            (tensor, visual_range, key)
+        "save_source_visual_embeddings",
+        lambda clip, tokens, config, key, device: exported.append(
+            (clip, tokens, key, device)
         ),
     )
 
@@ -494,7 +612,11 @@ def test_advanced_visual_encoder_exports_default_unfused_visual_input(monkeypatc
         },
     )
 
-    assert exported == [(encoded, (1, 5), "qwen3vl_4b")]
+    assert len(exported) == 1
+    _, tokens, key, device = exported[0]
+    assert tokens == {"qwen3vl_4b": [[(0, 1.0)]]}
+    assert key == "qwen3vl_4b"
+    assert device is not None
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")

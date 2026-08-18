@@ -1255,6 +1255,42 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
     assert audio.shape == (1, 32, 2, 8)
 
 
+def test_advanced_minimax_h3_reference_save_exports_each_visual_span(monkeypatch):
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    exported = []
+    monkeypatch.setattr(
+        encoder_helpers,
+        "save_source_visual_embeddings",
+        lambda *args: exported.append(args),
+    )
+
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        ref_image_size="match",
+        vlm_resolution=0,
+        width=64,
+        height=32,
+        length=5,
+        reference_images={
+            "reference_image_1": torch.full((1, 32, 64, 3), 0.25),
+            "reference_image_2": torch.full((1, 32, 64, 3), 0.5),
+        },
+        visual_fusion_config={
+            "visual_fusion_method": "linear",
+            "save_blended_embeds": True,
+        },
+    )
+
+    assert len(exported) == 1
+    _, tokens, _config, key, _device, visual_indices = exported[0]
+    assert key == "qwen3vl_32b"
+    assert visual_indices == [0, 1]
+    assert sum(encoder_helpers.is_image_token(entry) for entry in tokens[key][0]) == 2
+
+
 def test_advanced_minimax_h3_none_keeps_frame_pictures_without_vae_keyframes():
     clip = _MiniMaxH3TestClip()
     vae = _RecordingMiniMaxVAE()

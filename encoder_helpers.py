@@ -1267,31 +1267,24 @@ def fuse_deepstack_layers(deepstack_tensors, visual_fusion_config, device, mask_
 
 
 # =====================================================================
-# SYSTEM WARNING FOR FUTURE AGENTS / DEVELOPERS:
-# This helper function `save_blended_visual_embeddings` is EXCLUSIVELY
-# for saving isolated, spatially-fused visual token embeddings
-# generated during VLM image component blending.
-# It contains ZERO text prompt tokens, prefixes, or suffixes.
-# It MUST serialize the tensor under the model's active embedding_key
-# (e.g. 'qwen3vl_8b') in pure torch.float32 on the CPU.
-# =====================================================================
+# Visual embedding exports contain one complete prompt-reloadable visual block:
+# the native vision-start input vector, expanded visual input vectors, and the
+# native vision-end input vector. They never contain template or prompt text.
 def save_blended_visual_embeddings(
     blended_vis_all_batches: list,
     visual_fusion_config: dict,
     embedding_key: str = "qwen3vl_8b"
 ) -> None:
     """
-    Saves isolated, mathematically-fused visual token embeddings as a
-    standalone .safetensors file under ComfyUI's models/embeddings directory.
+    Saves complete visual prompt blocks as standalone Core embeddings.
 
-    Warning: This function does NOT save any surrounding prompt or text tokens.
-    It expects a list of 2D visual token tensors, stacks them into a batch
-    dimension, squeezes it if there is only one batch slice, and writes the
-    contiguous tensor under the active VLM tokenizer's embedding_key.
+    The input blocks contain vision-start, expanded visual rows, and vision-end.
+    They contain no surrounding prompt or template text. Core's `embedding:`
+    loader receives the contiguous block under the active VLM embedding key.
 
     Parameters:
         blended_vis_all_batches: List of 2D torch.Tensor representing the
-                                 visual tokens across the execution batches.
+                                   visual blocks across the execution batches.
         visual_fusion_config: Dictionary containing target path options.
         embedding_key: The string identifier (e.g., 'qwen3vl_8b' or 'krea2_vlm')
                        required by the model checkpoint reader.
@@ -1321,29 +1314,80 @@ def save_blended_visual_embeddings(
     # State dict must contain exactly one layer matching the VLM's dynamic embedding_key
     state_dict = {embedding_key: stacked_vis.contiguous()}
     save_file(state_dict, full_save_path)
-    logging.info(f"[UC_VisualFusionConfig] Saved blended visual tokens as {embedding_key} embedding to: {full_save_path}")
+    logging.info(f"[UC_VisualFusionConfig] Saved visual prompt block as {embedding_key} embedding to: {full_save_path}")
 
 
-def save_conditioning_visual_embeddings(
-    conditioning_tensor: torch.Tensor,
-    visual_range: tuple[int, int],
+def _visual_token_embedding_blocks(clip, tokens, device: str) -> list[dict]:
+    """Return validated Qwen visual blocks from one already-tokenized source."""
+    cond_stage = clip.cond_stage_model
+    clip_model = getattr(cond_stage, cond_stage.clip)
+    key_name = next(iter(tokens))
+    token_batches = tokens[key_name]
+    tokens_only = [[token[0] for token in batch] for batch in token_batches]
+    embeds, _, _, embeds_info = clip_model.process_tokens(tokens_only, device)
+    visual_entries = [entry for entry in embeds_info if entry["type"] == "image"]
+    image_positions = [
+        index
+        for index, token in enumerate(tokens_only[0])
+        if isinstance(token, dict) and token.get("type") == "image"
+    ]
+    if len(image_positions) != len(visual_entries):
+        raise ValueError(
+            "Visual embedding export could not map image placeholders to expanded visual spans."
+        )
+
+    blocks = []
+    for visual_index, visual in enumerate(visual_entries):
+        placeholder = image_positions[visual_index]
+        if placeholder == 0 or placeholder + 1 >= len(tokens_only[0]):
+            raise ValueError("Visual embedding export found an unframed image placeholder.")
+        if tokens_only[0][placeholder - 1] != 151652 or tokens_only[0][placeholder + 1] != 151653:
+            raise ValueError("Visual embedding export requires Qwen vision-start and vision-end tokens.")
+
+        start = visual["index"]
+        end = start + visual["size"]
+        if start <= 0 or end >= embeds.shape[1]:
+            raise ValueError("Visual embedding export found an incomplete expanded visual block.")
+        blocks.append({
+            "interior": embeds[:, start:end, :],
+            "block": embeds[:, start - 1:end + 1, :],
+        })
+    return blocks
+
+
+def _raw_visual_token_embeddings(clip, tokens, device: str, visual_index: int = 0) -> torch.Tensor:
+    """Return one expanded visual input-embedding span from a source sequence."""
+    blocks = _visual_token_embedding_blocks(clip, tokens, device)
+    if not 0 <= visual_index < len(blocks):
+        raise ValueError("Visual embedding export could not locate the requested visual token span.")
+    return blocks[visual_index]["interior"]
+
+
+def save_source_visual_embeddings(
+    clip,
+    tokens,
     visual_fusion_config: dict,
     embedding_key: str,
+    device: str,
+    visual_indices: list[int] | None = None,
 ) -> None:
-    """Save one existing conditioning tensor's isolated visual span."""
-    if conditioning_tensor.ndim != 3:
-        raise ValueError("Visual conditioning export requires a [batch, tokens, channels] tensor.")
-    visual_start, visual_end = visual_range
-    if not 0 <= visual_start < visual_end <= conditioning_tensor.shape[1]:
-        raise ValueError("Visual conditioning export received an invalid visual token range.")
-    save_blended_visual_embeddings(
-        [
-            conditioning_tensor[batch, visual_start:visual_end, :].detach()
-            for batch in range(conditioning_tensor.shape[0])
-        ],
-        visual_fusion_config,
-        embedding_key,
-    )
+    """Save one or more unfused complete visual prompt blocks."""
+    blocks = _visual_token_embedding_blocks(clip, tokens, device)
+    for output_index, visual_index in enumerate(visual_indices or [0]):
+        if not 0 <= visual_index < len(blocks):
+            raise ValueError("Visual embedding export could not locate the requested visual block.")
+        visual_block = blocks[visual_index]["block"]
+        config = visual_fusion_config
+        if output_index:
+            config = dict(visual_fusion_config)
+            save_name = config.get("save_path", "blended_visual_embeds")
+            stem, suffix = os.path.splitext(save_name)
+            config["save_path"] = f"{stem}_{output_index + 1}{suffix}"
+        save_blended_visual_embeddings(
+            [visual_block[batch].detach() for batch in range(visual_block.shape[0])],
+            config,
+            embedding_key,
+        )
 
 
 def resolve_embedding_output_path(embeddings_dir: str, file_name: str) -> str:
@@ -1369,6 +1413,9 @@ def evaluate_conditioning_consensus_blend(
     device: str = "cpu",
     visual_ranges: dict = None,
     embedding_key: str = "qwen3vl_8b",
+    clip=None,
+    tokens_dict: dict = None,
+    visual_indices: dict = None,
     mask_cache: dict = None,
     visual_grids: dict = None,
 ) -> tuple:
@@ -1404,8 +1451,19 @@ def evaluate_conditioning_consensus_blend(
     if expected_visual_length <= 0 or any(visual_ranges.get(key, (0, 0)) == (0, 0) for key in active_keys):
         raise ValueError("Every visual fusion source must have a valid visual token range.")
 
+    raw_visual_blocks = None
+    if visual_fusion_config.get("save_blended_embeds", False):
+        if clip is None or tokens_dict is None:
+            raise ValueError("Saving visual embeddings requires the text encoder and source tokens.")
+        raw_visual_blocks = []
+        for key in active_keys:
+            blocks = _visual_token_embedding_blocks(clip, tokens_dict[key], device)
+            visual_index = (visual_indices or {}).get(key, 0)
+            if not 0 <= visual_index < len(blocks):
+                raise ValueError("Visual embedding export could not locate the requested fused visual block.")
+            raw_visual_blocks.append(blocks[visual_index])
+
     C_blended_list = []
-    exported_visuals = []
     for b in range(B):
         batch_tensors_dict = {k: sequence_tensors[k][b].to(device=device) for k in active_keys}
         ref_key = active_keys[0]
@@ -1430,9 +1488,6 @@ def evaluate_conditioning_consensus_blend(
             expected_visual_length,
             source_grids,
         )
-        if visual_fusion_config.get("save_blended_embeds", False):
-            exported_visuals.append(blended_vis_2d.detach())
-
         # Surrounding text (prefixes & suffixes) are kept 100% pure from the reference pass
         blended_prefix = prefixes[ref_key]
         blended_suffix = suffixes[ref_key]
@@ -1443,8 +1498,33 @@ def evaluate_conditioning_consensus_blend(
     C_blended = torch.stack(C_blended_list, dim=0).to(dtype=tensors_list[0].dtype, device=tensors_list[0].device)
 
     if visual_fusion_config.get("save_blended_embeds", False):
+        reference_block = raw_visual_blocks[0]["block"]
+        if any(
+            source["block"].shape != reference_block.shape
+            or not torch.equal(source["block"][:, :1, :], reference_block[:, :1, :])
+            or not torch.equal(source["block"][:, -1:, :], reference_block[:, -1:, :])
+            for source in raw_visual_blocks[1:]
+        ):
+            raise ValueError("Visual embedding export requires matching Qwen vision block boundaries.")
         save_blended_visual_embeddings(
-            exported_visuals,
+            [
+                torch.cat(
+                    [
+                        reference_block[batch, :1, :],
+                        fuse_visual_token_sources(
+                            [source["interior"][batch] for source in raw_visual_blocks],
+                            visual_fusion_config,
+                            device,
+                            mask_cache,
+                            expected_visual_length,
+                            source_grids,
+                        ),
+                        reference_block[batch, -1:, :],
+                    ],
+                    dim=0,
+                ).detach()
+                for batch in range(reference_block.shape[0])
+            ],
             visual_fusion_config,
             embedding_key,
         )
@@ -2351,6 +2431,9 @@ def _spatially_fuse_visual_consensus_sources(
             key: branch["visual_range"] for key, branch in zip(keys, branches)
         },
         embedding_key=next(iter(branches[0]["tokens"])),
+        clip=clip,
+        tokens_dict={key: branch["tokens"] for key, branch in zip(keys, branches)},
+        visual_indices={key: branch.get("raw_visual_index", 0) for key, branch in zip(keys, branches)},
         mask_cache={},
         visual_grids={
             key: branch["grid"] for key, branch in zip(keys, branches)
@@ -2606,6 +2689,7 @@ def _execute_advanced_minimax_h3_image_to_video(
                             visual_range[1] - visual_range[0],
                             visual_encoder_path == "legacy-flat",
                         ),
+                        "raw_visual_index": visual_index,
                     }
                 )
             slot_conditioning = _spatially_fuse_visual_consensus_sources(
@@ -2659,6 +2743,7 @@ def _execute_advanced_minimax_h3_image_to_video(
                         visual_range[1] - visual_range[0],
                         visual_encoder_path == "legacy-flat",
                     ),
+                    "raw_visual_index": len(branch_images) - 1,
                 }
             )
         conditioning = _spatially_fuse_visual_consensus_sources(
@@ -2678,6 +2763,16 @@ def _execute_advanced_minimax_h3_image_to_video(
         if len(conditioning) != 1:
             raise ValueError(
                 "MiniMax H3 visual conditioning requires one schedule entry."
+            )
+        if config.get("save_blended_embeds", False) and presentation_images:
+            tokens = tokenize_callback(prompt)
+            save_source_visual_embeddings(
+                clip,
+                tokens,
+                config,
+                next(iter(tokens)),
+                comfy.model_management.get_torch_device(),
+                list(range(len(presentation_images))),
             )
 
     for tensor, metadata in conditioning:
