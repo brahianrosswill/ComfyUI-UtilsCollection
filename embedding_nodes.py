@@ -31,10 +31,24 @@ class UC_EmbeddingDetokenizerAnalysis(io.ComfyNode):
                     options=["cosine", "euclidean", "dot_product"],
                     default="cosine",
                 ),
+                io.Int.Input(
+                    "alignment_candidates",
+                    default=64,
+                    min=8,
+                    max=512,
+                    step=8,
+                    tooltip="Nearest cosine candidates retained per embedding row for CWB greedy alignment.",
+                ),
+                io.Boolean.Input(
+                    "latin_only",
+                    default=False,
+                    tooltip="Limit approximation candidates to decoded Latin text and normal punctuation.",
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="analysis"),
                 io.String.Output(display_name="approximation"),
+                io.String.Output(display_name="cwb_approximation"),
             ],
         )
 
@@ -45,12 +59,16 @@ class UC_EmbeddingDetokenizerAnalysis(io.ComfyNode):
         embedding_name: str,
         top_k: int,
         similarity_metric: str,
+        alignment_candidates: int = 64,
+        latin_only: bool = False,
     ) -> io.NodeOutput:
         embedding_path = get_full_path_or_raise("embeddings", embedding_name)
-        analysis, approximation = analyze_embedding_file(
+        analysis, approximation, cwb_approximation = analyze_embedding_file(
             clip,
             embedding_path,
             top_k,
             similarity_metric,
+            alignment_candidates,
+            latin_only,
         )
-        return io.NodeOutput(analysis, approximation)
+        return io.NodeOutput(analysis, approximation, cwb_approximation)

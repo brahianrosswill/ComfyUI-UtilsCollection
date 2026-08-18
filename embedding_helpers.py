@@ -321,12 +321,46 @@ def _special_token_ids(tokenizer: Any) -> set[int]:
     return identifiers
 
 
+def _latin_decoded_token(value: str) -> bool:
+    if not value:
+        return False
+    has_latin = any("a" <= char.lower() <= "z" for char in value)
+    if has_latin:
+        return not any(char.isalpha() and not char.isascii() for char in value)
+    return all(char.isspace() or char.isascii() and not char.isalnum() for char in value)
+
+
+def cwb_greedy_token_alignment(
+    candidates_by_row: list[list[TokenCandidate]],
+    special_ids: set[int],
+) -> list[TokenCandidate | None]:
+    """Globally select non-special candidate IDs with CWB's greedy one-to-one rule."""
+    edges = sorted(
+        (
+            (-candidate.value, row_index, candidate.token_id, candidate)
+            for row_index, candidates in enumerate(candidates_by_row)
+            for candidate in candidates
+            if candidate.token_id not in special_ids
+        ),
+        key=lambda edge: edge[:3],
+    )
+    selected: list[TokenCandidate | None] = [None] * len(candidates_by_row)
+    used_token_ids = set()
+    for _, row_index, token_id, candidate in edges:
+        if selected[row_index] is None and token_id not in used_token_ids:
+            selected[row_index] = candidate
+            used_token_ids.add(token_id)
+    return selected
+
+
 def analyze_embedding_file(
     clip: Any,
     embedding_path: str,
     top_k: int,
     metric: str,
-) -> tuple[str, str]:
+    alignment_candidates: int = 64,
+    latin_only: bool = False,
+) -> tuple[str, str, str]:
     path = Path(embedding_path)
     tokenizer_branches = discover_tokenizer_branches(clip.tokenizer)
     model_branches = discover_model_branches(clip.cond_stage_model)
@@ -338,6 +372,7 @@ def analyze_embedding_file(
         f"Model branches: {len(model_branches)}",
     ]
     approximations = []
+    cwb_approximations = []
     analyzed = 0
     loaded_cache: dict[tuple[str, int], Any] = {}
 
@@ -387,20 +422,29 @@ def analyze_embedding_file(
                 for token_id in tokenizer_branch.inverse_vocabulary
                 if 0 <= token_id < model_branch.vocabulary_size
             )
+            analysis_token_ids = valid_token_ids
+            if latin_only:
+                analysis_token_ids = [
+                    token_id
+                    for token_id in valid_token_ids
+                    if _latin_decoded_token(
+                        _decode(tokenizer_branch.tokenizer, [token_id])
+                    )
+                ]
             branch_name = f"{tokenizer_branch.label} -> {model_branch.label}"
             report.extend(
                 (
                     f"Model branch: {model_branch.label}",
                     f"Pairing: {pairing_method}",
                     f"Vocabulary rows: {model_branch.vocabulary_size}",
-                    f"Tokenizer IDs analyzed: {len(valid_token_ids)}",
+                    f"Tokenizer IDs analyzed: {len(analysis_token_ids)}",
                 )
             )
             try:
                 nearest = nearest_vocabulary_tokens(
                     rows,
                     model_branch,
-                    valid_token_ids,
+                    analysis_token_ids,
                     top_k,
                     metric,
                 )
@@ -439,7 +483,34 @@ def analyze_embedding_file(
             report.append(f"Top-1 decoded: {decoded_sequence!r}")
             approximations.append(f"[{branch_name}] {decoded_sequence}")
 
+            if not analysis_token_ids:
+                report.append("CWB alignment: no eligible vocabulary tokens.")
+                cwb_approximations.append(f"[{branch_name}] ")
+                continue
+
+            cwb_nearest = nearest_vocabulary_tokens(
+                rows,
+                model_branch,
+                analysis_token_ids,
+                alignment_candidates,
+                "cosine",
+            )
+            aligned = cwb_greedy_token_alignment(cwb_nearest, special_ids)
+            aligned_ids = [candidate.token_id for candidate in aligned if candidate]
+            aligned_scores = [candidate.value for candidate in aligned if candidate]
+            cwb_decoded = _decode(tokenizer_branch.tokenizer, aligned_ids)
+            report.extend(
+                (
+                    f"CWB alignment: candidates={alignment_candidates} latin_only={latin_only}",
+                    f"CWB matches: {len(aligned_ids)}/{len(aligned)}",
+                    f"CWB IDs: {aligned_ids}",
+                    f"CWB scores: {[round(score, 8) for score in aligned_scores]}",
+                    f"CWB decoded: {cwb_decoded!r}",
+                )
+            )
+            cwb_approximations.append(f"[{branch_name}] {cwb_decoded}")
+
     if analyzed == 0:
         report.append("")
         report.append("No compatible tokenizer/model branch was analyzed.")
-    return "\n".join(report), "\n".join(approximations)
+    return "\n".join(report), "\n".join(approximations), "\n".join(cwb_approximations)

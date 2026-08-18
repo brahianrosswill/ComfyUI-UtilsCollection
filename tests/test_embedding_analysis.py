@@ -104,13 +104,18 @@ def test_schema_lists_embedding_analysis_controls(monkeypatch):
         "embedding_name",
         "top_k",
         "similarity_metric",
+        "alignment_candidates",
+        "latin_only",
     ]
     assert inputs["embedding_name"].options == ["sample.pt"]
     assert inputs["top_k"].default == 5
     assert inputs["similarity_metric"].default == "cosine"
+    assert inputs["alignment_candidates"].default == 64
+    assert inputs["latin_only"].default is False
     assert [value.display_name for value in schema.outputs] == [
         "analysis",
         "approximation",
+        "cwb_approximation",
     ]
 
 
@@ -122,9 +127,9 @@ def test_node_resolves_selected_embedding_and_returns_analysis(monkeypatch):
     )
     captured = {}
 
-    def analyze(clip, path, top_k, metric):
-        captured.update(clip=clip, path=path, top_k=top_k, metric=metric)
-        return "report", "tokens"
+    def analyze(clip, path, top_k, metric, alignment_candidates, latin_only):
+        captured.update(clip=clip, path=path, top_k=top_k, metric=metric, alignment_candidates=alignment_candidates, latin_only=latin_only)
+        return "report", "tokens", "cwb tokens"
 
     monkeypatch.setattr(embedding_nodes, "analyze_embedding_file", analyze)
     clip = object()
@@ -133,14 +138,18 @@ def test_node_resolves_selected_embedding_and_returns_analysis(monkeypatch):
         "nested/sample.safetensors",
         7,
         "euclidean",
+        80,
+        True,
     )
 
-    assert result.args == ("report", "tokens")
+    assert result.args == ("report", "tokens", "cwb tokens")
     assert captured == {
         "clip": clip,
         "path": "C:/resolved/embeddings/nested/sample.safetensors",
         "top_k": 7,
         "metric": "euclidean",
+        "alignment_candidates": 80,
+        "latin_only": True,
     }
 
 
@@ -192,6 +201,53 @@ def test_chunked_search_matches_single_chunk():
     assert chunked == single
 
 
+def test_cwb_alignment_uses_global_non_position_locked_matches():
+    candidate = embedding_helpers.TokenCandidate
+    selected = embedding_helpers.cwb_greedy_token_alignment(
+        [
+            [candidate(0, 0.90, 1.0), candidate(1, 0.80, 1.0)],
+            [candidate(0, 0.95, 1.0), candidate(2, 0.70, 1.0)],
+        ],
+        special_ids=set(),
+    )
+
+    assert [entry.token_id if entry else None for entry in selected] == [1, 0]
+
+
+def test_latin_candidate_filter_excludes_other_scripts():
+    assert embedding_helpers._latin_decoded_token(" costume")
+    assert embedding_helpers._latin_decoded_token(",")
+    assert not embedding_helpers._latin_decoded_token("本周")
+    assert not embedding_helpers._latin_decoded_token("ظهور")
+
+
+def test_latin_only_filters_regular_and_cwb_approximations(monkeypatch):
+    tokenizer = GenericTokenizerLeaf(
+        "clip_l",
+        2,
+        {0: "本周", 1: " english"},
+    )
+    model_root = torch.nn.Module()
+    model_root.clip_l = FakeModelLeaf([[1.0, 0.0], [0.9, 0.1]])
+    clip = types.SimpleNamespace(
+        tokenizer=types.SimpleNamespace(clip_l=tokenizer),
+        cond_stage_model=model_root,
+    )
+    monkeypatch.setattr(
+        embedding_helpers,
+        "load_embed",
+        lambda *args: torch.tensor([[1.0, 0.0]]),
+    )
+
+    analysis, approximation, cwb_approximation = embedding_helpers.analyze_embedding_file(
+        clip, "C:/embeddings/sample.pt", 2, "cosine", latin_only=True
+    )
+
+    assert "Tokenizer IDs analyzed: 1" in analysis
+    assert approximation == "[clip_l -> clip_l]  english"
+    assert cwb_approximation == "[clip_l -> clip_l]  english"
+
+
 def test_analysis_reports_every_row_special_tokens_and_approximation(monkeypatch):
     monkeypatch.setattr(
         embedding_helpers,
@@ -200,7 +256,7 @@ def test_analysis_reports_every_row_special_tokens_and_approximation(monkeypatch
             [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
         ),
     )
-    analysis, approximation = embedding_helpers.analyze_embedding_file(
+    analysis, approximation, cwb_approximation = embedding_helpers.analyze_embedding_file(
         FakeClip(VOCABULARY),
         "C:/embeddings/sample.pt",
         2,
@@ -215,6 +271,8 @@ def test_analysis_reports_every_row_special_tokens_and_approximation(monkeypatch
     assert "special=yes" in analysis
     assert "Top-1 IDs: [0, 2]" in analysis
     assert approximation == "[clip_l -> clip_l] zero special"
+    assert "CWB matches: 2/2" in analysis
+    assert cwb_approximation == "[clip_l -> clip_l] zero one"
 
 
 def test_analysis_handles_multiple_non_clip_l_encoder_branches(monkeypatch):
@@ -239,7 +297,7 @@ def test_analysis_handles_multiple_non_clip_l_encoder_branches(monkeypatch):
         }[key]
 
     monkeypatch.setattr(embedding_helpers, "load_embed", load)
-    analysis, approximation = embedding_helpers.analyze_embedding_file(
+    analysis, approximation, cwb_approximation = embedding_helpers.analyze_embedding_file(
         clip,
         "C:/embeddings/multi.safetensors",
         1,
@@ -250,6 +308,8 @@ def test_analysis_handles_multiple_non_clip_l_encoder_branches(monkeypatch):
     assert "Tokenizer branch: t5xxl" in analysis
     assert "[clip_g -> clip_g] g0" in approximation
     assert "[t5xxl -> t5xxl] t1" in approximation
+    assert "[clip_g -> clip_g] g0" in cwb_approximation
+    assert "[t5xxl -> t5xxl] t1" in cwb_approximation
 
 
 def test_incompatible_embedding_returns_diagnostic_report(monkeypatch):
@@ -258,7 +318,7 @@ def test_incompatible_embedding_returns_diagnostic_report(monkeypatch):
         "load_embed",
         lambda name, directories, size, key: torch.zeros((2, 4)),
     )
-    analysis, approximation = embedding_helpers.analyze_embedding_file(
+    analysis, approximation, cwb_approximation = embedding_helpers.analyze_embedding_file(
         FakeClip(VOCABULARY),
         "C:/embeddings/incompatible.pt",
         5,
@@ -268,6 +328,7 @@ def test_incompatible_embedding_returns_diagnostic_report(monkeypatch):
     assert "incompatible tensor shape (2, 4)" in analysis
     assert "No compatible tokenizer/model branch was analyzed." in analysis
     assert approximation == ""
+    assert cwb_approximation == ""
 
 
 def test_zero_query_vector_remains_finite():
