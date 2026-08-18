@@ -622,7 +622,7 @@ def test_h3_reference_alt_assembled_context_matches_structured_picture_request()
     assembled = instruction + prefix + request + suffix
 
     assert assembled.count(request) == 1
-    assert instruction.count("{user_query}") == 10
+    assert instruction.count("{user_query}") == 8
     assert instruction.count("{system_query}") == 1
     assert "regular user request, not this marker, is authoritative" in instruction
     assert "exactly those starts and no additional section boundaries" in instruction
@@ -833,16 +833,16 @@ STABLE_VIDEO_PRESET_HASHES = {
         "7469a2e17d36225c8b948b36bf47cdfb432c507d89efcb44a153d63b50120f0a"
     ),
     "video_timeline_minimax_h3_base_system_instruction": (
-        "a57d572905850bf6e51bfc292064826a70a4c89a6065f86356993b68e0f16ee6"
+        "fadfdce95e9c24e7d473f7cf435d3e6d55a9063e9288034cef93ad5658cfdd95"
     ),
     "video_timeline_minimax_h3_reference_system_instruction": (
-        "7f85667740d51670182fe505421020939bad512881a3da5a5f84064cee640046"
+        "aa0faedbd0bc04095e8702ff6fec48717111f0e985d3be9667fac84dfadb5c5f"
     ),
     "video_timeline_minimax_h3_reference_alt_system_instruction": (
-        "be6a9ee922e50ef22b092a2433af968c3883a9c0a19899d2fb299e29b26e6da6"
+        "3ea27fee780bd00a557b1c2d7f1c6d2917e4d94d706484c2434112f7a2634605"
     ),
     "video_timeline_minimax_h3_mixed_system_instruction": (
-        "14e89b388fafbd3a8bed5e6e6e381b00eeda0410e8d0a1f9c4d226f0924ae3c5"
+        "5a97315c659999331ad1f9ae85d96f37c8d6729f433d7da2ceb2037dd6c0c098"
     ),
 }
 
@@ -998,26 +998,32 @@ def test_minimax_h3_timeline_presets_keep_adaptive_standalone_visual_contract():
         assert "<d>[Language]" in instruction
 
 
-def test_minimax_h3_timeline_segments_do_not_imply_camera_shots():
+def test_minimax_h3_timeline_presets_mark_actual_cuts_with_shot_references():
     for name in H3_CAMERA_CONTINUITY_PRESETS:
         instruction = vlm_presets.system_instructions_vlm[name]
 
-        assert "**Timeline Segment and Camera Continuity:**" in instruction
+        assert "**Shot Continuity:**" in instruction
         assert (
-            "Timestamp blocks divide time, action, sound, or foreground priority; "
-            "they are not shot declarations."
+            "Introduce sequential `[Shot N]` markers inside [VISUAL] only when the "
+            "scene actually cuts or transitions."
         ) in instruction
-        assert "Never add `[Shot N]` markers merely because" in instruction
-        assert "one continuous camera take by default" in instruction
-        assert "the same movement continues rather than restarting it" in instruction
-        assert "only when `{user_query}` explicitly schedules one" in instruction
-        assert "without assigning a `[Shot N]` label" in instruction
+        assert "The timestamp range remains the authoritative timing structure." in instruction
+
+
+def test_minimax_h3_timeline_presets_require_segment_music_contract():
+    for name in H3_CAMERA_CONTINUITY_PRESETS:
+        instruction = vlm_presets.system_instructions_vlm[name]
+
+        assert "[VISUAL], optional [SPEECH], [SOUNDS], and optional [MUSIC]" in instruction
+        assert "Omit [MUSIC] from segments with no music specific to them." in instruction
+        assert "When music is specific to a timestamp block, write [MUSIC] after [SOUNDS]." in instruction
+        assert "State the type of music for that segment." in instruction
         assert (
-            'Neither the phrases "first shot" or "opening shot" nor a requested '
-            "segment count authorizes one shot per segment."
+            "Mention <Subject N> in [MUSIC] only when that actual subject is "
+            "playing the music; otherwise state only the music type."
         ) in instruction
-        assert "explicitly requests a multi-shot structure or named cuts" in instruction
-        assert "Introduce sequential `[Shot N]` markers" not in instruction
+        assert "as the whole-video summary of music specified in the timeline." in instruction
+        assert "Do not introduce music absent from the timeline." in instruction
 
 
 def test_stable_timeline_presets_require_zero_padded_two_decimal_seconds():
@@ -1103,7 +1109,7 @@ def test_minimax_h3_t2va_uses_general_standalone_timeline_contract():
     assert "Correct possession form: the red sash worn by <Subject 1>." in instruction
     assert "Forbidden possession form: <Subject 1>'s red sash." in instruction
     assert "place surrounding grammar outside it" not in instruction
-    assert instruction.count("{user_query}") == 7
+    assert instruction.count("{user_query}") == 5
     assert instruction.count("{system_query}") == 1
     lowered_instruction = instruction.lower()
     assert "example:" not in lowered_instruction
@@ -1279,7 +1285,7 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "Forbidden possession form: <Subject 1>'s red sash." in instruction
     assert "\r\n" in instruction
     assert not re.search(r"(?<!\r)\n", instruction)
-    assert instruction.count("{user_query}") == 10
+    assert instruction.count("{user_query}") == 8
     assert instruction.count("{system_query}") == 1
     lowered_instruction = instruction.lower()
     assert "example:" not in lowered_instruction
