@@ -12,10 +12,13 @@ import av
 import numpy as np
 import torch
 
+from .helper_functions import resize_nchw
+
 
 VIDEO_FRAME_SAMPLING_STRATEGIES = (
     "codec keyframes",
     "uniform PTS",
+    "focused PTS",
 )
 
 VIDEO_FRAME_TIMESTAMP_FORMATS = (
@@ -380,6 +383,44 @@ def _select_uniform_records(
     return selected
 
 
+def _select_focused_samples(records: Sequence[VideoFrameRecord], maximum_frames: int, include_zero_time: bool, minimum_spacing: Fraction, timestamp_format: str | None, focus_areas: int, focus_one: float, focus_two: float, focus_three: float) -> tuple[list[VideoFrameRecord], list[Fraction]]:
+    if maximum_frames == 0:
+        return _select_uniform_samples(records, maximum_frames, include_zero_time, minimum_spacing, timestamp_format)
+
+    zero_record = records[0]
+    candidates = [record for record in records if record.frame_index != zero_record.frame_index]
+    if not candidates:
+        selected = [zero_record] if include_zero_time else []
+        return selected, [record.timestamp for record in selected]
+    if include_zero_time and maximum_frames == 1:
+        return [zero_record], [Fraction(0)]
+
+    duration = records[-1].timestamp
+    if duration <= 0:
+        selected = [zero_record] if include_zero_time else []
+        return selected, [record.timestamp for record in selected]
+
+    targets = [
+        _as_fraction(target) for target in focused_timeline_timestamps(
+            maximum_frames, float(duration), focus_areas, focus_one, focus_two, focus_three, include_zero_time
+        )
+    ]
+    if timestamp_format is not None:
+        targets = [round_video_timestamp(target, timestamp_format) for target in targets]
+
+    selected_pairs = []
+    for target in targets:
+        if include_zero_time and target == 0:
+            selected_pairs.append((zero_record, Fraction(0)))
+        else:
+            selected_pairs.append((min(candidates, key=lambda record: (abs(record.timestamp - target), record.timestamp, record.frame_index)), target))
+
+    unique = {record.frame_index: (record, timestamp) for record, timestamp in selected_pairs}
+    spaced = _spacing_filter([record for record, _ in unique.values()], minimum_spacing)
+    timestamps_by_index = {record.frame_index: timestamp for record, timestamp in unique.values()}
+    return spaced, [timestamps_by_index[record.frame_index] for record in spaced]
+
+
 def _select_keyframe_records(
     records: Sequence[VideoFrameRecord],
     maximum_frames: int,
@@ -426,6 +467,10 @@ def _select_video_frame_records_and_timestamps(
     minimum_spacing_seconds: float,
     keyframe_stride: int,
     timestamp_format: str | None,
+    focus_areas: int = 0,
+    focus_one: float = 0.5,
+    focus_two: float = 0.5,
+    focus_three: float = 0.5,
 ) -> tuple[list[VideoFrameRecord], list[Fraction]]:
     if strategy not in VIDEO_FRAME_SAMPLING_STRATEGIES:
         raise ValueError(f"Unsupported video-frame sampling strategy: {strategy}")
@@ -449,6 +494,10 @@ def _select_video_frame_records_and_timestamps(
             minimum_spacing,
             timestamp_format,
         )
+    elif strategy == "focused PTS":
+        selected, output_timestamps = _select_focused_samples(
+            ordered, maximum_frames, include_zero_time, minimum_spacing, timestamp_format, focus_areas, focus_one, focus_two, focus_three
+        )
     else:
         selected = _select_keyframe_records(
             ordered,
@@ -471,6 +520,10 @@ def select_video_frame_records(
     include_zero_time: bool,
     minimum_spacing_seconds: float,
     keyframe_stride: int,
+    focus_areas: int = 0,
+    focus_one: float = 0.5,
+    focus_two: float = 0.5,
+    focus_three: float = 0.5,
 ) -> list[VideoFrameRecord]:
     selected, _ = _select_video_frame_records_and_timestamps(
         records,
@@ -480,6 +533,10 @@ def select_video_frame_records(
         minimum_spacing_seconds,
         keyframe_stride,
         timestamp_format=None,
+        focus_areas=focus_areas,
+        focus_one=focus_one,
+        focus_two=focus_two,
+        focus_three=focus_three,
     )
     return selected
 
@@ -633,6 +690,112 @@ def build_structured_video_timeline_text(
     return f"{introduction} Reference each image with {reference_text}."
 
 
+def _timeline_input_images(image_inputs) -> list[torch.Tensor]:
+    """Flatten autogrow IMAGE inputs in numeric socket and batch order."""
+    if not isinstance(image_inputs, dict):
+        raise ValueError("Images to Video Timeline requires at least one connected image.")
+
+    def socket_number(name):
+        match = re.search(r"\d+", name)
+        return int(match.group()) if match else 0
+
+    images = []
+    for name in sorted(image_inputs, key=socket_number):
+        value = image_inputs[name]
+        if value is None:
+            continue
+        if not torch.is_tensor(value) or value.ndim != 4 or value.shape[0] < 1:
+            raise ValueError("Images to Video Timeline inputs must be nonempty BHWC IMAGE batches.")
+        images.extend(value[index:index + 1] for index in range(value.shape[0]))
+    if not images:
+        raise ValueError("Images to Video Timeline requires at least one connected image.")
+    return images
+
+
+def _timeline_image_outputs(image_inputs, resize_images: bool) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    """Optionally normalize images for batching while preserving the ordered image list."""
+    images = _timeline_input_images(image_inputs)
+    if not resize_images:
+        return torch.zeros((1, 64, 64, 3), dtype=images[0].dtype, device=images[0].device), images
+    first_height, first_width = images[0].shape[1:3]
+    max_channels = max(image.shape[-1] for image in images)
+    normalized = []
+    for image in images:
+        if image.shape[-1] < max_channels:
+            image = torch.nn.functional.pad(image, (0, max_channels - image.shape[-1]), value=1.0)
+        if image.shape[1:3] != (first_height, first_width):
+            method = "area" if first_height < image.shape[1] or first_width < image.shape[2] else "bicubic"
+            image = resize_nchw(image.movedim(-1, 1), first_width, first_height, method).movedim(1, -1)
+        normalized.append(image)
+    image_batch = torch.cat(normalized, dim=0)
+    return image_batch, [image_batch[index:index + 1] for index in range(image_batch.shape[0])]
+
+
+def _truncated_normal_quantile(quantile: float, center: float) -> float:
+    """Return a unit-interval Gaussian quantile centered at a local focus value."""
+    deviation = 0.18
+    root_two = math.sqrt(2.0)
+    lower = 0.5 * (1.0 + math.erf(-center / (deviation * root_two)))
+    upper = 0.5 * (1.0 + math.erf((1.0 - center) / (deviation * root_two)))
+    target = lower + quantile * (upper - lower)
+    low, high = 0.0, 1.0
+    for _ in range(48):
+        midpoint = (low + high) / 2.0
+        value = 0.5 * (1.0 + math.erf((midpoint - center) / (deviation * root_two)))
+        if value < target:
+            low = midpoint
+        else:
+            high = midpoint
+    return (low + high) / 2.0
+
+
+def focused_timeline_timestamps(count: int, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, anchor_endpoints: bool = True) -> list[float]:
+    """Place ordered timestamps across a duration with optional local focus peaks."""
+    if count < 1:
+        raise ValueError("Focused timeline requires at least one timestamp.")
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Images to Video Timeline duration must be finite and greater than zero.")
+    if isinstance(focus_areas, bool) or focus_areas not in range(4):
+        raise ValueError("Images to Video Timeline focus_areas must be an integer from 0 to 3.")
+    focuses = (focus_one, focus_two, focus_three)
+    if any(not math.isfinite(value) or value < 0 or value > 1 for value in focuses):
+        raise ValueError("Images to Video Timeline focus values must be finite values from 0 to 1.")
+    if anchor_endpoints and count == 1:
+        return [0.0]
+    if focus_areas == 0:
+        denominator = count - 1 if anchor_endpoints else count + 1
+        start = 0 if anchor_endpoints else 1
+        return [duration * index / denominator for index in range(start, start + count)]
+
+    movable_count = count - 2 if anchor_endpoints else count
+    timestamps = [0.0] if anchor_endpoints else []
+    for index in range(1, movable_count + 1):
+        global_quantile = index / (movable_count + 1)
+        section = min(int(global_quantile * focus_areas), focus_areas - 1)
+        local_quantile = global_quantile * focus_areas - section
+        local_position = _truncated_normal_quantile(local_quantile, focuses[section])
+        timestamps.append(duration * (section + local_position) / focus_areas)
+    if anchor_endpoints:
+        timestamps.append(duration)
+    return timestamps
+
+
+def images_to_video_timeline(image_inputs, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, resize_images: bool, timestamp_format: str, timeline_style: str, index_offset: int = 0) -> SampledVideoFrames:
+    """Normalize supplied images and assign their manual video timeline timestamps."""
+    image_batch, image_list = _timeline_image_outputs(image_inputs, resize_images)
+    raw_timestamps = focused_timeline_timestamps(len(image_list), duration, focus_areas, focus_one, focus_two, focus_three)
+    timestamps = [format_video_timestamp(timestamp, timestamp_format) for timestamp in raw_timestamps]
+    return SampledVideoFrames(
+        image_batch=image_batch,
+        image_list=image_list,
+        timestamps=timestamps,
+        timestamps_text=", ".join(timestamps),
+        timeline_text=build_video_timeline_text(timestamps, timeline_style, index_offset),
+        video_runtime=duration,
+        structured_timeline_text=build_structured_video_timeline_text(duration, timestamps, index_offset),
+    )
+
+
 def sample_video_frames_as_images(
     video,
     sampling_strategy: str,
@@ -643,6 +806,10 @@ def sample_video_frames_as_images(
     timestamp_format: str,
     timeline_style: str,
     index_offset: int = 0,
+    focus_areas: int = 0,
+    focus_one: float = 0.5,
+    focus_two: float = 0.5,
+    focus_three: float = 0.5,
 ) -> SampledVideoFrames:
     video_runtime = float(video.get_duration())
     source_factory = _video_source_factory(video)
@@ -655,6 +822,10 @@ def sample_video_frames_as_images(
         minimum_spacing_seconds,
         keyframe_stride,
         timestamp_format,
+        focus_areas,
+        focus_one,
+        focus_two,
+        focus_three,
     )
     image_batch, image_list = decode_selected_video_frames(
         video, selected, source_factory

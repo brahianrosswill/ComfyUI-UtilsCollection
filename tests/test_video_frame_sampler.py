@@ -21,11 +21,13 @@ from utils_collection_video_frame_sampler_test.image_helpers import (
     build_structured_video_timeline_text,
     build_video_timeline_text,
     format_video_timestamp,
+    images_to_video_timeline,
     parse_video_timestamp,
     parse_video_timestamps,
     sample_video_frames_as_images,
     scan_video_frame_records,
     select_video_frame_records,
+    focused_timeline_timestamps,
 )
 
 
@@ -54,6 +56,7 @@ def test_parse_video_timestamps_rejects_decreasing_order():
     with pytest.raises(ValueError, match="earlier"):
         parse_video_timestamps([1, 0])
 from utils_collection_video_frame_sampler_test.image_nodes import (
+    UC_ImagesToVideoTimeline,
     UC_SampleVideoFramesAsImages,
 )
 
@@ -76,6 +79,10 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
         "video",
         "sampling_strategy",
         "maximum_frames",
+        "focus_areas",
+        "focus_one",
+        "focus_two",
+        "focus_three",
         "include_zero_time",
         "minimum_spacing_seconds",
         "keyframe_stride",
@@ -85,16 +92,19 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
     ]
     assert schema.inputs[1].default == "codec keyframes"
     assert schema.inputs[2].default == 16
-    assert schema.inputs[3].default is True
-    assert schema.inputs[4].default == 0.25
-    assert schema.inputs[5].default == 1
-    assert schema.inputs[6].default == "00.000s"
-    assert "0.0s" in schema.inputs[6].options
-    assert "0.00s" in schema.inputs[6].options
-    assert "00.00s" not in schema.inputs[6].options
-    assert schema.inputs[7].default == "H3 alignment prefix"
-    assert schema.inputs[8].default == 0
-    assert schema.inputs[8].min == 0
+    assert schema.inputs[3].default == schema.inputs[3].min == 0
+    assert schema.inputs[3].max == 3
+    assert [value.default for value in schema.inputs[4:7]] == [0.5, 0.5, 0.5]
+    assert schema.inputs[7].default is True
+    assert schema.inputs[8].default == 0.25
+    assert schema.inputs[9].default == 1
+    assert schema.inputs[10].default == "00.000s"
+    assert "0.0s" in schema.inputs[10].options
+    assert "0.00s" in schema.inputs[10].options
+    assert "00.00s" not in schema.inputs[10].options
+    assert schema.inputs[11].default == "H3 alignment prefix"
+    assert schema.inputs[12].default == 0
+    assert schema.inputs[12].min == 0
     assert [output.id for output in schema.outputs] == [
         "image_batch",
         "images",
@@ -112,6 +122,88 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
         False,
         False,
         False,
+    ]
+
+
+def test_images_to_video_timeline_schema_exposes_manual_focus_controls():
+    schema = UC_ImagesToVideoTimeline.define_schema()
+
+    assert schema.node_id == "UC_ImagesToVideoTimeline"
+    assert schema.display_name == "Images to Video Timeline"
+    assert [value.id for value in schema.inputs] == [
+        "duration",
+        "focus_areas",
+        "focus_one",
+        "focus_two",
+        "focus_three",
+        "resize_images",
+        "timestamp_format",
+        "timeline_style",
+        "index_offset",
+        "image_inputs",
+    ]
+    assert schema.inputs[0].default == 5.0
+    assert schema.inputs[1].default == schema.inputs[1].min == 0
+    assert schema.inputs[1].max == 3
+    assert [value.default for value in schema.inputs[2:5]] == [0.5, 0.5, 0.5]
+    assert schema.inputs[5].default is True
+    assert [output.id for output in schema.outputs] == [
+        "image_batch",
+        "images",
+        "timestamps",
+        "timestamps_text",
+        "timeline_text",
+        "video_runtime",
+        "structured_timeline_text",
+    ]
+
+
+def test_timeline_image_timestamps_anchor_ends_and_apply_local_focuses():
+    timestamps = focused_timeline_timestamps(9, 12.0, 2, 0.25, 0.75, 0.5)
+
+    assert timestamps[0] == 0.0
+    assert timestamps[-1] == 12.0
+    assert timestamps == sorted(timestamps)
+    assert timestamps[2] < 3.0
+    assert timestamps[-3] > 9.0
+
+
+def test_focused_pts_selects_source_frames_near_local_focus_targets():
+    records = _records(range(11))
+    early = select_video_frame_records(records, "focused PTS", 4, True, 0, 1, 1, 0.1, 0.5, 0.5)
+    late = select_video_frame_records(records, "focused PTS", 4, True, 0, 1, 1, 0.9, 0.5, 0.5)
+    without_zero = select_video_frame_records(records, "focused PTS", 3, False, 0, 1)
+    all_frames = select_video_frame_records(records, "focused PTS", 0, True, 0, 1, 3, 0.1, 0.5, 0.9)
+
+    assert [record.frame_index for record in early] == [0, 1, 2, 10]
+    assert [record.frame_index for record in late] == [0, 8, 9, 10]
+    assert [record.frame_index for record in without_zero] == [2, 5, 7]
+    assert [record.frame_index for record in all_frames] == list(range(11))
+
+
+def test_images_to_video_timeline_normalizes_or_returns_black_batch():
+    first = torch.zeros((2, 2, 4, 3))
+    second = torch.ones((1, 4, 2, 4))
+    inputs = {"image0": first, "image1": second}
+
+    resized = images_to_video_timeline(
+        inputs, 4.0, 0, 0.5, 0.5, 0.5, True,
+        "00.000s", "timestamps only",
+    )
+    unresized = images_to_video_timeline(
+        inputs, 4.0, 0, 0.5, 0.5, 0.5, False,
+        "00.000s", "timestamps only",
+    )
+
+    assert resized.image_batch.shape == (3, 2, 4, 4)
+    assert [image.shape for image in resized.image_list] == [(1, 2, 4, 4)] * 3
+    assert resized.timestamps == ["00.000s", "02.000s", "04.000s"]
+    assert unresized.image_batch.shape == (1, 64, 64, 3)
+    assert torch.count_nonzero(unresized.image_batch) == 0
+    assert [image.shape for image in unresized.image_list] == [
+        (1, 2, 4, 3),
+        (1, 2, 4, 3),
+        (1, 4, 2, 4),
     ]
 
 

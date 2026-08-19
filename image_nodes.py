@@ -21,6 +21,7 @@ from .image_helpers import (
     VIDEO_FRAME_SAMPLING_STRATEGIES,
     VIDEO_FRAME_TIMESTAMP_FORMATS,
     VIDEO_FRAME_TIMELINE_STYLES,
+    images_to_video_timeline,
     sample_video_frames_as_images,
 )
 
@@ -616,7 +617,8 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                     default="codec keyframes",
                     tooltip=(
                         "codec keyframes selects decoded codec keyframes. uniform "
-                        "PTS selects frames across presentation time."
+                        "PTS spaces targets evenly. focused PTS concentrates targets "
+                        "within selected duration sections."
                     ),
                 ),
                 io.Int.Input(
@@ -629,6 +631,10 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                         "0 returns every frame eligible after spacing and stride."
                     ),
                 ),
+                io.Int.Input("focus_areas", default=0, min=0, max=3, step=1, tooltip="Focused PTS only. 0 is uniform; active areas divide duration equally."),
+                io.Float.Input("focus_one", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Focused PTS position within the first duration section."),
+                io.Float.Input("focus_two", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Focused PTS position within the second duration section."),
+                io.Float.Input("focus_three", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Focused PTS position within the third duration section."),
                 io.Boolean.Input(
                     "include_zero_time",
                     default=True,
@@ -734,6 +740,10 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
         video,
         sampling_strategy: str,
         maximum_frames: int,
+        focus_areas: int,
+        focus_one: float,
+        focus_two: float,
+        focus_three: float,
         include_zero_time: bool,
         minimum_spacing_seconds: float,
         keyframe_stride: int,
@@ -751,7 +761,67 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
             timestamp_format,
             timeline_style,
             index_offset,
+            focus_areas,
+            focus_one,
+            focus_two,
+            focus_three,
         )
+        return io.NodeOutput(
+            sampled.image_batch,
+            sampled.image_list,
+            sampled.timestamps,
+            sampled.timestamps_text,
+            sampled.timeline_text,
+            sampled.video_runtime,
+            sampled.structured_timeline_text,
+        )
+
+
+class UC_ImagesToVideoTimeline(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        image_template = io.Autogrow.TemplatePrefix(io.Image.Input("image", optional=True), prefix="image", min=1, max=16)
+        return io.Schema(
+            node_id="UC_ImagesToVideoTimeline",
+            display_name="Images to Video Timeline",
+            category="image/video",
+            description="Assigns manual video timestamps to ordered image inputs.",
+            search_aliases=["image timeline", "images to video", "video timestamps", "image frames"],
+            inputs=[
+                io.Float.Input(
+                    "duration", default=5.0, min=0.01, step=0.01,
+                    tooltip="Target video duration in seconds.",
+                ),
+                io.Int.Input(
+                    "focus_areas", default=0, min=0, max=3, step=1,
+                    tooltip="0 spaces images uniformly. Each active area divides the duration equally and uses its matching local focus value.",
+                ),
+                io.Float.Input("focus_one", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Focus position within the first duration section."),
+                io.Float.Input("focus_two", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Focus position within the second duration section."),
+                io.Float.Input("focus_three", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Focus position within the third duration section."),
+                io.Boolean.Input(
+                    "resize_images", default=True,
+                    tooltip="Match all images to the first image for image batch output. When off, images output keeps original sizes and image batch is a black square.",
+                ),
+                io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="00.000s", tooltip="Formatting reused verbatim by every text output."),
+                io.Combo.Input("timeline_style", options=list(VIDEO_FRAME_TIMELINE_STYLES), default="H3 alignment prefix", tooltip="Scalar timeline text style."),
+                io.Int.Input("index_offset", default=0, min=0, step=1, tooltip="Adds this value to every <Picture N> reference."),
+                io.Autogrow.Input("image_inputs", template=image_template, tooltip="Images flatten in numeric socket and batch order."),
+            ],
+            outputs=[
+                io.Image.Output("image_batch", display_name="image batch", tooltip="Normalized image batch, or a black square when resize images is off."),
+                io.Image.Output("images", display_name="images", is_output_list=True, tooltip="Ordered source images aligned with timestamps."),
+                io.String.Output("timestamps", display_name="timestamps", is_output_list=True, tooltip="Formatted timestamps aligned with images."),
+                io.String.Output("timestamps_text", display_name="timestamps text", tooltip="All formatted timestamps joined by comma and space."),
+                io.String.Output("timeline_text", display_name="timeline text", tooltip="One concatenation-ready timeline string."),
+                io.Float.Output("video_runtime", display_name="video runtime", tooltip="Supplied target duration in seconds."),
+                io.String.Output("structured_timeline_text", display_name="structured timeline text", tooltip="Duration, image count, and chronological picture references."),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, resize_images: bool, timestamp_format: str, timeline_style: str, index_offset: int, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        sampled = images_to_video_timeline(image_inputs, duration, focus_areas, focus_one, focus_two, focus_three, resize_images, timestamp_format, timeline_style, index_offset)
         return io.NodeOutput(
             sampled.image_batch,
             sampled.image_list,
