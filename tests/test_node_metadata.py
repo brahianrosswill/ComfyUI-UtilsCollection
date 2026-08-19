@@ -244,6 +244,14 @@ def test_action_required_controls_have_targeted_tooltips():
     assert sampling_inputs
     assert all(value.tooltip for value in sampling_inputs if value.id != "seed")
 
+    attention_mode = next(
+        value for value in schemas["UC_UnifiedAttentionPatcher"].inputs
+        if value.id == "attention_mode"
+    )
+    attention_inputs = [value for option in attention_mode.options for value in option.inputs]
+    assert attention_inputs
+    assert all(value.tooltip for value in attention_inputs)
+
 
 def test_corrected_metadata_matches_current_behavior():
     package = _load_extension_package()

@@ -14,6 +14,7 @@ from typing import Any
 import torch
 
 import comfy.ldm.common_dit
+import comfy.ldm.modules.attention
 import comfy.model_management
 import comfy.model_prefetch
 import comfy.patcher_extension
@@ -22,6 +23,9 @@ from comfy.ldm.minimax import model as minimax_model
 
 MINIMAX_H3_CACHE_OWNER_KEY = "utilscollection_minimax_h3_cache"
 MINIMAX_H3_SPECTRUM_OWNER_KEY = "utilscollection_minimax_h3_spectrum"
+UNIFIED_ATTENTION_OWNER_KEY = "utilscollection_unified_attention"
+MINIMAX_H3_RADIAL_WRAPPER_KEY = "utilscollection_minimax_h3_radial"
+MINIMAX_H3_RADIAL_STATE_KEY = "utilscollection_minimax_h3_radial_state"
 
 
 # Cache heuristic adapted from ComfyUI-MiniMaxH3-Cache by lihaoyun6:
@@ -3816,4 +3820,388 @@ def patch_minimax_h3_spectrum_model(model: Any, config: SpectrumH3Config) -> Any
     patched.add_object_patch("diffusion_model._forward", bound_forward)
     patched.set_model_patch_replace(SpectrumH3BlockLoop(), "dit", "block_loop", 0)
     install_sampler_wrappers(patched, runtime)
+    return patched
+
+
+@dataclass(frozen=True, slots=True)
+class MiniMaxH3RadialAttentionConfig:
+    dense_blocks: int = 1
+    dense_start_steps: int = 1
+    dense_end_steps: int = 1
+    block_size: int = 128
+    decay_factor: float = 0.2
+    allow_compile: bool = False
+
+    def validate(self) -> MiniMaxH3RadialAttentionConfig:
+        if self.dense_blocks < 0:
+            raise ValueError("Dense block count must be zero or greater.")
+        if self.dense_start_steps < 0 or self.dense_end_steps < 0:
+            raise ValueError("Dense step counts must be zero or greater.")
+        if self.block_size not in (64, 128):
+            raise ValueError("MiniMax H3 Radial block size must be 64 or 128.")
+        if not math.isfinite(self.decay_factor) or not 0.0 <= self.decay_factor <= 1.0:
+            raise ValueError("MiniMax H3 Radial decay factor must be finite and in [0, 1].")
+        if not isinstance(self.allow_compile, bool):
+            raise TypeError("MiniMax H3 Radial allow_compile must be a boolean.")
+        return self
+
+
+UNIFIED_ATTENTION_MODES = (
+    "disabled",
+    "FlashAttention",
+    "SageAttention",
+    "Sparse / MiniMax H3 Radial",
+)
+
+CUSTOM_SAGE_MODES = (
+    "auto",
+    "sageattn_qk_int8_pv_fp16_cuda",
+    "sageattn_qk_int8_pv_fp16_triton",
+    "sageattn_qk_int8_pv_fp8_cuda",
+    "sageattn_qk_int8_pv_fp8_cuda++",
+    "sageattn3",
+    "sageattn3_per_block_mean",
+)
+
+
+def _call_attention_function(attention_function: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:
+    def override(_original: Callable[..., torch.Tensor], *args: Any, **kwargs: Any) -> torch.Tensor:
+        wrapped = getattr(attention_function, "__wrapped__", attention_function)
+        return wrapped(*args, **kwargs)
+
+    return override
+
+
+def _attention_as_nhd(q, k, v, heads: int, already_hnd: bool):
+    if already_hnd:
+        batch, _, _, head_dim = q.shape
+        return (q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)), batch, head_dim
+    batch, _, hidden_size = q.shape
+    head_dim = hidden_size // heads
+    return (q.reshape(batch, -1, heads, head_dim), k.reshape(batch, -1, heads, head_dim), v.reshape(batch, -1, heads, head_dim)), batch, head_dim
+
+
+def _attention_from_nhd(output, batch: int, heads: int, head_dim: int, hnd_output: bool):
+    return output.transpose(1, 2) if hnd_output else output.reshape(batch, -1, heads * head_dim)
+
+
+def _sage_mask(mask):
+    if mask is None:
+        return None
+    if mask.ndim == 2:
+        return mask[None]
+    return mask[:, None] if mask.ndim == 3 else mask
+
+
+def _make_sage_backend(mode: str, allow_compile: bool) -> Callable[..., torch.Tensor]:
+    if mode == "auto":
+        from sageattention import sageattn
+
+        def sage_function(q, k, v, **kwargs):
+            return sageattn(q, k, v, **kwargs)
+    elif mode == "sageattn_qk_int8_pv_fp16_cuda":
+        from sageattention import sageattn_qk_int8_pv_fp16_cuda
+
+        def sage_function(q, k, v, **kwargs):
+            return sageattn_qk_int8_pv_fp16_cuda(q, k, v, pv_accum_dtype="fp32", **kwargs)
+    elif mode == "sageattn_qk_int8_pv_fp16_triton":
+        from sageattention import sageattn_qk_int8_pv_fp16_triton
+
+        def sage_function(q, k, v, **kwargs):
+            return sageattn_qk_int8_pv_fp16_triton(q, k, v, pv_accum_dtype="fp32", **kwargs)
+    elif mode in ("sageattn_qk_int8_pv_fp8_cuda", "sageattn_qk_int8_pv_fp8_cuda++"):
+        from sageattention import sageattn_qk_int8_pv_fp8_cuda
+
+        accumulation = "fp32+fp16" if mode.endswith("++") else "fp32+fp32"
+
+        def sage_function(q, k, v, **kwargs):
+            return sageattn_qk_int8_pv_fp8_cuda(q, k, v, pv_accum_dtype=accumulation, **kwargs)
+    elif mode in ("sageattn3", "sageattn3_per_block_mean"):
+        from sageattn3 import sageattn3_blackwell
+
+        def sage_function(q, k, v, **kwargs):
+            tensor_layout = kwargs.pop("tensor_layout", "NHD")
+            if tensor_layout == "NHD":
+                q, k, v = (tensor.transpose(1, 2) for tensor in (q, k, v))
+            result = sageattn3_blackwell(
+                q,
+                k,
+                v,
+                per_block_mean=mode == "sageattn3_per_block_mean",
+                **kwargs,
+            )
+            return result.transpose(1, 2) if tensor_layout == "NHD" else result
+    else:
+        raise ValueError(f"Unsupported custom SageAttention mode: {mode}")
+
+    if not allow_compile:
+        sage_function = torch.compiler.disable()(sage_function)
+
+    def attention(q, k, v, heads, mask=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
+        if kwargs.get("low_precision_attention", True) is False:
+            return comfy.ldm.modules.attention.attention_pytorch.__wrapped__(
+                q, k, v, heads, mask=mask, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs
+            )
+        input_dtype = v.dtype
+        if q.dtype == torch.float32 or k.dtype == torch.float32 or v.dtype == torch.float32:
+            q, k, v = q.to(torch.float16), k.to(torch.float16), v.to(torch.float16)
+        (q, k, v), batch, head_dim = _attention_as_nhd(q, k, v, heads, skip_reshape)
+        output = sage_function(q, k, v, attn_mask=_sage_mask(mask), is_causal=False, tensor_layout="NHD").to(input_dtype)
+        return _attention_from_nhd(output, batch, heads, head_dim, skip_output_reshape)
+
+    return attention
+
+
+def _make_flash_backend(allow_compile: bool, cast_dtype: torch.dtype) -> Callable[..., torch.Tensor]:
+    try:
+        from flash_attn import flash_attn_func
+        is_v3 = False
+    except ImportError:
+        try:
+            from flash_attn_interface import flash_attn_func
+            is_v3 = True
+        except ImportError as error:
+            raise RuntimeError("Custom FlashAttention requires flash_attn or flash_attn_interface.") from error
+
+    def flash_function(q, k, v):
+        result = flash_attn_func(q, k, v, causal=False) if is_v3 else flash_attn_func(q, k, v, dropout_p=0.0, causal=False)
+        return result[0] if isinstance(result, tuple) else result
+
+    if not allow_compile:
+        flash_function = torch.compiler.disable()(flash_function)
+
+    def attention(q, k, v, heads, mask=None, skip_reshape=False, skip_output_reshape=False, **_kwargs):
+        if mask is not None:
+            raise RuntimeError("Custom FlashAttention does not support attention masks.")
+        input_dtype = v.dtype
+        if q.dtype == torch.float32 or k.dtype == torch.float32 or v.dtype == torch.float32:
+            q, k, v = q.to(cast_dtype), k.to(cast_dtype), v.to(cast_dtype)
+        (q, k, v), batch, head_dim = _attention_as_nhd(q, k, v, heads, skip_reshape)
+        output = flash_function(q, k, v).to(input_dtype)
+        return _attention_from_nhd(output, batch, heads, head_dim, skip_output_reshape)
+
+    return attention
+
+
+def _model_compute_dtype(model: Any) -> torch.dtype:
+    diffusion_model = model.get_model_object("diffusion_model")
+    get_dtype = getattr(diffusion_model, "get_dtype_inference", None)
+    dtype = get_dtype() if callable(get_dtype) else torch.float16
+    return dtype if dtype in (torch.float16, torch.bfloat16) else torch.float16
+
+
+def _ensure_transformer_options(model: Any) -> dict[str, Any]:
+    options = dict(getattr(model, "model_options", {}).get("transformer_options", {}))
+    model.model_options["transformer_options"] = options
+    return options
+
+
+def _h3_sage_forward(self, x, rope_freqs=None, transformer_options=None):
+    if x.device.type != "cuda":
+        raise RuntimeError("MiniMax H3 memory optimizations require CUDA.")
+    try:
+        from sageattention import sageattn_qk_int8_pv_fp8_cuda
+    except ImportError as error:
+        raise RuntimeError("MiniMax H3 memory optimizations require SageAttention.") from error
+
+    token_count = x.shape[0]
+    projected = self.qkv_proj(x).reshape(token_count, 3, self.heads, self.head_dim)
+    q, k, v = (projected[:, index].unsqueeze(0) for index in range(3))
+    if rope_freqs is not None:
+        qw = comfy.model_management.cast_to(self.q_norm.weight, device=x.device)
+        kw = comfy.model_management.cast_to(self.k_norm.weight, device=x.device)
+        comfy.quant_ops.ck.rms_rope_split_half_(q, k, rope_freqs, qw, kw, epsilon=self.q_norm.eps, rot_dim=rope_freqs.shape[-3] * 2)
+    else:
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+    attended = sageattn_qk_int8_pv_fp8_cuda(q, k, v, is_causal=False, tensor_layout="NHD", pv_accum_dtype="fp32+fp32")
+    return self.out_proj(attended.to(x.dtype).flatten(2).squeeze(0))
+
+
+def _h3_sparse_step(transformer_options: dict[str, Any], timestep: torch.Tensor, config: MiniMaxH3RadialAttentionConfig) -> bool:
+    sigmas = transformer_options.get("sample_sigmas")
+    if not isinstance(sigmas, torch.Tensor) or sigmas.ndim != 1 or len(sigmas) < 2:
+        raise ValueError("MiniMax H3 Radial requires the sampler sigma schedule.")
+    current = timestep.flatten()[0].to(sigmas.dtype)
+    if current <= sigmas[-1]:
+        return False
+    step_index = torch.searchsorted(-sigmas, -current, right=True) - 1
+    step_index = int(step_index.clamp(0, len(sigmas) - 2).item())
+    return config.dense_start_steps <= step_index < len(sigmas) - 1 - config.dense_end_steps
+
+
+def _h3_radial_block_mask(state: dict[str, Any], device: torch.device) -> torch.Tensor:
+    block_size = state["config"].block_size
+    total_blocks = math.ceil(state["sequence_length"] / block_size)
+    plan = torch.ones((total_blocks, total_blocks), dtype=torch.bool, device=device)
+    video_start, video_end = state["video_start"], state["video_end"]
+    first_video_block = (video_start + block_size - 1) // block_size
+    last_video_block = video_end // block_size - 1
+    if last_video_block < first_video_block:
+        return plan
+
+    plan[first_video_block : last_video_block + 1, first_video_block : last_video_block + 1] = False
+    frame_tokens = state["tokens_per_frame"]
+    frame_count = state["frame_count"]
+
+    def describe(block_index: int):
+        start = max(video_start, block_index * block_size) - video_start
+        end = min(video_end, (block_index + 1) * block_size) - video_start
+        return min(frame_count - 1, start // frame_tokens), start % frame_tokens, (end - 1) % frame_tokens
+
+    for output_block in range(first_video_block, last_video_block + 1):
+        output_frame, output_left, output_right = describe(output_block)
+        for input_block in range(first_video_block, last_video_block + 1):
+            input_frame, input_left, input_right = describe(input_block)
+            frame_distance = abs(output_frame - input_frame)
+            if frame_distance == 0:
+                plan[output_block, input_block] = True
+                continue
+            radius = frame_tokens // 2 if frame_distance == 1 else max(
+                block_size,
+                int((2 ** frame_tokens.bit_length()) * state["config"].decay_factor / 2**frame_distance),
+            )
+            plan[output_block, input_block] = output_left <= input_right + radius and input_left <= output_right + radius
+    return plan
+
+
+def _convert_sparse_mask(mask: torch.Tensor, block_size: int) -> torch.Tensor:
+    compute_capability = "sm{}{}".format(*torch.cuda.get_device_capability(mask.device))
+    if block_size == 128:
+        expand_axis = 0 if compute_capability == "sm90" else 1
+        return mask.repeat_interleave(2, dim=expand_axis)
+    rows, columns = mask.shape
+    if compute_capability == "sm90":
+        return mask.reshape(rows, columns // 2, 2).any(dim=2)
+    return mask.reshape(rows // 2, 2, columns).any(dim=1)
+
+
+def _run_h3_radial_attention(self, x, rope_freqs, state: dict[str, Any]) -> torch.Tensor:
+    if x.device.type != "cuda":
+        raise RuntimeError("MiniMax H3 Radial requires CUDA.")
+    try:
+        from spas_sage_attn import block_sparse_sage2_attn_cuda
+    except ImportError as error:
+        raise RuntimeError("MiniMax H3 Radial requires spas_sage_attn.") from error
+
+    sequence_length = x.shape[0]
+    block_size = state["config"].block_size
+    padded_length = math.ceil(sequence_length / block_size) * block_size
+    q, k, v = self.qkv_proj(x).split(self.heads * self.head_dim, dim=-1)
+    q = q.view(1, sequence_length, self.heads, self.head_dim)
+    k = k.view(1, sequence_length, self.heads, self.head_dim)
+    v = v.view(1, sequence_length, self.heads, self.head_dim)
+    if rope_freqs is not None:
+        qw = comfy.model_management.cast_to(self.q_norm.weight, device=x.device)
+        kw = comfy.model_management.cast_to(self.k_norm.weight, device=x.device)
+        comfy.quant_ops.ck.rms_rope_split_half_(q, k, rope_freqs, qw, kw, epsilon=self.q_norm.eps, rot_dim=rope_freqs.shape[-3] * 2)
+    else:
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+    if padded_length != sequence_length:
+        padding = (0, 0, 0, 0, 0, padded_length - sequence_length)
+        q, k, v = (torch.nn.functional.pad(tensor, padding) for tensor in (q, k, v))
+    mask = state.setdefault("masks", {}).get((x.device, padded_length))
+    if mask is None:
+        mask = _convert_sparse_mask(_h3_radial_block_mask(state, x.device), block_size)
+        state["masks"][(x.device, padded_length)] = mask
+    mask_id = mask.unsqueeze(0).unsqueeze(0).expand(1, self.heads, -1, -1).to(torch.int8)
+    output = block_sparse_sage2_attn_cuda(q, k, v, mask_id=mask_id, tensor_layout="NHD", output_dtype=x.dtype)
+    return self.out_proj(output[:, :sequence_length].to(x.dtype).reshape(sequence_length, self.heads * self.head_dim))
+
+
+def _make_h3_radial_attention_forward(original: Callable[..., torch.Tensor], config: MiniMaxH3RadialAttentionConfig):
+    def forward(self, x, rope_freqs=None, transformer_options=None):
+        transformer_options = {} if transformer_options is None else transformer_options
+        state = transformer_options.get(MINIMAX_H3_RADIAL_STATE_KEY)
+        if state is None or not _h3_sparse_step(transformer_options, state["timestep"], config):
+            return original(x, rope_freqs=rope_freqs, transformer_options=transformer_options)
+        return _run_h3_radial_attention(self, x, rope_freqs, state)
+
+    return forward
+
+
+def _make_h3_radial_wrapper(config: MiniMaxH3RadialAttentionConfig):
+    def wrapper(executor, x, timestep, context, transformer_options=None, minimax_payload=None, **kwargs):
+        transformer_options = {} if transformer_options is None else transformer_options
+        model = executor.class_obj
+        video_x, audio_x = x
+        video_x = comfy.ldm.common_dit.pad_to_patch_size(video_x, model.patch_size)
+        latent_t, latent_h, latent_w = video_x.shape[2:5]
+        payload = minimax_payload or {}
+        layout = payload.get("layout")
+        signature = (context.shape[1], latent_t, latent_h, latent_w, audio_x.shape[-1])
+        if layout is None or layout.signature != signature:
+            layout = minimax_model.PackedLayout(*signature, keyframes=payload.get("keyframes"), refs=payload.get("refs"))
+        video_start, video_end, _ = next(segment for segment in layout.segments if segment[2] == "video")
+        options = dict(transformer_options)
+        options[MINIMAX_H3_RADIAL_STATE_KEY] = {
+            "config": config,
+            "timestep": timestep,
+            "sequence_length": layout.seq_len,
+            "video_start": video_start,
+            "video_end": video_end,
+            "frame_count": latent_t,
+            "tokens_per_frame": (video_end - video_start) // latent_t,
+            "masks": {},
+        }
+        return executor(x, timestep, context, options, minimax_payload=minimax_payload, **kwargs)
+
+    return wrapper
+
+
+def _patch_h3_radial_attention(model: Any, config: MiniMaxH3RadialAttentionConfig) -> Any:
+    config.validate()
+    patched = model.clone()
+    diffusion_model = patched.get_model_object("diffusion_model")
+    if not isinstance(diffusion_model, minimax_model.MiniMaxH3Model):
+        raise ValueError("MiniMax H3 Radial requires a MiniMax H3 diffusion model.")
+    attention_head_dims = {block.attn.head_dim for block in diffusion_model.blocks}
+    if not attention_head_dims <= {64, 128}:
+        raise ValueError("MiniMax H3 Radial requires a 64 or 128 dimension attention head.")
+    options = _ensure_transformer_options(patched)
+    options[UNIFIED_ATTENTION_OWNER_KEY] = "Sparse / MiniMax H3 Radial"
+    patched.remove_wrappers_with_key(comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, MINIMAX_H3_RADIAL_WRAPPER_KEY)
+    patched.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, MINIMAX_H3_RADIAL_WRAPPER_KEY, _make_h3_radial_wrapper(config))
+    for index, block in enumerate(diffusion_model.blocks[config.dense_blocks :], start=config.dense_blocks):
+        original = block.attn.forward
+        patched_forward = _make_h3_radial_attention_forward(original, config)
+        if config.allow_compile:
+            patched_forward = torch.compile(patched_forward, dynamic=True)
+        patched_forward = types.MethodType(patched_forward, block.attn)
+        patched.add_object_patch(f"diffusion_model.blocks.{index}.attn.forward", patched_forward)
+    return patched
+
+
+def patch_unified_attention_model(model: Any, attention_mode: dict[str, Any]) -> Any:
+    mode = attention_mode.get("attention_mode")
+    if mode not in UNIFIED_ATTENTION_MODES:
+        raise ValueError("Choose a supported attention mode.")
+    if mode == "disabled":
+        return model
+    if mode == "Sparse / MiniMax H3 Radial":
+        config = attention_mode.get("minimax_h3_radial_config")
+        if not isinstance(config, MiniMaxH3RadialAttentionConfig):
+            raise ValueError("Sparse / MiniMax H3 Radial requires MiniMax H3 Radial Attention Config.")
+        return _patch_h3_radial_attention(model, config)
+
+    patched = model.clone()
+    options = _ensure_transformer_options(patched)
+    options[UNIFIED_ATTENTION_OWNER_KEY] = mode
+    if mode == "FlashAttention":
+        options["optimized_attention_override"] = _call_attention_function(
+            _make_flash_backend(bool(attention_mode.get("allow_compile", False)), _model_compute_dtype(patched))
+        )
+    elif mode == "SageAttention":
+        h3_memory_optimizations = bool(attention_mode.get("h3_memory_optimizations", False))
+        options["optimized_attention_override"] = _call_attention_function(
+            _make_sage_backend(attention_mode.get("sage_mode", "auto"), bool(attention_mode.get("allow_compile", False)))
+        )
+        if h3_memory_optimizations:
+            diffusion_model = patched.get_model_object("diffusion_model")
+            if not isinstance(diffusion_model, minimax_model.MiniMaxH3Model):
+                raise ValueError("MiniMax H3 memory optimizations require a MiniMax H3 diffusion model.")
+            for index, block in enumerate(diffusion_model.blocks):
+                patched_forward = types.MethodType(_h3_sage_forward, block.attn)
+                patched.add_object_patch(f"diffusion_model.blocks.{index}.attn.forward", patched_forward)
     return patched

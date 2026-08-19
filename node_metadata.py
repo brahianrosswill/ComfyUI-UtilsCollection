@@ -68,6 +68,8 @@ DESCRIPTIONS = {
     "UC_TextEncodeGemmaSystemEditAdvanced": "Encodes advanced Gemma image-edit conditioning with custom system prompts.",
     "UC_AdvancedVisualConditioningEncode": "Encodes and fuses visual conditioning from multiple images with advanced controls.",
     "UC_MiniMaxH3MediaConfig": "Packages timestamped images as one Qwen Video sequence with optional native MiniMax H3 audio conditioning.",
+    "UC_MiniMaxH3RadialAttentionConfig": "Configures sparse radial attention for target video rows in MiniMax H3.",
+    "UC_UnifiedAttentionPatcher": "Applies one selected attention implementation to a cloned model.",
     "UC_AdvancedVisConEncoder": "Spatially fuses visual sources at each encoder resolution, then consensus-blends the complete conditionings.",
     "UC_VisualConsensusConfiguration": "Configures independent spatial-fusion and complete-conditioning consensus stages.",
     "UC_AdvancedVisualConfiguration": "Provides low-level overrides for visual spatial fusion and raw embedding export.",

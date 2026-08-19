@@ -17,6 +17,164 @@ sys.modules.setdefault(PACKAGE_NAME, package)
 from utils_collection_patcher_test import patcher_helpers, patcher_nodes
 
 
+def test_unified_attention_schema_keeps_mode_settings_separate():
+    schema = patcher_nodes.UC_UnifiedAttentionPatcher.define_schema()
+    inputs = {value.id: value for value in schema.inputs}
+    attention_mode = inputs["attention_mode"]
+    options = {option.key: option for option in attention_mode.options}
+
+    assert schema.node_id == "UC_UnifiedAttentionPatcher"
+    assert [option.key for option in attention_mode.options] == ["disabled", "FlashAttention", "SageAttention"]
+    assert [value.id for value in options["FlashAttention"].inputs] == ["allow_compile"]
+    assert [value.id for value in options["SageAttention"].inputs] == [
+        "sage_mode",
+        "allow_compile",
+        "h3_memory_optimizations",
+    ]
+    assert "Sparse / MiniMax H3 Radial" not in options
+    assert len(options["SageAttention"].inputs) + 1 == 4
+
+
+def test_minimax_h3_radial_config_returns_typed_runtime_value():
+    result = patcher_nodes.UC_MiniMaxH3RadialAttentionConfig.execute(1, 2, 3, 128, 0.4, True)
+    config = result.args[0]
+
+    assert isinstance(config, patcher_helpers.MiniMaxH3RadialAttentionConfig)
+    assert config == patcher_helpers.MiniMaxH3RadialAttentionConfig(1, 2, 3, 128, 0.4, True)
+
+
+def test_unified_attention_disabled_returns_original_model():
+    model = object()
+
+    assert patcher_helpers.patch_unified_attention_model(model, {"attention_mode": "disabled"}) is model
+
+
+def test_unified_h3_radial_uses_clone_scoped_wrapper_and_block_patches(monkeypatch):
+    class FakeAttention:
+        head_dim = 128
+
+        def forward(self, x, rope_freqs=None, transformer_options=None):
+            return x
+
+    class FakeBlock:
+        def __init__(self):
+            self.attn = FakeAttention()
+
+    class FakeH3:
+        head_dim = 128
+
+        def __init__(self):
+            self.blocks = [FakeBlock() for _ in range(3)]
+
+    monkeypatch.setattr(patcher_helpers.minimax_model, "MiniMaxH3Model", FakeH3)
+
+    class FakePatcher:
+        def __init__(self, diffusion):
+            self.model = types.SimpleNamespace(diffusion_model=diffusion)
+            self.model_options = {"transformer_options": {}}
+            self.object_patches = {}
+            self.wrappers = {}
+
+        def clone(self):
+            return FakePatcher(self.model.diffusion_model)
+
+        def get_model_object(self, _name):
+            return self.model.diffusion_model
+
+        def add_object_patch(self, path, value):
+            self.object_patches[path] = value
+
+        def remove_wrappers_with_key(self, wrapper_type, key):
+            self.wrappers.get(wrapper_type, {}).pop(key, None)
+
+        def add_wrapper_with_key(self, wrapper_type, key, wrapper):
+            self.wrappers.setdefault(wrapper_type, {})[key] = [wrapper]
+
+    original = FakePatcher(FakeH3())
+    config = patcher_helpers.MiniMaxH3RadialAttentionConfig(dense_blocks=1)
+    patched = patcher_helpers.patch_unified_attention_model(
+        original,
+        {"attention_mode": "Sparse / MiniMax H3 Radial", "minimax_h3_radial_config": config},
+    )
+
+    assert original.object_patches == {}
+    assert sorted(patched.object_patches) == [
+        "diffusion_model.blocks.1.attn.forward",
+        "diffusion_model.blocks.2.attn.forward",
+    ]
+    wrappers = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL]
+    assert patcher_helpers.MINIMAX_H3_RADIAL_WRAPPER_KEY in wrappers
+
+
+def test_unified_h3_memory_optimizations_use_clone_scoped_block_patches(monkeypatch):
+    class FakeAttention:
+        def forward(self, x, rope_freqs=None, transformer_options=None):
+            return x
+
+    class FakeH3:
+        def __init__(self):
+            self.blocks = [types.SimpleNamespace(attn=FakeAttention()) for _ in range(2)]
+
+    monkeypatch.setattr(patcher_helpers.minimax_model, "MiniMaxH3Model", FakeH3)
+    monkeypatch.setattr(patcher_helpers, "_make_sage_backend", lambda *_args: lambda *args, **_kwargs: args[2])
+
+    class FakePatcher:
+        def __init__(self, diffusion):
+            self.model = types.SimpleNamespace(diffusion_model=diffusion)
+            self.model_options = {"transformer_options": {}}
+            self.object_patches = {}
+
+        def clone(self):
+            return FakePatcher(self.model.diffusion_model)
+
+        def get_model_object(self, _name):
+            return self.model.diffusion_model
+
+        def add_object_patch(self, path, value):
+            self.object_patches[path] = value
+
+    patched = patcher_helpers.patch_unified_attention_model(
+        FakePatcher(FakeH3()),
+        {
+            "attention_mode": "SageAttention",
+            "sage_mode": "auto",
+            "h3_memory_optimizations": True,
+        },
+    )
+
+    assert sorted(patched.object_patches) == [
+        "diffusion_model.blocks.0.attn.forward",
+        "diffusion_model.blocks.1.attn.forward",
+    ]
+
+
+def test_h3_radial_block_mask_keeps_cross_segment_blocks_dense():
+    config = patcher_helpers.MiniMaxH3RadialAttentionConfig(block_size=64)
+    state = {
+        "config": config,
+        "sequence_length": 256,
+        "video_start": 128,
+        "video_end": 256,
+        "frame_count": 2,
+        "tokens_per_frame": 64,
+    }
+    mask = patcher_helpers._h3_radial_block_mask(state, torch.device("cpu"))
+
+    assert mask.shape == (4, 4)
+    assert mask[:2].all()
+    assert mask[:, :2].all()
+    assert mask[2:, 2:].all()
+
+
+def test_h3_radial_maps_adjusted_sigma_to_its_schedule_step():
+    config = patcher_helpers.MiniMaxH3RadialAttentionConfig(dense_start_steps=0)
+    transformer_options = {"sample_sigmas": torch.tensor([1.0, 0.5, 0.0])}
+
+    assert patcher_helpers._h3_sparse_step(transformer_options, torch.tensor([0.9999]), config)
+    assert patcher_helpers._h3_sparse_step(transformer_options, torch.tensor([0.75]), config)
+    assert not patcher_helpers._h3_sparse_step(transformer_options, torch.tensor([0.0]), config)
+
+
 def _cache(
     *,
     threshold=0.1,

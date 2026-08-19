@@ -3,11 +3,94 @@
 from comfy_api.latest import io
 
 from .patcher_helpers import (
+    CUSTOM_SAGE_MODES,
+    UNIFIED_ATTENTION_MODES,
+    MiniMaxH3RadialAttentionConfig,
     SpectrumH3Config,
     effective_bootstrap_first_forecast,
+    patch_unified_attention_model,
     patch_minimax_h3_cache_model,
     patch_minimax_h3_spectrum_model,
 )
+
+
+MiniMaxH3RadialAttentionConfigType = io.Custom("MINIMAX_H3_RADIAL_ATTENTION_CONFIG")
+
+
+class UC_MiniMaxH3RadialAttentionConfig(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_MiniMaxH3RadialAttentionConfig",
+            display_name="MiniMax H3 Radial Attention Config",
+            category="advanced/model/patches",
+            description="Configures sparse radial attention for the target video rows of a MiniMax H3 model.",
+            inputs=[
+                io.Int.Input("dense_blocks", default=1, min=0, max=56, step=1, tooltip="Keep this many early transformer blocks unchanged. Higher values are safer but reduce the speed gain."),
+                io.Int.Input("dense_start_steps", default=1, min=0, max=100, step=1, tooltip="Keep this many early sampling steps unchanged. Helps protect the initial composition."),
+                io.Int.Input("dense_end_steps", default=1, min=0, max=100, step=1, tooltip="Keep this many final sampling steps unchanged. Helps protect finishing detail."),
+                io.Combo.Input("block_size", options=[64, 128], default=128, tooltip="128 usually runs faster. 64 keeps a finer sparse-attention pattern."),
+                io.Float.Input("decay_factor", default=0.2, min=0.0, max=1.0, step=0.1, tooltip="How much distant video frames stay connected. Lower is faster; higher keeps more temporal detail."),
+                io.Boolean.Input("allow_compile", default=False, tooltip="May speed up later runs after a slower first run. Leave off if compilation causes problems."),
+            ],
+            outputs=[MiniMaxH3RadialAttentionConfigType.Output("minimax_h3_radial_config", display_name="Radial Config", tooltip="Connect to Unified Attention Patcher when using Sparse / MiniMax H3 Radial.")],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(cls, dense_blocks, dense_start_steps, dense_end_steps, block_size, decay_factor, allow_compile) -> io.NodeOutput:
+        return io.NodeOutput(MiniMaxH3RadialAttentionConfig(
+            dense_blocks=dense_blocks,
+            dense_start_steps=dense_start_steps,
+            dense_end_steps=dense_end_steps,
+            block_size=block_size,
+            decay_factor=decay_factor,
+            allow_compile=allow_compile,
+        ).validate())
+
+
+class UC_UnifiedAttentionPatcher(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        modes = [
+            io.DynamicCombo.Option(key="disabled", inputs=[]),
+            io.DynamicCombo.Option(
+                key="FlashAttention",
+                inputs=[
+                    io.Boolean.Input("allow_compile", default=False, tooltip="May speed up later runs after a slower first run. Leave off if compilation causes problems."),
+                ],
+            ),
+            io.DynamicCombo.Option(
+                key="SageAttention",
+                inputs=[
+                    io.Combo.Input("sage_mode", options=list(CUSTOM_SAGE_MODES), default="auto", tooltip="SageAttention version to use. Auto is the normal choice; select another only when your GPU or installed SageAttention version needs it."),
+                    io.Boolean.Input("allow_compile", default=False, tooltip="May speed up later runs after a slower first run. Leave off if compilation causes problems."),
+                    io.Boolean.Input("h3_memory_optimizations", default=False, tooltip="MiniMax H3 only. Reduces peak VRAM use during attention. Requires CUDA and a compatible SageAttention install."),
+                ],
+            ),
+            # io.DynamicCombo.Option(
+            #     key="Sparse / MiniMax H3 Radial",
+            #     inputs=[
+            #         MiniMaxH3RadialAttentionConfigType.Input("minimax_h3_radial_config", display_name="Radial Config", tooltip="Connect MiniMax H3 Radial Attention Config. Radial attention is experimental and applies only to MiniMax H3 video generation."),
+            #     ],
+            # ),
+        ]
+        return io.Schema(
+            node_id="UC_UnifiedAttentionPatcher",
+            display_name="Unified Attention Patcher",
+            category="advanced/model/patches",
+            description="Applies a selected attention backend to a cloned model.",
+            inputs=[
+                io.Model.Input("model"),
+                io.DynamicCombo.Input("attention_mode", options=modes, display_name="Attention Mode", tooltip="Choose an attention backend. It needs its matching installed package."),
+            ],
+            outputs=[io.Model.Output("model", display_name="model")],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(cls, model, attention_mode) -> io.NodeOutput:
+        return io.NodeOutput(patch_unified_attention_model(model, attention_mode))
 
 
 class UC_MiniMaxH3Cache(io.ComfyNode):
