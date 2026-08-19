@@ -109,7 +109,7 @@ def test_global_and_inline_formula_routes_evaluate_their_image_expressions(monke
         Clip(),
         "describe",
         "",
-        "Original",
+        0,
         12,
         {"sampling_mode": "off"},
         formula="a + b",
@@ -119,7 +119,7 @@ def test_global_and_inline_formula_routes_evaluate_their_image_expressions(monke
         Clip(),
         "compare |a + b|",
         "",
-        "Original",
+        0,
         12,
         {"sampling_mode": "off"},
         image_inputs=images,
@@ -143,6 +143,18 @@ def test_text_generate_schema_has_no_obsolete_blend_config():
     assert not hasattr(textgen_nodes, "evaluate_image_consensus_blend")
 
 
+def test_text_generate_schema_uses_shared_numeric_vlm_resolution_contract():
+    resolution = {
+        value.id: value for value in textgen_nodes.UC_TextGenerate.define_schema().inputs
+    }["vlm_resolution"]
+
+    assert resolution.io_type == "INT"
+    assert resolution.default == 384
+    assert resolution.min == 0
+    assert resolution.max == 4096
+    assert resolution.step == 32
+
+
 def test_text_generate_appends_optional_visual_fusion_config():
     inputs = textgen_nodes.UC_TextGenerate.define_schema().inputs
     assert "visual_fusion_config" in {value.id for value in inputs}
@@ -156,7 +168,7 @@ def test_text_generate_appends_optional_visual_fusion_config():
 def test_text_generate_parenthesis_escaping_is_optional_and_final():
     clip = _GenerateClip()
     clip.decode = lambda *args, **kwargs: "plain (Overwatch), (banana)"
-    common = (clip, "hello", "", "Original", 12, {"sampling_mode": "off"})
+    common = (clip, "hello", "", 0, 12, {"sampling_mode": "off"})
 
     assert textgen_nodes.UC_TextGenerate.execute(*common).args == ("plain (Overwatch), (banana)", 0)
     assert textgen_nodes.UC_TextGenerate.execute(*common, escape_parentheses=True).args == (
@@ -183,11 +195,35 @@ class _GenerateClip:
         return "decoded"
 
 
+@pytest.mark.parametrize("resolution", [384, 0])
+def test_text_generate_delegates_image_sizing_to_shared_vlm_helper(monkeypatch, resolution):
+    calls = []
+    image = torch.zeros((1, 32, 64, 3))
+
+    def prepare(source, selected_resolution):
+        calls.append((source, selected_resolution))
+        return source
+
+    monkeypatch.setattr(textgen_nodes, "prepare_vlm_image", prepare)
+    textgen_nodes.UC_TextGenerate.execute(
+        _GenerateClip(),
+        "describe image_input_1",
+        "",
+        resolution,
+        12,
+        {"sampling_mode": "off"},
+        image_inputs={"image1": image},
+    )
+
+    assert [source is image for source, _ in calls] == [True, True]
+    assert [selected_resolution for _, selected_resolution in calls] == [resolution, resolution]
+
+
 @pytest.mark.parametrize("config", [None, {"visual_fusion_method": "off"}])
 def test_text_generate_disconnected_or_off_uses_original_generation_path(config):
     clip = _GenerateClip()
     result = textgen_nodes.UC_TextGenerate.execute(
-        clip, "hello", "", "Original", 12, {"sampling_mode": "off"},
+        clip, "hello", "", 0, 12, {"sampling_mode": "off"},
         image_inputs={}, visual_fusion_config=config,
     )
     assert result.args == ("decoded", 0)
@@ -206,7 +242,7 @@ def test_text_generate_retries_blank_sampled_outputs_and_returns_successful_seed
     }
 
     result = textgen_nodes.UC_TextGenerate.execute(
-        clip, "describe", "", "Original", 12, sampling,
+        clip, "describe", "", 0, 12, sampling,
         image_inputs={}, visual_fusion_config=None,
     )
 
@@ -225,7 +261,7 @@ def test_text_generate_retry_seed_wraps_at_unsigned_64_bit_limit():
     }
 
     result = textgen_nodes.UC_TextGenerate.execute(
-        clip, "describe", "", "Original", 12, sampling,
+        clip, "describe", "", 0, 12, sampling,
         image_inputs={}, visual_fusion_config=None,
     )
 
@@ -241,7 +277,7 @@ def test_text_generate_does_not_retry_deterministic_blank_output():
     clip.decode = lambda *args, **kwargs: ""
 
     result = textgen_nodes.UC_TextGenerate.execute(
-        clip, "describe", "", "Original", 12,
+        clip, "describe", "", 0, 12,
         {"sampling_mode": "off", "empty_response_retries": 4},
         image_inputs={}, visual_fusion_config=None,
     )
@@ -253,7 +289,7 @@ def test_text_generate_does_not_retry_deterministic_blank_output():
 def test_qwen3vl_system_prompt_uses_official_assistant_generation_boundary():
     clip = _GenerateClip()
     textgen_nodes.UC_TextGenerate.execute(
-        clip, "describe", "caption rules", "Original", 12, {"sampling_mode": "off"},
+        clip, "describe", "caption rules", 0, 12, {"sampling_mode": "off"},
         image_inputs={}, visual_fusion_config=None,
     )
 
@@ -279,7 +315,7 @@ def test_qwen3vl_fused_system_prompt_uses_official_assistant_generation_boundary
     image_a = torch.zeros((1, 2, 2, 3))
     image_b = torch.ones((1, 2, 2, 3))
     textgen_nodes.UC_TextGenerate.execute(
-        clip, "describe", "caption rules", "Original", 12, {"sampling_mode": "off"},
+        clip, "describe", "caption rules", 0, 12, {"sampling_mode": "off"},
         formula="a",
         image_inputs={"image1": image_a, "image2": image_b},
         visual_fusion_config={"visual_fusion_method": "linear"},
@@ -297,7 +333,7 @@ def test_active_visual_fusion_rejects_unsupported_model_without_tokenizing():
     image = torch.zeros((1, 2, 3, 3))
     with pytest.raises(ValueError, match="only by Core Qwen3-VL and Qwen3.5"):
         textgen_nodes.UC_TextGenerate.execute(
-            clip, "describe", "", "Original", 12, {"sampling_mode": "off"},
+            clip, "describe", "", 0, 12, {"sampling_mode": "off"},
             image_inputs={"image1": image},
             visual_fusion_config={"visual_fusion_method": "linear"},
         )

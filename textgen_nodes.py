@@ -1,5 +1,4 @@
 import re
-import math
 import logging
 import torch
 from contextlib import nullcontext
@@ -9,8 +8,7 @@ from comfy_api.latest import ComfyExtension, io
 from comfy import model_management
 from comfy.text_encoders.qwen_vl import qwen2vl_mrope_position_ids
 
-from .encoder_helpers import evaluate_tensor_expression, fuse_visual_token_sources, fuse_deepstack_layers
-from .helper_functions import resize_nchw
+from .encoder_helpers import evaluate_tensor_expression, fuse_visual_token_sources, fuse_deepstack_layers, prepare_vlm_image
 
 VisualFusionConfig = io.Custom("VISUAL_FUSION_CONFIG")
 
@@ -42,31 +40,6 @@ def evaluate_formula(expression: str, processed_images: dict) -> torch.Tensor:
         return torch.clamp(result, 0.0, 1.0)
     except Exception as e:
         raise RuntimeError(f"Error evaluating textgen visual math expression '|{expression}|': {e}") from e
-
-def process_vlm_image(image, res):
-    if image is None:
-        return None
-    VLM_RESOLUTIONS = {
-        "Fast (384)": 384,
-        "Balanced (512)": 512,
-        "Detailed (768)": 768,
-        "Large (1024)": 1024,
-        "X-Large (1280)": 1280,
-        "XX-Large (1536)": 1536
-    }
-    samples = image.movedim(-1, 1)
-    if res == "Original":
-        return image
-    else:
-        vlm_size = VLM_RESOLUTIONS[res]
-        total_vlm = vlm_size * vlm_size
-        scale_by_vlm = math.sqrt(total_vlm / (samples.shape[3] * samples.shape[2]))
-        width_vlm = round(samples.shape[3] * scale_by_vlm)
-        height_vlm = round(samples.shape[2] * scale_by_vlm)
-
-        s_vlm = resize_nchw(samples, width_vlm, height_vlm, "bicubic")
-        return s_vlm.movedim(1, -1)
-
 
 def _aligned_image_values(images):
     """Return temporary common-sized copies for pixel arithmetic only."""
@@ -362,11 +335,13 @@ class UC_TextGenerate(io.ComfyNode):
                     tooltip="Main query. Braces {} are fully safe. Supports visual blending formulas inside pipes, e.g. |(image_input_1 + image_input_2)/2|"
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=False, default=""),
-                io.Combo.Input(
+                io.Int.Input(
                     "vlm_resolution",
-                    options=["Fast (384)", "Balanced (512)", "Detailed (768)", "Large (1024)", "X-Large (1280)", "XX-Large (1536)", "Original"],
-                    default="Fast (384)",
-                    tooltip="Rescales connected image inputs to optimize performance and VRAM allocation."
+                    default=384,
+                    min=0,
+                    max=4096,
+                    step=32,
+                    tooltip="Equivalent-square VLM target from 256 to 3584. Values outside that range preserve original resolution."
                 ),
                 io.Int.Input("max_length", default=512, min=1, max=32768, tooltip="Maximum number of new tokens generated for the response."),
                 io.String.Input(
@@ -414,7 +389,7 @@ class UC_TextGenerate(io.ComfyNode):
         processed_images = {}
         for idx, (num, img) in enumerate(sorted(raw_images.items())):
             display_name = ImageInputMapping.get_display_name(num, is_zero_indexed)
-            scaled_img = process_vlm_image(img, vlm_resolution)
+            scaled_img = prepare_vlm_image(img, vlm_resolution)
             processed_images[display_name] = scaled_img
 
             # Map sequentially to letter variables a, b, c, d... (matching TextEncodeKrea2SystemEditScaledAdv)
@@ -475,7 +450,7 @@ class UC_TextGenerate(io.ComfyNode):
                 if dict_key in raw_images:
                     img = raw_images[dict_key]
                     display_name = ImageInputMapping.get_display_name(dict_key, is_zero_indexed)
-                    processed_img = processed_images.get(display_name, process_vlm_image(img, vlm_resolution))
+                    processed_img = processed_images.get(display_name, prepare_vlm_image(img, vlm_resolution))
                     images_vl.append(processed_img)
                     return v_token
                 return ""
