@@ -24,7 +24,7 @@ class UC_EmbeddingDetokenizerAnalysis(io.ComfyNode):
                     min=1,
                     max=100,
                     step=1,
-                    tooltip="Number of nearest vocabulary tokens reported per embedding row.",
+                    tooltip="How many matching words to show for each embedding.",
                 ),
                 io.Combo.Input(
                     "similarity_metric",
@@ -37,12 +37,12 @@ class UC_EmbeddingDetokenizerAnalysis(io.ComfyNode):
                     min=8,
                     max=512,
                     step=8,
-                    tooltip="Nearest cosine candidates retained per embedding row for CWB greedy alignment.",
+                    tooltip="How many possible word matches to consider for each embedding.",
                 ),
                 io.Boolean.Input(
                     "latin_only",
                     default=False,
-                    tooltip="Limit approximation candidates to decoded Latin text and normal punctuation.",
+                    tooltip="Show only Latin text and common punctuation in word matches.",
                 ),
             ],
             outputs=[

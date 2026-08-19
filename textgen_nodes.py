@@ -289,13 +289,13 @@ class UC_TextGenerate(io.ComfyNode):
             io.DynamicCombo.Option(
                 key="on",
                 inputs=[
-                    io.Float.Input("temperature", default=0.7, min=0.01, max=2.0, step=0.000001, tooltip="Randomness of sampled tokens; lower values are more predictable and higher values are more varied."),
-                    io.Int.Input("top_k", default=64, min=0, max=1000, tooltip="Limits sampling to the most likely K tokens; zero leaves this filter disabled."),
-                    io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01, tooltip="Keeps the smallest set of likely tokens whose combined probability reaches this value."),
-                    io.Float.Input("min_p", default=0.05, min=0.0, max=1.0, step=0.01, tooltip="Removes tokens whose probability is too small relative to the most likely token; zero disables this filter."),
-                    io.Float.Input("repetition_penalty", default=1.05, min=0.0, max=5.0, step=0.01, tooltip="Penalizes tokens already generated; 1 applies no repetition penalty."),
-                    io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, tooltip="Seed used for reproducible token sampling."),
-                    io.Float.Input("presence_penalty", optional=True, default=0.0, min=0.0, max=5.0, step=0.01, tooltip="Penalizes tokens that have appeared at least once; zero disables the penalty."),
+                    io.Float.Input("temperature", default=0.7, min=0.01, max=2.0, step=0.000001, tooltip="Controls variety. Lower is more predictable; higher is more varied."),
+                    io.Int.Input("top_k", default=64, min=0, max=1000, tooltip="Restricts choices to the K most likely options. 0 turns it off."),
+                    io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01, tooltip="Restricts choices to likely options. Higher values allow more variety."),
+                    io.Float.Input("min_p", default=0.05, min=0.0, max=1.0, step=0.01, tooltip="Ignores unlikely options. 0 turns it off."),
+                    io.Float.Input("repetition_penalty", default=1.05, min=0.0, max=5.0, step=0.01, tooltip="Discourages repeated text. 1 turns it off."),
+                    io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff),
+                    io.Float.Input("presence_penalty", optional=True, default=0.0, min=0.0, max=5.0, step=0.01, tooltip="Discourages words already used in the response. 0 turns it off."),
                     io.Int.Input(
                         "empty_response_retries",
                         default=4,
@@ -332,7 +332,7 @@ class UC_TextGenerate(io.ComfyNode):
                     multiline=True,
                     dynamic_prompts=False,
                     default="",
-                    tooltip="Main query. Braces {} are fully safe. Supports visual blending formulas inside pipes, e.g. |(image_input_1 + image_input_2)/2|"
+                    tooltip="Main instruction for the generated text. Braces can be used normally."
                 ),
                 io.String.Input("system_prompt", multiline=True, dynamic_prompts=False, default=""),
                 io.Int.Input(
@@ -341,25 +341,25 @@ class UC_TextGenerate(io.ComfyNode):
                     min=0,
                     max=4096,
                     step=32,
-                    tooltip="Equivalent-square VLM target from 256 to 3584. Values outside that range preserve original resolution."
+                    tooltip="Image analysis size. Larger values retain more detail but use more memory."
                 ),
-                io.Int.Input("max_length", default=512, min=1, max=32768, tooltip="Maximum number of new tokens generated for the response."),
+                io.Int.Input("max_length", default=512, min=1, max=32768, tooltip="Maximum response length."),
                 io.String.Input(
                     "formula",
                     default="",
                     multiline=False,
-                    tooltip="Optional pixel-tensor formula used only when visual fusion is off. Use a, b, c, d... for active images. Empty keeps images separate."
+                    tooltip="Optional image blend. Leave empty to keep images separate."
                 ),
-                io.Boolean.Input("thinking", optional=True, default=False, tooltip="Preserves chain-of-thought blocks if the model supports reasoning."),
+                io.Boolean.Input("thinking", optional=True, default=False, tooltip="Include model thinking text when available."),
                 io.Boolean.Input(
                     "escape_parentheses",
                     optional=True,
                     default=False,
-                    tooltip="Backslash-escape generated parentheses as the final step, preserving them as literal text for downstream contextual-weight parsing.",
+                    tooltip="Prevents errors from parentheses left in generated text.",
                 ),
-                VisualFusionConfig.Input("visual_fusion_config", display_name="Fusion Config", optional=True, tooltip="Optional pre-generation Qwen3-VL visual and DeepStack fusion configuration."),
-                io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode", tooltip="On enables seeded probabilistic sampling and its controls; off uses deterministic generation."),
-                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Images are processed in ascending socket order and map sequentially to prompt placeholders and formula variables a, b, c, and onward."),
+                VisualFusionConfig.Input("visual_fusion_config", display_name="Fusion Config", optional=True, tooltip="Optional settings for combining images before generation."),
+                io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode", tooltip="On varies results using the seed. Off gives repeatable results."),
+                io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Add images in order. Each image in a batch is added in order."),
             ],
             outputs=[
                 io.String.Output("generated_text", display_name="Generated Text"),
@@ -599,13 +599,13 @@ class UC_TextGenerateQwen35SystemPrompt(io.ComfyNode):
             inputs=[
                 io.Clip.Input("clip"),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=False, default="",
-                    tooltip="User message. All characters including { } are safe; the template uses concatenation, not .format()."),
+                    tooltip="Message sent to the model. Braces can be used normally."),
                 io.String.Input("system_message", multiline=True, dynamic_prompts=False, default="",
-                    tooltip="System message injected before the user turn. Leave empty to skip the system block entirely."),
+                    tooltip="Optional instructions applied before the user message."),
                 io.Image.Input("image", optional=True),
                 io.Int.Input("max_length", default=512, min=1, max=8192),
                 io.Boolean.Input("thinking", optional=True, default=False,
-                    tooltip="Enable thinking mode. When False, suppresses thinking with <think>\\n</think>\\n."),
+                    tooltip="Include model thinking text when available."),
                 io.DynamicCombo.Input("sampling_mode", options=sampling_options, display_name="Sampling Mode"),
             ],
             outputs=[

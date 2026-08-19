@@ -181,13 +181,13 @@ class UC_TextConcatenateAutogrow(io.ComfyNode):
                 io.AnyType.Input(
                     "delimiter",
                     optional=True,
-                    tooltip="Value converted to text and inserted between each connected text input.",
+                    tooltip="Text placed between each connected input.",
                 ),
                 io.Autogrow.Input(
                     "text_inputs",
                     template=text_template,
                     optional=True,
-                    tooltip="Ordered values converted to text and joined with the delimiter.",
+                    tooltip="Values joined in their input order.",
                 ),
             ],
             outputs=[
@@ -229,13 +229,13 @@ class UC_TextConcatenateListsAutogrow(io.ComfyNode):
                 io.AnyType.Input(
                     "delimiter",
                     optional=True,
-                    tooltip="Scalar delimiters broadcast; delimiter lists align by output index.",
+                    tooltip="Use one delimiter for every output, or one delimiter per output.",
                 ),
                 io.Autogrow.Input(
                     "text_inputs",
                     template=text_template,
                     optional=True,
-                    tooltip="Scalar values broadcast while list values align by index.",
+                    tooltip="Use one value for every output, or one value per output.",
                 ),
             ],
             outputs=[

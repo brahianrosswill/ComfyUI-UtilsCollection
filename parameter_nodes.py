@@ -31,7 +31,7 @@ class UC_AdjustedResolutionParameters(io.ComfyNode):
                     min=0.0,
                     max=10.0,
                     step=0.01,
-                    tooltip="How much to upscale initial resolution by for the upscaled one.",
+                    tooltip="Scale used for the larger output resolution.",
                 ),
                 io.Int.Input(
                     id="multiple",
@@ -39,7 +39,7 @@ class UC_AdjustedResolutionParameters(io.ComfyNode):
                     min=4,
                     max=128,
                     step=4,
-                    tooltip="Nearest multiple of the result to set the upscaled resolution to.",
+                    tooltip="Round the larger resolution to this pixel multiple.",
                 ),
             ],
             outputs=[
@@ -97,7 +97,7 @@ class UC_ResolutionSelectorExtended(io.ComfyNode):
                     min=8,
                     max=128,
                     step=4,
-                    tooltip="Nearest multiple of the result to set the selected resolution to.",
+                    tooltip="Round the selected resolution to this pixel multiple.",
                 ),
             ],
             outputs=[
@@ -218,7 +218,7 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
                     min=1,
                     max=256,
                     advanced=True,
-                    tooltip="Legacy workflow compatibility. Output alignment is controlled by multiple.",
+                    tooltip="Does not affect output size. Use Multiple to align dimensions.",
                 ),
                 io.Float.Input(
                     id="scale_by",
@@ -226,7 +226,7 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
                     min=0.01,
                     max=10.0,
                     step=0.01,
-                    tooltip="How much to upscale initial resolution by for the upscaled one.",
+                    tooltip="Scale used for the larger output resolution.",
                 ),
                 io.Int.Input(
                     id="multiple",
@@ -234,7 +234,7 @@ class UC_ImageScaleAndResolutionPicker(io.ComfyNode):
                     min=4,
                     max=128,
                     step=4,
-                    tooltip="Nearest multiple of the result to set the upscaled resolution to.",
+                    tooltip="Round the larger resolution to this pixel multiple.",
                 ),
             ],
             outputs=[

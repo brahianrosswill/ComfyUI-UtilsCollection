@@ -16,8 +16,8 @@ class UC_LoraLoaderCLIPOnly(io.ComfyNode):
             category="advanced/model",
             inputs=[
                 io.Clip.Input("clip"),
-                io.Combo.Input("lora_name", get_filename_list("loras"), tooltip="Select a LoRA model to load. This node will attempt to extract and load only the CLIP portion of the LoRA, which can be useful for certain text/image embedding applications. Note that not all LoRA models will have a CLIP portion, and results may vary depending on the model architecture."),
-                io.Float.Input("strength_clip", default=1.0, min=-10.0, max=10.0, step=0.05, tooltip="The strength of the CLIP portion to apply."),
+                io.Combo.Input("lora_name", get_filename_list("loras"), tooltip="Choose a LoRA to apply to the text encoder. LoRAs without text-encoder data cannot be used here."),
+                io.Float.Input("strength_clip", default=1.0, min=-10.0, max=10.0, step=0.05, tooltip="Strength of the LoRA effect on text encoding."),
             ],
             outputs=[
                 io.Clip.Output(display_name="clip"),

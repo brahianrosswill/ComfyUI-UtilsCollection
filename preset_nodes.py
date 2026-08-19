@@ -42,7 +42,7 @@ class UC_SystemMessagePresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default="F2_SYSTEM_MESSAGE" if "F2_SYSTEM_MESSAGE" in presets else sorted(list(presets.keys()))[0],
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="system_prompt"),
@@ -81,7 +81,7 @@ class UC_InstructPromptPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="instruct_prompt"),
@@ -120,7 +120,7 @@ class UC_BonusPromptPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="bonus_prompt"),
@@ -159,7 +159,7 @@ class UC_LegacyPromptPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="legacy_prompt"),
@@ -192,7 +192,7 @@ class UC_SystemMessageVideoPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default="F2_SYSTEM_MESSAGE" if "F2_SYSTEM_MESSAGE" in presets else sorted(list(presets.keys()))[0],
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="system_prompt"),
@@ -229,7 +229,7 @@ class UC_InstructPromptVideoPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="instruct_prompt"),
@@ -267,7 +267,7 @@ class UC_BonusPromptVideoPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="bonus_prompt"),
@@ -310,7 +310,7 @@ class UC_EditTargetPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="edit_target_prompt"),
@@ -349,7 +349,7 @@ class UC_EditOpPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="edit_op_prompt"),
@@ -388,7 +388,7 @@ class UC_CameraShotPresets(io.ComfyNode):
                     options=sorted(list(presets.keys())),
                     default=sorted(list(presets.keys()))[0] if presets else "",
                 ),
-                io.Boolean.Input("escape_parentheses", default=False, tooltip="Escape literal parentheses for downstream prompt-weight parsers."),
+                io.Boolean.Input("escape_parentheses", default=False, tooltip="Prevents errors from parentheses left in the prompt."),
             ],
             outputs=[
                 io.String.Output(display_name="camera_shot_prompt"),
@@ -438,7 +438,7 @@ class UC_UnifiedPresets(io.ComfyNode):
                 io.Boolean.Input(
                     "escape_parentheses",
                     default=False,
-                    tooltip="Forward this setting to image or video preset nodes to escape literal prompt parentheses.",
+                    tooltip="Prevents errors from parentheses left in the prompt.",
                 ),
             ],
             outputs=[

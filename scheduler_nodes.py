@@ -179,7 +179,7 @@ class UC_SigmoidOffsetScheduler(io.ComfyNode):
                     min=0.0,
                     max=10.0,
                     step=0.01,
-                    tooltip="Sigmoid steepness. Higher values produce a steeper transition.",
+                    tooltip="Higher values make the denoising transition sharper.",
                 ),
                 io.Float.Input(
                     "base_c",
@@ -187,7 +187,7 @@ class UC_SigmoidOffsetScheduler(io.ComfyNode):
                     min=-5.0,
                     max=5.0,
                     step=0.01,
-                    tooltip="Shifts the curve between early and late denoising.",
+                    tooltip="Move more denoising earlier or later.",
                 ),
                 io.Float.Input(
                     "start_sigma",
@@ -195,7 +195,7 @@ class UC_SigmoidOffsetScheduler(io.ComfyNode):
                     min=0.0,
                     max=1.0,
                     step=0.001,
-                    tooltip="Rescales the sigma schedule. 1.0 disables rescaling.",
+                    tooltip="Adjust initial denoising strength. 1 leaves it unchanged.",
                 ),
             ],
             outputs=[io.Sigmas.Output()],
@@ -241,7 +241,7 @@ class UC_PowerShiftScheduler(io.ComfyNode):
                     min=0.0,
                     max=5.0,
                     step=0.001,
-                    tooltip="Controls the curvature of the denoising schedule; higher values reshape how strongly steps cluster across sigma levels.",
+                    tooltip="Changes how denoising steps are spread. Higher values make the change stronger.",
                 ),
                 io.Float.Input(
                     "midpoint_shift",
@@ -249,7 +249,7 @@ class UC_PowerShiftScheduler(io.ComfyNode):
                     min=0.0,
                     max=5.0,
                     step=0.001,
-                    tooltip="Shifts the schedule midpoint; higher values retain higher sigma levels for more of the schedule.",
+                    tooltip="Move more denoising toward the start or end of sampling.",
                 ),
             ],
             outputs=[
@@ -303,7 +303,7 @@ class UC_RadianceShiftScheduler(io.ComfyNode):
                     min=0.0,
                     max=5.0,
                     step=0.001,
-                    tooltip="Controls the curvature of the Radiance denoising schedule; higher values reshape how strongly steps cluster across sigma levels.",
+                    tooltip="Changes how Radiance denoising steps are spread. Higher values make the change stronger.",
                 ),
                 io.Float.Input(
                     "midpoint_shift",
@@ -311,7 +311,7 @@ class UC_RadianceShiftScheduler(io.ComfyNode):
                     min=0.0,
                     max=5.0,
                     step=0.001,
-                    tooltip="Shifts the Radiance schedule midpoint; higher values retain higher sigma levels for more of the schedule.",
+                    tooltip="Move more Radiance denoising toward the start or end of sampling.",
                 ),
             ],
             outputs=[
@@ -360,7 +360,7 @@ class UC_SigmaCurveFromPointsScheduler(io.ComfyNode):
                     default=DEFAULT_SIGMA_POINTS_TEXT,
                     multiline=False,
                     optional=True,
-                    tooltip="Comma-separated sigma curve points.",
+                    tooltip="Comma-separated points that shape the denoising schedule.",
                 ),
             ],
             outputs=[
@@ -416,7 +416,7 @@ class UC_SigmaCurvePchipScheduler(io.ComfyNode):
                     default=DEFAULT_SIGMA_POINTS_TEXT,
                     multiline=False,
                     optional=True,
-                    tooltip="Comma-separated sigma curve points.",
+                    tooltip="Comma-separated points that shape the denoising schedule.",
                 ),
             ],
             outputs=[

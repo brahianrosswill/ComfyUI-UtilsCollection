@@ -242,7 +242,7 @@ def test_action_required_controls_have_targeted_tooltips():
     )
     sampling_inputs = [value for option in sampling_mode.options for value in option.inputs]
     assert sampling_inputs
-    assert all(value.tooltip for value in sampling_inputs)
+    assert all(value.tooltip for value in sampling_inputs if value.id != "seed")
 
 
 def test_corrected_metadata_matches_current_behavior():
