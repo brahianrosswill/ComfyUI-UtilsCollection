@@ -136,6 +136,7 @@ def test_images_to_video_timeline_schema_exposes_manual_focus_controls():
         "focus_one",
         "focus_two",
         "focus_three",
+        "last_image_is_final",
         "resize_images",
         "timestamp_format",
         "timeline_style",
@@ -146,7 +147,8 @@ def test_images_to_video_timeline_schema_exposes_manual_focus_controls():
     assert schema.inputs[1].default == schema.inputs[1].min == 0
     assert schema.inputs[1].max == 3
     assert [value.default for value in schema.inputs[2:5]] == [0.5, 0.5, 0.5]
-    assert schema.inputs[5].default is True
+    assert schema.inputs[5].default is False
+    assert schema.inputs[6].default is True
     assert [output.id for output in schema.outputs] == [
         "image_batch",
         "images",
@@ -187,17 +189,22 @@ def test_images_to_video_timeline_normalizes_or_returns_black_batch():
     inputs = {"image0": first, "image1": second}
 
     resized = images_to_video_timeline(
-        inputs, 4.0, 0, 0.5, 0.5, 0.5, True,
+        inputs, 4.0, 0, 0.5, 0.5, 0.5, True, True,
         "00.000s", "timestamps only",
     )
     unresized = images_to_video_timeline(
-        inputs, 4.0, 0, 0.5, 0.5, 0.5, False,
+        inputs, 4.0, 0, 0.5, 0.5, 0.5, True, False,
+        "00.000s", "timestamps only",
+    )
+    final_image_not_anchored = images_to_video_timeline(
+        inputs, 4.0, 0, 0.5, 0.5, 0.5, False, True,
         "00.000s", "timestamps only",
     )
 
     assert resized.image_batch.shape == (3, 2, 4, 4)
     assert [image.shape for image in resized.image_list] == [(1, 2, 4, 4)] * 3
     assert resized.timestamps == ["00.000s", "02.000s", "04.000s"]
+    assert final_image_not_anchored.timestamps == ["00.000s", "01.333s", "02.667s"]
     assert unresized.image_batch.shape == (1, 64, 64, 3)
     assert torch.count_nonzero(unresized.image_batch) == 0
     assert [image.shape for image in unresized.image_list] == [

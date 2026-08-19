@@ -402,7 +402,7 @@ def _select_focused_samples(records: Sequence[VideoFrameRecord], maximum_frames:
 
     targets = [
         _as_fraction(target) for target in focused_timeline_timestamps(
-            maximum_frames, float(duration), focus_areas, focus_one, focus_two, focus_three, include_zero_time
+            maximum_frames, float(duration), focus_areas, focus_one, focus_two, focus_three, include_zero_time, include_zero_time
         )
     ]
     if timestamp_format is not None:
@@ -749,7 +749,7 @@ def _truncated_normal_quantile(quantile: float, center: float) -> float:
     return (low + high) / 2.0
 
 
-def focused_timeline_timestamps(count: int, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, anchor_endpoints: bool = True) -> list[float]:
+def focused_timeline_timestamps(count: int, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, anchor_start: bool = True, anchor_end: bool = True) -> list[float]:
     """Place ordered timestamps across a duration with optional local focus peaks."""
     if count < 1:
         raise ValueError("Focused timeline requires at least one timestamp.")
@@ -760,30 +760,31 @@ def focused_timeline_timestamps(count: int, duration: float, focus_areas: int, f
     focuses = (focus_one, focus_two, focus_three)
     if any(not math.isfinite(value) or value < 0 or value > 1 for value in focuses):
         raise ValueError("Images to Video Timeline focus values must be finite values from 0 to 1.")
-    if anchor_endpoints and count == 1:
+    if anchor_start and count == 1:
         return [0.0]
     if focus_areas == 0:
-        denominator = count - 1 if anchor_endpoints else count + 1
-        start = 0 if anchor_endpoints else 1
+        anchors = int(anchor_start) + int(anchor_end)
+        denominator = count - anchors + 1
+        start = 0 if anchor_start else 1
         return [duration * index / denominator for index in range(start, start + count)]
 
-    movable_count = count - 2 if anchor_endpoints else count
-    timestamps = [0.0] if anchor_endpoints else []
+    movable_count = count - int(anchor_start) - int(anchor_end)
+    timestamps = [0.0] if anchor_start else []
     for index in range(1, movable_count + 1):
         global_quantile = index / (movable_count + 1)
         section = min(int(global_quantile * focus_areas), focus_areas - 1)
         local_quantile = global_quantile * focus_areas - section
         local_position = _truncated_normal_quantile(local_quantile, focuses[section])
         timestamps.append(duration * (section + local_position) / focus_areas)
-    if anchor_endpoints:
+    if anchor_end:
         timestamps.append(duration)
     return timestamps
 
 
-def images_to_video_timeline(image_inputs, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, resize_images: bool, timestamp_format: str, timeline_style: str, index_offset: int = 0) -> SampledVideoFrames:
+def images_to_video_timeline(image_inputs, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, last_image_is_final: bool, resize_images: bool, timestamp_format: str, timeline_style: str, index_offset: int = 0) -> SampledVideoFrames:
     """Normalize supplied images and assign their manual video timeline timestamps."""
     image_batch, image_list = _timeline_image_outputs(image_inputs, resize_images)
-    raw_timestamps = focused_timeline_timestamps(len(image_list), duration, focus_areas, focus_one, focus_two, focus_three)
+    raw_timestamps = focused_timeline_timestamps(len(image_list), duration, focus_areas, focus_one, focus_two, focus_three, anchor_end=last_image_is_final)
     timestamps = [format_video_timestamp(timestamp, timestamp_format) for timestamp in raw_timestamps]
     return SampledVideoFrames(
         image_batch=image_batch,
