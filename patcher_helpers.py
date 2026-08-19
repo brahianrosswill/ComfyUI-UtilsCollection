@@ -330,7 +330,6 @@ def minimax_h3_block_patch_forward(
             audio_t,
             keyframes=payload.get("keyframes"),
             refs=payload.get("refs"),
-            frame_count=payload.get("frame_count"),
         )
 
     shift_v = float(
