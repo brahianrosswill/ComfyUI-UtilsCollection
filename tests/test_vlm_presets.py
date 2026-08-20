@@ -606,6 +606,16 @@ def test_readable_h3_reference_sources_match_runtime_presets():
         assert normalize(vlm_presets.system_query_raw_vlm[key]) == expected_raw
 
 
+def test_old_video_timeline_readable_source_matches_exposed_runtime_preset():
+    readable = runpy.run_path(str(CUSTOM_NODE_ROOT / "vlm_presets_vars.py"))
+    expected = readable["VIDEO_TIMELINE_SYSTEM_INSTRUCTION_OLD"]
+    expected = expected.replace("\r\n", "\n").replace("\n", "\r\n")
+
+    assert vlm_presets.system_instructions_vlm[
+        "video_timeline_system_instruction_old"
+    ] == expected
+
+
 def test_h3_reference_alt_assembled_context_matches_structured_picture_request():
     instruction = vlm_presets.system_instructions_vlm[
         "video_timeline_minimax_h3_reference_alt_system_instruction"
@@ -738,6 +748,7 @@ def test_gender_taxonomy_presets_include_qualified_equivalent_terms():
         name: value
         for name, value in vlm_presets.system_instructions_vlm.items()
         if "Gynomorph" in value
+        and name != "video_timeline_system_instruction_old"
     }
 
     assert len(taxonomy_presets) == 23

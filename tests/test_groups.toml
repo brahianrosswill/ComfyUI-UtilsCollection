@@ -12,6 +12,7 @@ paths = [
   "minimax_h3_vlm_experimental_presets.py",
   "scripts/sync_vlm_h3_reference_readable_preset.py",
   "scripts/sync_vlm_h3_ref2va_query_preset.py",
+  "scripts/sync_vlm_video_timeline_old_preset.py",
 ]
 python_tests = [
   "tests/test_advanced_visual_consensus.py",
