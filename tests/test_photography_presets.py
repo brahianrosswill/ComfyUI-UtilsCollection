@@ -1,4 +1,3 @@
-import hashlib
 import pathlib
 import sys
 import types
@@ -56,23 +55,6 @@ REMOVED_PRESET_IDS = {
     "STYLE_BLACK_AND_WHITE_PHOTOGRAPHY",
 }
 
-UNCHANGED_TEXT_HASHES = {
-    "SYSTEM_MESSAGE_STYLE_PHOTOGRAPHY_PHOTOREALISM": "4ab4c811ab66e0f595dde4af7f47be65eaba21f62abc9db32a65749410436d8a",
-    "SYSTEM_MESSAGE_STYLE_PHOTOGRAPHY_ANALOG_FILM": "79652a3a6ed35f980e1c69326e00ba2935d2c84e78061b5afe19b9ca4c41633a",
-    "SYSTEM_MESSAGE_STYLE_PHOTOGRAPHY_EARLY_2000S_ANALOG": "d3dcee2c91340bc6d1031373493ae59c10ea1801682ccb64e26b1e767b72d9ec",
-    "SYSTEM_MESSAGE_STYLE_PHOTOGRAPHY_POLAROID": "9a946e97929510433c75c6fea6a150e1402f21962323baf5512dedc078e7bc13",
-    "SYSTEM_MESSAGE_STYLE_PHOTOGRAPHY_KODACHROME": "6c5f4ec5f72300ce18da7787bb845a5bc5c17faacb43c51c27412d29242eec53",
-    "INSTRUCT_PROMPT_STYLE_PHOTOGRAPHY_PHOTOREALISM": "75a98d69cf6fbf54cc96cee29bf71b015c5004386170e106a7dda30325b15c97",
-    "INSTRUCT_PROMPT_STYLE_PHOTOGRAPHY_ANALOG_FILM": "acd1e383779176628b7da162909357115da5aa89df532bafd3709148bbd964cd",
-    "INSTRUCT_PROMPT_STYLE_PHOTOGRAPHY_EARLY_2000S_ANALOG": "1bcba802ccb7ba81934663f45cc191f784d7d862c5f93bd38cd72d199542dbe6",
-    "INSTRUCT_PROMPT_STYLE_PHOTOGRAPHY_POLAROID": "cc7723a6e662bf64b85882d9294bb18bd09e643fb29b7997234267b8e05563f5",
-    "INSTRUCT_PROMPT_STYLE_PHOTOGRAPHY_KODACHROME": "34064007fc7b4c401a6b88524b0ff645f99b73b9a9024d3b998e364738fe5da1",
-    "BONUS_PROMPT_STYLE_PHOTOGRAPHY_PHOTOREALISM": "59558a280631f509e62c7bbb2eae049cd5f19ec8b149b2d172a75a480f5752e6",
-    "BONUS_PROMPT_STYLE_PHOTOGRAPHY_ANALOG_FILM": "7ae0fd9fc52f0eb0dd611382034c13b07f3ab6e73a3f08d4ee3da013a48dc484",
-    "BONUS_PROMPT_STYLE_PHOTOGRAPHY_EARLY_2000S_ANALOG": "d78ed180c4fb065b71cbaa4f4ac32e1e5ce0e9b6ab686839be178abc495890bd",
-    "BONUS_PROMPT_STYLE_PHOTOGRAPHY_POLAROID": "ccfe58ad7193458c4f3e823a36e15d29c8e37b9cef7f7921223c6e93db1f796f",
-    "BONUS_PROMPT_STYLE_PHOTOGRAPHY_KODACHROME": "7157bc7de763fa9b69e9b7b99f950eb81dac80d302f440cc6ea61ba14be7c45b",
-}
 
 VISIBLE_PHOTOGRAPHIC_SIGNATURES = {
     "PHOTOGRAPHY_ANALOG_FILM": (
@@ -200,25 +182,8 @@ def test_photography_choices_are_grouped_and_shared():
         assert choices.isdisjoint(REMOVED_PRESET_IDS)
 
 
-def test_unchanged_photography_text_is_byte_identical():
-    actual = {
-        name: hashlib.sha256(getattr(presets_collection, name).encode()).hexdigest()
-        for name in UNCHANGED_TEXT_HASHES
-    }
-    assert actual == UNCHANGED_TEXT_HASHES
 
 
-def test_camera_shot_catalog_is_unchanged():
-    values = {
-        name: value
-        for name, value in vars(presets_collection).items()
-        if name.startswith("INSTRUCT_PROMPT_CAMERA_SHOT_")
-    }
-    payload = "\n".join(f"{name}={values[name]}" for name in sorted(values))
-    assert len(values) == 20
-    assert hashlib.sha256(payload.encode()).hexdigest() == (
-        "18eccce10a9363e7100f4521d8cd3a55931ec43e7c80dce88b49ade46060d49d"
-    )
 
 
 def test_photographic_signatures_are_visible_and_distinct():

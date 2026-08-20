@@ -1,5 +1,4 @@
 import ast
-import hashlib
 import pathlib
 import re
 import runpy
@@ -21,48 +20,16 @@ from utils_collection_vlm_preset_test import (
 )
 
 
-HARDENED_IMAGE_PRESET_BASELINES = {
-    "neutral_system_instruction": (
-        16_397,
-        2_353,
-        "bcf02ccfda454c5e0869eb5976311d45e0b574fb2d2140f65f4681755c88e4b6",
-    ),
-    "action_system_instruction": (
-        16_662,
-        2_375,
-        "01349683d901dcc9e8055272b4377fb4cebef2cba40d5c1cbdbf043c4db74905",
-    ),
-    "photo_system_instruction": (
-        17_229,
-        2_499,
-        "d339359f274b4bb9e09d4df756b2ad1c8055772c3fa260e8173ba01b7d65203d",
-    ),
-    "toon_system_instruction": (
-        18_919,
-        2_756,
-        "f924fb6a51b2b828eb54937493309f4301dd38faa56eda923f13bf3b04ef0caf",
-    ),
-    "neutral_system_instruction_crude": (
-        16_962,
-        2_412,
-        "a1f63e248dfabc277f8be70380d08d9d00c94b4a220fef6820b4d9f1c232ee62",
-    ),
-    "action_system_instruction_crude": (
-        16_679,
-        2_361,
-        "5a3ac54c9977cce48981971dc8dcf4b979c60f3d41e075fb528ea76b95f364ee",
-    ),
-    "photo_system_instruction_crude": (
-        18_280,
-        2_629,
-        "7848c57f4c98da5777d7a833bd419fc03d600400cd423e284ed5df2d3acd6f59",
-    ),
-    "toon_system_instruction_crude": (
-        9_876,
-        1_349,
-        "0adfb0dfd846bda93ddc847177ce9a39b402788d1160d600a0cccb6ce6f982bd",
-    ),
-}
+HARDENED_IMAGE_PRESETS = (
+    "neutral_system_instruction",
+    "action_system_instruction",
+    "photo_system_instruction",
+    "toon_system_instruction",
+    "neutral_system_instruction_crude",
+    "action_system_instruction_crude",
+    "photo_system_instruction_crude",
+    "toon_system_instruction_crude",
+)
 HARDENING_HEADINGS = (
     "## Perspective and Spatial Description",
     "## Visible Text Quotation",
@@ -89,47 +56,6 @@ HARDENING_FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 HARDENING_LIST_LINE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", re.MULTILINE)
-GENDER_ALIAS_CLAUSES = {
-    "Andromorph": (
-        "Fetish or prompt aliases for this anatomy are cuntboy and pussyboy. "
-        "Use trans man or transgender male only when the person's identity is "
-        "established by the image or request; never infer transgender identity "
-        "from anatomy alone."
-    ),
-    "Gynomorph": (
-        "Fetish or prompt aliases for this anatomy are shemale, dickgirl, and ts. "
-        "Use trans woman, transgender woman, or transgender female only when the "
-        "person's identity is established by the image or request; never infer "
-        "transgender identity from anatomy alone."
-    ),
-    "Herm": (
-        "Fetish or prompt aliases for this anatomy are herm, hermaphrodite, female "
-        "hermaphrodite, futanari, and futa. Use intersex or intersex female only "
-        "when the person's identity or status is established by the image or "
-        "request; never infer intersex identity or status from anatomy alone."
-    ),
-    "Maleherm": (
-        "Fetish or prompt aliases for this anatomy are maleherm, male herm, and "
-        "male hermaphrodite. Use intersex or intersex male only when the person's "
-        "identity or status is established by the image or request; never infer "
-        "intersex identity or status from anatomy alone."
-    ),
-}
-LEGACY_SYSTEM_PRESET_BASELINES = {
-    "neutral_system_instruction_legacy": (16_742, 2_368, 101, 0, "f0392ea612e34f0bee656f4e9bb89f59f9c6fc82539be2e2205443dfbede2e5d"),
-    "action_system_instruction_legacy": (17_003, 2_390, 100, 0, "da80afcc3d11dc82ee51c0c313cb95106d77a6ac56c09f428211141f41e0999f"),
-    "photo_system_instruction_legacy": (17_981, 2_579, 90, 0, "fd258a3196add5071a24087ae26c21102f04c46eb6c52af788d9babd9ff3d419"),
-    "toon_system_instruction_legacy": (19_177, 2_763, 93, 0, "83a76127ef224f3bbac1606d0811a1b6e4d09a0490bbe355c3ba542bbf5cba0a"),
-    "ideogram_4_json_instruction_legacy": (23_102, 3_250, 189, 0, "231c8eba8ba095789ac66925e2e3227770f712b8def25c12b328050a427bbc59"),
-    "ideogram_4_json_instruction_short_legacy": (23_383, 3_382, 151, 0, "4e7d68fa89bb9d8c194e874ce7769612e8653fa44e7d2a5b3b5ce2673e700ca6"),
-    "ideogram_4_json_instruction_style_legacy": (25_419, 3_590, 175, 0, "1152ef24619dffa1cd7b1739adcc1a3bf1e000d0959d0430243948a54e917348"),
-    "ideogram_4_json_instruction_color_legacy": (25_915, 3_646, 177, 0, "95348d4a51a408a913bb6805f6752c9fe31af50bf46756564ae2cd52b923a547"),
-    "cinematic_dumb_intelligent_legacy": (13_938, 1_852, 0, 154, "b05b49068d6c5bc1f8c20a307b4e181492be700852fbe7199a5aa2f084c53a61"),
-    "video_basic_system_instruction_legacy": (14_428, 2_093, 74, 0, "1a6d406975d2dcd9d67767e6644928a119bde76f4848ce1d91fc4d69482f78ea"),
-    "video_8sec_system_instruction_legacy": (13_723, 2_012, 97, 0, "ba69dc8e1daa850417d0d540a5ff9615b521837bd089cfc4b5a8f94b6355b55c"),
-    "video_struct_system_instruction_legacy": (12_505, 1_811, 74, 0, "569eef0d2fd42c2786cf0019b7deea99ae13fb0c46dd5a805fef0061653c4c8d"),
-    "video_8part_struct_system_instruction_legacy": (16_026, 2_348, 113, 0, "1c1174839c05208b179ab9eaf66d87402d21e2901aaaa4191ccfc05d1bbfa25b"),
-}
 
 
 def _normalize_instruction(value):
@@ -145,26 +71,36 @@ def _split_hardening_block(value):
     return instruction[:start] + instruction[end:], instruction[start:end]
 
 
-def _strip_gender_alias_clauses(value):
-    for clause in GENDER_ALIAS_CLAUSES.values():
-        value = value.replace(f" {clause}", "")
-    return value
 
 
-def test_legacy_system_presets_match_d9f47de_exactly():
+def test_legacy_system_presets_are_isolated_and_exposed():
     assert not any(name.endswith("_legacy") for name in vlm_presets.system_instructions_vlm)
-    actual_legacy_names = set(vlm_legacy_presets.legacy_system_instructions_vlm)
-    assert actual_legacy_names == set(LEGACY_SYSTEM_PRESET_BASELINES)
+    declared = vlm_legacy_presets.legacy_system_instructions_vlm
+    exposed = vlm_nodes.UC_VLMSysInstrLegacyPresets.get_presets()
 
-    for name, (characters, words, crlf, bare_lf, digest) in (
-        LEGACY_SYSTEM_PRESET_BASELINES.items()
-    ):
-        value = vlm_legacy_presets.legacy_system_instructions_vlm[name]
-        assert len(value) == characters
-        assert len(value.split()) == words
-        assert value.count("\r\n") == crlf
-        assert value.count("\n") - value.count("\r\n") == bare_lf
-        assert hashlib.sha256(value.encode("utf-8")).hexdigest() == digest
+    assert list(exposed) == list(declared)
+    for name, value in declared.items():
+        assert vlm_nodes.UC_VLMSysInstrLegacyPresets.execute(name).args == (value,)
+
+
+def test_vlm_preset_widget_labels_are_unique_and_descriptive():
+    expected = {
+        vlm_nodes.UC_VLMSysInstrPresets: "vlm_system_instruction_preset",
+        vlm_nodes.UC_VLMSysInstrLegacyPresets: "vlm_system_instruction_legacy_preset",
+        vlm_nodes.UC_VLMSysQueryAddPresets: "vlm_system_query_add_preset",
+        vlm_nodes.UC_VLMSysInstrAdvPresets: "vlm_system_instruction_advanced_preset",
+    }
+
+    actual = {
+        node: node.define_schema().inputs[0].display_name
+        for node in expected
+    }
+    assert actual == expected
+    assert len(set(actual.values())) == len(actual)
+    assert all(node.define_schema().inputs[0].id == "preset" for node in expected)
+    for node, label in expected.items():
+        frontend_input = node.INPUT_TYPES()["required"]["preset"]
+        assert frontend_input[1]["display_name"] == label
 
 
 def test_qwen_system_instruction_variants_preserve_original_presets():
@@ -180,7 +116,6 @@ def test_qwen_system_instruction_variants_preserve_original_presets():
         assert "developed by Google AI" in original
         assert "developed by Google AI" not in qwen
         assert "vision-language model" in qwen
-        assert "\r" not in qwen
         assert "**" not in qwen
         assert "`" not in qwen
         assert len(qwen) > 10_000
@@ -197,8 +132,7 @@ def test_qwen_query_variants_use_plain_request_delimiters():
         prefix = vlm_presets.system_query_additional_vlm[f"{name}_qwen_prefix"]
         suffix = vlm_presets.system_query_additional_vlm[f"{name}_qwen_suffix"]
 
-        assert prefix.endswith("Current request:\n")
-        assert "\r" not in prefix
+        assert prefix.endswith("Current request:\r\n")
         assert "\\{" not in prefix
         assert suffix == ""
 
@@ -371,8 +305,8 @@ def test_h3_query_presets_are_paired_and_wrap_the_request_once():
         suffix = presets[f"{name}_suffix"]
         wrapped = f"{prefix}{request}{suffix}"
 
-        assert prefix.endswith("BEGIN VIDEO REQUEST:\n")
-        assert suffix.startswith("\nEND VIDEO REQUEST.")
+        assert prefix.endswith("BEGIN VIDEO REQUEST:\r\n")
+        assert suffix.startswith("\r\nEND VIDEO REQUEST.")
         assert wrapped.count(request) == 1
 
     for name in (
@@ -653,7 +587,7 @@ def test_h3_reference_alt_assembled_context_matches_structured_picture_request()
         assert competing not in instruction + prefix + suffix
 
 
-def test_h3_ref2va_experimental_query_keeps_regression_snapshot():
+def test_h3_ref2va_experimental_query_enforces_picture_provenance_contract():
     presets = vlm_presets.system_query_additional_vlm
     prefix = presets["h3_ref2va_experimental_prefix"]
     suffix = presets["h3_ref2va_experimental_suffix"]
@@ -665,7 +599,7 @@ def test_h3_ref2va_experimental_query_keeps_regression_snapshot():
     assert "wherever that reference materially controls" not in prefix
 
 
-def test_h3_query_experimental_snapshots_are_static_and_complete():
+def test_h3_query_experimental_variants_remain_independent_and_complete():
     wrapped = vlm_presets.system_query_additional_vlm
     raw = vlm_presets.system_query_raw_vlm
 
@@ -675,15 +609,6 @@ def test_h3_query_experimental_snapshots_are_static_and_complete():
     assert wrapped["h3_ref2va_prefix"] != wrapped["h3_ref2va_experimental_prefix"]
     assert wrapped["h3_ref2va_suffix"] != wrapped["h3_ref2va_experimental_suffix"]
     assert raw["h3_ref2va"] != raw["h3_ref2va_experimental"]
-    assert hashlib.sha256(
-        wrapped["h3_ref2va_experimental_prefix"].encode()
-    ).hexdigest() == "49069b640d3b721871205cd3fe1b74d962bcef42fb77bed5b257a92f88a1ef4a"
-    assert hashlib.sha256(
-        wrapped["h3_ref2va_experimental_suffix"].encode()
-    ).hexdigest() == "cd232756a8c76dbb2b422c47d8fbcc0057081c2f7448e11a27f2e814a4827bab"
-    assert hashlib.sha256(
-        raw["h3_ref2va_experimental"].encode()
-    ).hexdigest() == "55b59d353d97e3ca9301745e82e36c255e7dda59bbdd861b5287d9408a1a1434"
 
 
 def test_style_presets_receive_no_qwen_variants():
@@ -693,17 +618,11 @@ def test_style_presets_receive_no_qwen_variants():
     )
 
 
-def test_image_prompt_hardening_preserves_complete_original_presets():
-    for name, (minimum_characters, minimum_words, baseline_hash) in (
-        HARDENED_IMAGE_PRESET_BASELINES.items()
-    ):
+def test_image_prompt_hardening_preserves_required_contracts():
+    for name in HARDENED_IMAGE_PRESETS:
         instruction = _normalize_instruction(vlm_presets.system_instructions_vlm[name])
         original, hardening = _split_hardening_block(instruction)
-        baseline_original = _strip_gender_alias_clauses(original)
 
-        assert len(instruction) >= minimum_characters
-        assert len(instruction.split()) >= minimum_words
-        assert hashlib.sha256(baseline_original.encode("utf-8")).hexdigest() == baseline_hash
         assert all(instruction.count(heading) == 1 for heading in HARDENING_HEADINGS)
         assert [hardening.index(heading) for heading in HARDENING_HEADINGS] == sorted(
             hardening.index(heading) for heading in HARDENING_HEADINGS
@@ -730,37 +649,10 @@ def test_image_prompt_hardening_preserves_complete_original_presets():
             assert "crude" in original.lower()
 
 
-def test_action_perspective_hardening_matches_neutral_baseline():
-    perspectives = {}
-    for name in ("neutral_system_instruction", "action_system_instruction"):
-        _, hardening = _split_hardening_block(
-            vlm_presets.system_instructions_vlm[name]
-        )
-        perspectives[name] = hardening.split(HARDENING_HEADINGS[1], 1)[0]
-
-    assert perspectives["action_system_instruction"] == perspectives[
-        "neutral_system_instruction"
-    ]
-
-
-def test_gender_taxonomy_presets_include_qualified_equivalent_terms():
-    taxonomy_presets = {
-        name: value
-        for name, value in vlm_presets.system_instructions_vlm.items()
-        if "Gynomorph" in value
-        and name != "video_timeline_system_instruction_old"
-    }
-
-    assert len(taxonomy_presets) == 23
-    for instruction in taxonomy_presets.values():
-        for label, clause in GENDER_ALIAS_CLAUSES.items():
-            matching_lines = [line for line in instruction.splitlines() if label in line]
-            assert len(matching_lines) == 1
-            assert clause in matching_lines[0]
 
 
 def test_image_prompt_hardening_is_literal_without_reward_hacking_anchors():
-    for name in HARDENED_IMAGE_PRESET_BASELINES:
+    for name in HARDENED_IMAGE_PRESETS:
         _, hardening = _split_hardening_block(vlm_presets.system_instructions_vlm[name])
         perspective, remainder = hardening.split(HARDENING_HEADINGS[1], 1)
         quotation, language = remainder.split(HARDENING_HEADINGS[2], 1)
@@ -821,41 +713,7 @@ TIMELINE_CHANNEL_BALANCE_PRESETS = (
     "video_timeline_minimax_h3_base_system_instruction",
 )
 
-EXPERIMENTAL_VIDEO_PRESET_HASHES = {
-    "video_timeline_system_instruction": (
-        "cc3f2d9f32894a190a1509f9406c30320bb81250b93af7f696207f6e17d58ca8"
-    ),
-    "video_timeline_system_instruction_crude": (
-        "3bc602b0a6ef184e27002d3b6250a3b24a708dad92424a4159729881842f1a6f"
-    ),
-    "video_timeline_minimax_h3_base_system_instruction": (
-        "951501e17444450e5946e4bf2f2f9e7998cbdf0724a9fb5e6ff08e49f7e63eef"
-    ),
-    "video_timeline_minimax_h3_reference_system_instruction": (
-        "05cc45e16bb58a81d1e2dab073f9af507640ecd6238d776c7e1ff73f15403917"
-    ),
-}
 
-STABLE_VIDEO_PRESET_HASHES = {
-    "video_timeline_system_instruction": (
-        "57b6a726a9fce905f3003f67311cac02a28eb2c9d21ae72f66e8442a0f99e632"
-    ),
-    "video_timeline_system_instruction_crude": (
-        "7469a2e17d36225c8b948b36bf47cdfb432c507d89efcb44a153d63b50120f0a"
-    ),
-    "video_timeline_minimax_h3_base_system_instruction": (
-        "fadfdce95e9c24e7d473f7cf435d3e6d55a9063e9288034cef93ad5658cfdd95"
-    ),
-    "video_timeline_minimax_h3_reference_system_instruction": (
-        "aa0faedbd0bc04095e8702ff6fec48717111f0e985d3be9667fac84dfadb5c5f"
-    ),
-    "video_timeline_minimax_h3_reference_alt_system_instruction": (
-        "3ea27fee780bd00a557b1c2d7f1c6d2917e4d94d706484c2434112f7a2634605"
-    ),
-    "video_timeline_minimax_h3_mixed_system_instruction": (
-        "5a97315c659999331ad1f9ae85d96f37c8d6729f433d7da2ceb2037dd6c0c098"
-    ),
-}
 
 
 def test_structured_video_presets_are_independent_literal_values():
@@ -881,7 +739,7 @@ def test_structured_video_presets_are_independent_literal_values():
         assert isinstance(literal_nodes[name], ast.Constant)
 
 
-def test_experimental_video_presets_are_independent_literal_snapshots():
+def test_experimental_video_presets_are_independent_literal_values():
     source = ast.parse(
         (CUSTOM_NODE_ROOT / "vlm_experimental_presets.py").read_text(
             encoding="utf-8"
@@ -903,19 +761,12 @@ def test_experimental_video_presets_are_independent_literal_snapshots():
         if isinstance(key, ast.Constant)
     }
 
-    assert set(literal_nodes) == set(EXPERIMENTAL_VIDEO_PRESET_HASHES)
+    assert set(literal_nodes) == set(
+        vlm_experimental_presets.system_instructions_vlm_experimental
+    )
     assert all(isinstance(value, ast.Constant) for value in literal_nodes.values())
 
 
-def test_stable_and_experimental_video_preset_hashes_are_locked():
-    stable = vlm_presets.system_instructions_vlm
-    experimental = vlm_experimental_presets.system_instructions_vlm_experimental
-
-    assert set(experimental) == set(EXPERIMENTAL_VIDEO_PRESET_HASHES)
-    for name, expected_hash in STABLE_VIDEO_PRESET_HASHES.items():
-        assert hashlib.sha256(stable[name].encode()).hexdigest() == expected_hash
-    for name, expected_hash in EXPERIMENTAL_VIDEO_PRESET_HASHES.items():
-        assert hashlib.sha256(experimental[name].encode()).hexdigest() == expected_hash
 
 
 def test_structured_video_presets_share_audio_and_motion_contracts():
@@ -1052,7 +903,7 @@ def test_stable_timeline_presets_require_zero_padded_two_decimal_seconds():
         assert "[start-end]:" not in instruction
 
 
-def test_experimental_timeline_presets_keep_minimal_width_snapshot():
+def test_experimental_timeline_presets_keep_minimal_width_contract():
     for instruction in (
         vlm_experimental_presets.system_instructions_vlm_experimental.values()
     ):

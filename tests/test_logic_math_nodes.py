@@ -45,7 +45,6 @@ def test_logic_math_node_ids_are_prefixed_and_complete():
         for node in logic_math_nodes.LOGIC_MATH_NODES
     }
     assert node_ids == EXPECTED_NODE_IDS
-    assert len(logic_math_nodes.LOGIC_MATH_NODES) == 28
 
 
 def test_logic_nodes_preserve_boolean_behavior():

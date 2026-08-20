@@ -2,24 +2,40 @@
 paths = [
   "encoder_helpers.py",
   "encoder_nodes.py",
-  "vlm_nodes.py",
-  "vlm_presets.py",
-  "vlm_presets_vars.py",
-  "vlm_legacy_presets.py",
-  "vlm_experimental_presets.py",
-  "minimax_h3_vlm_nodes.py",
-  "minimax_h3_vlm_presets.py",
-  "minimax_h3_vlm_experimental_presets.py",
-  "scripts/sync_vlm_h3_reference_readable_preset.py",
-  "scripts/sync_vlm_h3_ref2va_query_preset.py",
-  "scripts/sync_vlm_video_timeline_old_preset.py",
 ]
 python_tests = [
   "tests/test_advanced_visual_consensus.py",
   "tests/test_encoder_correctness.py",
   "tests/test_visual_fusion.py",
+]
+frontend_tests = []
+
+[groups.vlm]
+paths = [
+  "vlm_nodes.py",
+  "vlm_presets.py",
+  "vlm_presets_vars.py",
+  "vlm_legacy_presets.py",
+  "vlm_experimental_presets.py",
+  "vlm_experimental_presets_vars.py",
+]
+python_tests = [
   "tests/test_vlm_presets.py",
+  "tests/test_vlm_preset_authorities.py",
+]
+frontend_tests = []
+
+[groups.minimax_h3_vlm]
+paths = [
+  "minimax_h3_vlm_nodes.py",
+  "minimax_h3_vlm_presets.py",
+  "minimax_h3_vlm_presets_vars.py",
+  "minimax_h3_vlm_experimental_presets.py",
+  "minimax_h3_vlm_experimental_presets_vars.py",
+]
+python_tests = [
   "tests/test_minimax_h3_vlm_presets.py",
+  "tests/test_vlm_preset_authorities.py",
 ]
 frontend_tests = []
 
@@ -34,7 +50,7 @@ python_tests = ["tests/test_patcher_nodes.py"]
 frontend_tests = []
 
 [groups.textgen]
-paths = ["textgen_nodes.py", "text_nodes.py", "text_helpers.py", "encoder_helpers.py"]
+paths = ["textgen_nodes.py", "text_nodes.py", "text_helpers.py"]
 python_tests = ["tests/test_textgen_formula.py", "tests/test_text_nodes.py"]
 frontend_tests = []
 
@@ -106,7 +122,6 @@ python_tests = [
   "tests/test_photography_presets.py",
   "tests/test_preset_parentheses.py",
   "tests/test_video_prompt_conversion.py",
-  "tests/test_vlm_presets.py",
 ]
 frontend_tests = []
 

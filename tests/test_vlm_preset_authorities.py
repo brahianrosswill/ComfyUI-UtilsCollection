@@ -1,0 +1,70 @@
+from pathlib import Path
+import runpy
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = (
+    (
+        "vlm_presets.py",
+        "vlm_presets_vars.py",
+        (
+            "system_instructions_vlm",
+            "system_query_additional_vlm",
+            "system_query_raw_vlm",
+            "additional_instructions_vlm",
+        ),
+        (),
+    ),
+    (
+        "vlm_experimental_presets.py",
+        "vlm_experimental_presets_vars.py",
+        ("system_instructions_vlm_experimental",),
+        (),
+    ),
+    (
+        "minimax_h3_vlm_presets.py",
+        "minimax_h3_vlm_presets_vars.py",
+        ("minimax_h3_system_instructions_vlm",),
+        ("minimax_h3_vlm_jailbreak_prefix", "minimax_h3_vlm_jailbreak_suffix"),
+    ),
+    (
+        "minimax_h3_vlm_experimental_presets.py",
+        "minimax_h3_vlm_experimental_presets_vars.py",
+        ("minimax_h3_system_instructions_vlm_experimental",),
+        (),
+    ),
+)
+
+
+def assert_crlf_only(label, value):
+    if "\n" not in value and "\r" not in value:
+        return
+    assert "\r\n" in value, f"{label} has no CRLF newline"
+    remainder = value.replace("\r\n", "")
+    assert "\n" not in remainder, f"{label} contains LF-only newlines"
+    assert "\r" not in remainder, f"{label} contains lone CR newlines"
+
+
+def test_nonlegacy_vlm_authorities_match_runtime_and_use_crlf():
+    for runtime_name, authority_name, dictionaries, scalars in CONFIG:
+        runtime = runpy.run_path(str(ROOT / runtime_name))
+        authority = runpy.run_path(str(ROOT / authority_name))
+        authoritative_dictionaries = authority["RUNTIME_DICTIONARIES"]
+        authoritative_values = authority["RUNTIME_VALUES"]
+
+        assert tuple(authoritative_dictionaries) == dictionaries
+        assert tuple(authoritative_values) == scalars
+        for dictionary_name in dictionaries:
+            expected = authoritative_dictionaries[dictionary_name]
+            actual = runtime[dictionary_name]
+            assert tuple(actual) == tuple(expected)
+            assert actual == expected
+            for key, value in expected.items():
+                assert_crlf_only(f"{authority_name}:{dictionary_name}.{key}", value)
+                assert_crlf_only(f"{runtime_name}:{dictionary_name}.{key}", actual[key])
+        for scalar_name in scalars:
+            assert runtime[scalar_name] == authoritative_values[scalar_name]
+            assert_crlf_only(
+                f"{authority_name}:{scalar_name}", authoritative_values[scalar_name]
+            )
+            assert_crlf_only(f"{runtime_name}:{scalar_name}", runtime[scalar_name])

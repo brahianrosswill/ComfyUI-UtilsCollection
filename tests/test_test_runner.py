@@ -21,6 +21,11 @@ def test_manifest_maps_every_tracked_production_source():
     selection = runner.select_tests(production, groups)
 
     assert selection.unmapped == set()
+    assert all(
+        not path.startswith("scripts/")
+        for group in groups.values()
+        for path in group.paths
+    )
 
 
 def test_manifest_tests_are_tracked_and_present():
@@ -48,11 +53,57 @@ def test_changed_paths_select_only_dependent_groups_and_direct_tests():
         groups,
     )
 
-    assert selection.groups == {"composite", "encoder", "registration", "textgen"}
+    assert selection.groups == {"composite", "encoder", "registration"}
     assert "tests/test_composite_nodes.py" in selection.python_tests
     assert "tests/test_advanced_visual_consensus.py" in selection.python_tests
-    assert "tests/test_textgen_formula.py" in selection.python_tests
     assert "tests/test_scheduler_migration.py" in selection.python_tests
+    assert selection.frontend_tests == set()
+
+
+@pytest.mark.parametrize(
+    ("path", "group_name", "python_tests"),
+    (
+        (
+            "encoder_helpers.py",
+            "encoder",
+            {
+                "tests/test_advanced_visual_consensus.py",
+                "tests/test_encoder_correctness.py",
+                "tests/test_visual_fusion.py",
+            },
+        ),
+        (
+            "vlm_presets.py",
+            "vlm",
+            {
+                "tests/test_vlm_presets.py",
+                "tests/test_vlm_preset_authorities.py",
+            },
+        ),
+        (
+            "minimax_h3_vlm_presets.py",
+            "minimax_h3_vlm",
+            {
+                "tests/test_minimax_h3_vlm_presets.py",
+                "tests/test_vlm_preset_authorities.py",
+            },
+        ),
+        (
+            "presets_collection.py",
+            "presets",
+            {
+                "tests/test_photography_presets.py",
+                "tests/test_preset_parentheses.py",
+                "tests/test_video_prompt_conversion.py",
+            },
+        ),
+    ),
+)
+def test_subsystem_changes_select_only_relevant_tests(path, group_name, python_tests):
+    selection = runner.select_tests({path}, runner.load_groups())
+
+    assert selection.groups == {group_name}
+    assert selection.python_tests == python_tests
     assert selection.frontend_tests == set()
 
 

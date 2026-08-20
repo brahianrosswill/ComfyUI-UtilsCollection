@@ -1,5 +1,4 @@
 import ast
-import hashlib
 import pathlib
 import sys
 import types
@@ -38,20 +37,6 @@ TIMELINE_DERIVED_PRESETS = [
     "minimax_h3_timeline_crude_ref2va",
 ]
 
-EXPERIMENTAL_H3_TIMELINE_HASHES = {
-    "minimax_h3_timeline_fl2va": (
-        "724a593cf83a04b18ca6c51dd57986958d4b6e493e10cdcd33e5e5dda7cb9dfb"
-    ),
-    "minimax_h3_timeline_crude_fl2va": (
-        "57fb00183147b39b73e528166dc921695c07b994c33e69b11c7ca318c1d78daa"
-    ),
-    "minimax_h3_timeline_ref2va": (
-        "2117014567c4553ddf2374820f6736512da8926b50ad17f2ecf92ec0efc3a8bc"
-    ),
-    "minimax_h3_timeline_crude_ref2va": (
-        "381117fd840bf5a235c3cde1a966642983d450a0049c1d00c8d2294c2b69df50"
-    ),
-}
 EXPECTED_PRESETS = [*NATIVE_H3_PRESETS, *TIMELINE_DERIVED_PRESETS]
 PROHIBITED_GRAMMAR = (
     "Timeline:",
@@ -181,7 +166,7 @@ def test_timeline_derived_h3_presets_use_guide_aligned_timestamps():
         assert "[0s-" not in instruction
 
 
-def test_experimental_h3_timeline_presets_are_static_snapshots():
+def test_experimental_h3_timeline_presets_are_independent_literals():
     source = ast.parse(
         (CUSTOM_NODE_ROOT / "minimax_h3_vlm_experimental_presets.py").read_text(
             encoding="utf-8"
@@ -207,11 +192,10 @@ def test_experimental_h3_timeline_presets_are_static_snapshots():
         .minimax_h3_system_instructions_vlm_experimental
     )
 
-    assert set(literal_nodes) == set(EXPERIMENTAL_H3_TIMELINE_HASHES)
+    assert set(literal_nodes) == set(experimental)
     assert all(isinstance(value, ast.Constant) for value in literal_nodes.values())
-    for name, expected_hash in EXPERIMENTAL_H3_TIMELINE_HASHES.items():
-        assert hashlib.sha256(experimental[name].encode()).hexdigest() == expected_hash
-        assert experimental[name] == minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[name]
+    for name, value in experimental.items():
+        assert value == minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[name]
 
 
 def test_timeline_derived_h3_presets_create_dialogue_and_limit_channel_load():

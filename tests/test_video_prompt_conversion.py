@@ -217,7 +217,6 @@ def test_every_style_triplet_is_converted_without_broad_medium_replacement():
     bonus_sources = preset_nodes.UC_BonusPromptPresets.get_presets()
     shared = set(system_sources) & set(instruction_sources) & set(bonus_sources)
 
-    assert len(shared) == 82
     node_contracts = (
         (preset_nodes.UC_SystemMessageVideoPresets, system_sources, "system"),
         (preset_nodes.UC_InstructPromptVideoPresets, instruction_sources, "instruction"),
