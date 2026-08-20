@@ -8,6 +8,8 @@ from .patcher_helpers import (
     MiniMaxH3RadialAttentionConfig,
     SpectrumH3Config,
     effective_bootstrap_first_forecast,
+    list_minimax_h3_projections,
+    patch_minimax_h3_clip_projection,
     patch_unified_attention_model,
     patch_minimax_h3_cache_model,
     patch_minimax_h3_spectrum_model,
@@ -47,6 +49,34 @@ class UC_MiniMaxH3RadialAttentionConfig(io.ComfyNode):
             decay_factor=decay_factor,
             allow_compile=allow_compile,
         ).validate())
+
+
+class UC_MiniMaxH3ClipProjectionPatcher(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_MiniMaxH3ClipProjectionPatcher",
+            display_name="MiniMax H3 CLIP Projection Patcher",
+            category="advanced/model/patches",
+            description="Projects a Qwen3-VL 4B or 8B encoder into MiniMax H3's 32B conditioning space.",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.Combo.Input(
+                    "projection",
+                    options=list_minimax_h3_projections(),
+                    tooltip=(
+                        "Download one matching 4B or 8B .safetensors projection into "
+                        "ComfyUI/models/clip_projections. If none are listed, see README.md "
+                        "for model links and loader settings."
+                    ),
+                ),
+            ],
+            outputs=[io.Clip.Output("clip")],
+        )
+
+    @classmethod
+    def execute(cls, clip, projection) -> io.NodeOutput:
+        return io.NodeOutput(patch_minimax_h3_clip_projection(clip, projection))
 
 
 class UC_UnifiedAttentionPatcher(io.ComfyNode):

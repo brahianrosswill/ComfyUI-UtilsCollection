@@ -35,6 +35,23 @@ def test_unified_attention_schema_keeps_mode_settings_separate():
     assert len(options["SageAttention"].inputs) + 1 == 4
 
 
+def test_minimax_h3_projection_schema_exposes_clip_contract(monkeypatch):
+    monkeypatch.setattr(
+        patcher_nodes,
+        "list_minimax_h3_projections",
+        lambda: ["mmh3-4b.safetensors"],
+    )
+
+    schema = patcher_nodes.UC_MiniMaxH3ClipProjectionPatcher.define_schema()
+
+    assert schema.node_id == "UC_MiniMaxH3ClipProjectionPatcher"
+    assert [value.id for value in schema.inputs] == ["clip", "projection"]
+    assert schema.inputs[1].options == ["mmh3-4b.safetensors"]
+    assert "ComfyUI/models/clip_projections" in schema.inputs[1].tooltip
+    assert "README.md" in schema.inputs[1].tooltip
+    assert len(schema.outputs) == 1
+
+
 def test_minimax_h3_radial_config_returns_typed_runtime_value():
     result = patcher_nodes.UC_MiniMaxH3RadialAttentionConfig.execute(1, 2, 3, 128, 0.4, True)
     config = result.args[0]
@@ -719,3 +736,158 @@ def test_core_object_patch_restores_original_bound_method():
 
     patcher.unpatch_model(unpatch_weights=False)
     assert tiny_model.diffusion_model._forward() == "original"
+
+
+def _projection_data(d_in=2, d_out=3):
+    return {
+        "W": torch.arange(d_in * d_out, dtype=torch.float32).reshape(d_in, d_out),
+        "mean_in": torch.tensor([1.0, 2.0]),
+        "std_in": torch.tensor([2.0, 4.0]),
+        "mean_out": torch.tensor([0.5, 1.0, 1.5]),
+        "std_out": torch.tensor([1.0, 2.0, 3.0]),
+        "sink_out": torch.tensor([9.0, 8.0, 7.0]),
+    }
+
+
+def test_minimax_h3_projection_model_matches_checkpoint_formula_and_sink():
+    data = _projection_data()
+    model = patcher_helpers.MiniMaxH3ProjectionModel(data, tap=7)
+    hidden = torch.tensor([[[1.0, 2.0], [3.0, 6.0]]])
+
+    output = model(hidden)
+    normalized = (hidden.float() - data["mean_in"]) / data["std_in"]
+    expected = normalized @ data["W"] * data["std_out"] + data["mean_out"]
+    expected[:, 0] = data["sink_out"]
+
+    assert model.tap == 7
+    assert torch.equal(output, expected)
+
+
+def test_minimax_h3_projection_model_supports_residual_only():
+    data = _projection_data()
+    data.pop("W")
+    data["mlp.0.weight"] = torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+    data["mlp.0.bias"] = torch.tensor([0.5, 1.0, 1.5])
+    data.pop("sink_out")
+    model = patcher_helpers.MiniMaxH3ProjectionModel(data, tap=-1)
+    hidden = torch.tensor([[[3.0, 6.0]]])
+
+    output = model(hidden)
+    normalized = (hidden - data["mean_in"]) / data["std_in"]
+    residual = normalized @ data["mlp.0.weight"].T + data["mlp.0.bias"]
+    expected = residual * data["std_out"] + data["mean_out"]
+
+    assert torch.equal(output, expected)
+
+
+def test_minimax_h3_projected_tokenizer_uses_h3_key_and_video_blocks():
+    class RawTokenizer:
+        def tokenize_with_weights(self, text, **_kwargs):
+            return [[(ord(character), 1.0) for character in text]]
+
+    tokenizer = patcher_helpers._MiniMaxH3ProjectedTokenizer(
+        types.SimpleNamespace(qwen3vl_4b=RawTokenizer()),
+        "qwen3vl_4b",
+    )
+    frames = torch.zeros((3, 2, 2, 3))
+
+    tokens = tokenizer.tokenize_with_weights(
+        "go",
+        minimax_ref_items=[{"type": "video", "data": frames}],
+    )
+    entries = tokens["qwen3vl_32b"][0]
+    video_entries = [entry[0] for entry in entries if isinstance(entry[0], dict)]
+
+    assert list(tokens) == ["qwen3vl_32b"]
+    assert len(video_entries) == 2
+    assert all(entry["minimax_video_block"] for entry in video_entries)
+    assert all(entry["data"].shape[0] == 2 for entry in video_entries)
+
+
+def test_minimax_h3_projected_clip_is_clone_scoped_and_returns_tags(monkeypatch):
+    class RawTokenizer:
+        def tokenize_with_weights(self, text, **_kwargs):
+            return [[(ord(character), 1.0) for character in text]]
+
+    class Transformer:
+        def preprocess_embed(self, embed, device):
+            return embed["data"], None
+
+        def forward(self, *args, **kwargs):
+            return kwargs.get("embeds")
+
+    class Stage:
+        clip_name = "qwen3vl_4b"
+        clip = "qwen3vl_4b"
+
+        def __init__(self):
+            source_type = type(
+                "GenericQwen3VL",
+                (),
+                {"__module__": "comfy.text_encoders.qwen3vl"},
+            )
+            self.qwen3vl_4b = source_type()
+            self.qwen3vl_4b.transformer = Transformer()
+
+    class FakePatcher:
+        def __init__(self):
+            self.load_device = torch.device("cpu")
+            self.object_patches = {}
+
+        def add_object_patch(self, name, value):
+            self.object_patches[name] = value
+
+    class FakeProjectionPatcher:
+        load_device = torch.device("cpu")
+
+        def clone(self):
+            return self
+
+    class FakeClip:
+        def __init__(self):
+            self.cond_stage_model = Stage()
+            self.tokenizer = types.SimpleNamespace(qwen3vl_4b=RawTokenizer())
+            self.patcher = FakePatcher()
+            self.layer_idx = None
+
+        def clip_layer(self, layer_idx):
+            self.layer_idx = layer_idx
+
+        def encode_from_tokens(self, tokens, **_kwargs):
+            assert list(tokens) == ["qwen3vl_4b"]
+            hidden = torch.tensor([[[1.0, 2.0], [3.0, 6.0], [1.0, 2.0]]])
+            self.patcher.object_patches["qwen3vl_4b.transformer.forward"](
+                embeds=hidden,
+                embeds_info=[{"type": "image", "index": 1, "size": 1}],
+            )
+            return {"cond": hidden, "pooled_output": None}
+
+    original = FakeClip()
+    cloned = FakeClip()
+    projection = patcher_helpers.MiniMaxH3ProjectionModel(_projection_data(), tap=7)
+    projected = patcher_helpers.MiniMaxH3ProjectedCLIP(
+        cloned,
+        "projection.safetensors",
+        projection_model=projection,
+        projection_patcher=FakeProjectionPatcher(),
+    )
+    monkeypatch.setattr(patcher_helpers.comfy.model_management, "load_models_gpu", lambda _models: None)
+    monkeypatch.setattr(
+        patcher_helpers.comfy.model_management,
+        "intermediate_device",
+        lambda: torch.device("cpu"),
+    )
+
+    output = projected.encode_from_tokens(
+        {"qwen3vl_32b": [[(1, 1.0)]]},
+        return_dict=True,
+    )
+
+    assert original.patcher.object_patches == {}
+    assert set(cloned.patcher.object_patches) == {
+        "qwen3vl_4b.transformer.preprocess_embed",
+        "qwen3vl_4b.transformer.forward",
+    }
+    assert cloned.layer_idx == 7
+    assert output["cond"].shape == (1, 3, 3)
+    assert torch.equal(output["minimax_token_tags"], torch.tensor([0, 0, 0]))

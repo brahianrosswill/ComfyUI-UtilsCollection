@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import logging
 import math
+import os
 import time
 import types
 from collections.abc import Callable, Sequence
@@ -16,9 +17,13 @@ import torch
 import comfy.ldm.common_dit
 import comfy.ldm.modules.attention
 import comfy.model_management
+import comfy.model_patcher
 import comfy.model_prefetch
 import comfy.patcher_extension
+import folder_paths
+from comfy.text_encoders.minimax import process_video_block, token_tags_from_embeds_info
 from comfy.ldm.minimax import model as minimax_model
+from safetensors import safe_open
 
 
 MINIMAX_H3_CACHE_OWNER_KEY = "utilscollection_minimax_h3_cache"
@@ -26,6 +31,419 @@ MINIMAX_H3_SPECTRUM_OWNER_KEY = "utilscollection_minimax_h3_spectrum"
 UNIFIED_ATTENTION_OWNER_KEY = "utilscollection_unified_attention"
 MINIMAX_H3_RADIAL_WRAPPER_KEY = "utilscollection_minimax_h3_radial"
 MINIMAX_H3_RADIAL_STATE_KEY = "utilscollection_minimax_h3_radial_state"
+MINIMAX_H3_PROJECTION_FOLDER = "clip_projections"
+MINIMAX_H3_PROJECTED_KEY = "qwen3vl_32b"
+MINIMAX_H3_PROJECTION_PATCH_KEY = "utilscollection_minimax_h3_projection"
+MINIMAX_H3_SOURCE_KEYS = {"qwen3vl_4b", "qwen3vl_8b"}
+MINIMAX_H3_PAD_TOKEN = 151643
+MINIMAX_H3_VISION_START = 151652
+MINIMAX_H3_VISION_END = 151653
+
+
+def _register_minimax_h3_projection_folder() -> None:
+    path = os.path.join(folder_paths.models_dir, MINIMAX_H3_PROJECTION_FOLDER)
+    if MINIMAX_H3_PROJECTION_FOLDER not in folder_paths.folder_names_and_paths:
+        folder_paths.folder_names_and_paths[MINIMAX_H3_PROJECTION_FOLDER] = (
+            [path],
+            {".safetensors"},
+        )
+    else:
+        folder_paths.add_model_folder_path(MINIMAX_H3_PROJECTION_FOLDER, path)
+
+
+_register_minimax_h3_projection_folder()
+
+
+def list_minimax_h3_projections() -> list[str]:
+    return [
+        name
+        for name in folder_paths.get_filename_list(MINIMAX_H3_PROJECTION_FOLDER)
+        if name.lower().endswith(".safetensors")
+    ]
+
+
+def _projection_scalar(data: dict[str, Any], metadata: dict[str, str], key: str) -> int:
+    value = metadata.get(key, data.get(key))
+    if torch.is_tensor(value):
+        if value.numel() != 1:
+            raise ValueError(f"Projection {key} must contain one value.")
+        value = value.item()
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Projection is missing a valid {key} value.") from exc
+
+
+def load_minimax_h3_projection(name: str) -> tuple[dict[str, torch.Tensor], int]:
+    if not name.lower().endswith(".safetensors"):
+        raise ValueError("MiniMax H3 projections must use the .safetensors format.")
+    path = folder_paths.get_full_path_or_raise(MINIMAX_H3_PROJECTION_FOLDER, name)
+    with safe_open(path, framework="pt", device="cpu") as handle:
+        data = {key: handle.get_tensor(key) for key in handle.keys()}
+        metadata = handle.metadata() or {}
+    required = ("mean_in", "std_in", "mean_out", "std_out")
+    missing = [key for key in required if key not in data]
+    if missing:
+        raise ValueError(f"Projection is missing required tensors: {', '.join(missing)}.")
+    tap = _projection_scalar(data, metadata, "tap")
+    return data, tap
+
+
+def _projection_layers(data: dict[str, torch.Tensor]) -> list[int]:
+    layers = set()
+    for key in data:
+        if not key.startswith("mlp."):
+            continue
+        parts = key.split(".")
+        if len(parts) != 3 or parts[2] not in {"weight", "bias"}:
+            raise ValueError(f"Unsupported projection tensor: {key}.")
+        try:
+            layers.add(int(parts[1]))
+        except ValueError as exc:
+            raise ValueError(f"Unsupported projection tensor: {key}.") from exc
+    return sorted(layers)
+
+
+class MiniMaxH3ProjectionModel(torch.nn.Module):
+    def __init__(self, data: dict[str, torch.Tensor], tap: int):
+        super().__init__()
+        self.tap = tap
+        for key in ("mean_in", "std_in", "mean_out", "std_out"):
+            value = data[key]
+            if value.ndim != 1 or not torch.is_floating_point(value):
+                raise ValueError(f"Projection {key} must be a floating-point vector.")
+            self.register_buffer(key, value.float())
+        d_in = self.mean_in.shape[0]
+        d_out = self.mean_out.shape[0]
+        if self.std_in.shape != self.mean_in.shape or self.std_out.shape != self.mean_out.shape:
+            raise ValueError("Projection mean and standard-deviation shapes must match.")
+        if torch.any(self.std_in == 0) or torch.any(self.std_out == 0):
+            raise ValueError("Projection standard deviations must be nonzero.")
+
+        weight = data.get("W")
+        if weight is not None:
+            if weight.ndim != 2 or tuple(weight.shape) != (d_in, d_out):
+                raise ValueError(
+                    f"Projection W must have shape [{d_in}, {d_out}]."
+                )
+            self.linear_weight = torch.nn.Parameter(weight.float())
+        else:
+            self.register_parameter("linear_weight", None)
+
+        residual_layers = []
+        previous_out = d_in
+        layer_indices = _projection_layers(data)
+        for position, index in enumerate(layer_indices):
+            weight_key = f"mlp.{index}.weight"
+            bias_key = f"mlp.{index}.bias"
+            if weight_key not in data:
+                raise ValueError(f"Projection residual layer {index} has no weight.")
+            residual_weight = data[weight_key]
+            if residual_weight.ndim != 2 or residual_weight.shape[1] != previous_out:
+                raise ValueError(f"Projection residual layer {index} has incompatible dimensions.")
+            linear = torch.nn.Linear(
+                residual_weight.shape[1],
+                residual_weight.shape[0],
+                bias=bias_key in data,
+                dtype=residual_weight.dtype,
+            )
+            linear.weight = torch.nn.Parameter(residual_weight)
+            if bias_key in data:
+                bias = data[bias_key]
+                if bias.ndim != 1 or bias.shape[0] != residual_weight.shape[0]:
+                    raise ValueError(f"Projection residual layer {index} has an incompatible bias.")
+                linear.bias = torch.nn.Parameter(bias)
+            residual_layers.append(linear)
+            if position < len(layer_indices) - 1:
+                residual_layers.append(torch.nn.GELU())
+            previous_out = residual_weight.shape[0]
+        if residual_layers and previous_out != d_out:
+            raise ValueError(f"Projection residual output must have {d_out} dimensions.")
+        self.residual = torch.nn.Sequential(*residual_layers) if residual_layers else None
+        if self.linear_weight is None and self.residual is None:
+            raise ValueError("Projection requires a linear matrix or residual network.")
+
+        sink = data.get("sink_out")
+        if sink is not None:
+            if sink.ndim != 1 or sink.shape[0] != d_out:
+                raise ValueError(f"Projection sink_out must have {d_out} values.")
+            self.register_buffer("sink_out", sink.float())
+        else:
+            self.register_buffer("sink_out", None)
+        self.device = torch.device("cpu")
+
+    @property
+    def input_dimensions(self) -> int:
+        return self.mean_in.shape[0]
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        hidden = hidden.float()
+        if hidden.shape[-1] != self.input_dimensions:
+            raise ValueError(
+                f"Connected encoder produces {hidden.shape[-1]} dimensions, but projection expects {self.input_dimensions}."
+            )
+        normalized = (hidden - self.mean_in) / self.std_in
+        projected = normalized @ self.linear_weight if self.linear_weight is not None else None
+        if self.residual is not None:
+            residual_dtype = self.residual[0].weight.dtype
+            residual = self.residual(normalized.to(residual_dtype)).float()
+            projected = residual if projected is None else projected + residual
+        output = projected * self.std_out + self.mean_out
+        if self.sink_out is not None and output.shape[1] > 0:
+            output[:, 0] = self.sink_out
+        return output
+
+
+class _MiniMaxH3ProjectedTokenizer:
+    clip_name = MINIMAX_H3_PROJECTED_KEY
+
+    def __init__(self, source_tokenizer: Any, source_key: str):
+        self.source_tokenizer = source_tokenizer
+        self.source_key = source_key
+        self.raw_tokenizer = getattr(source_tokenizer, source_key)
+
+    def _text_entries(self, text: str) -> list[tuple]:
+        if not text:
+            return []
+        batches = self.raw_tokenizer.tokenize_with_weights(
+            text,
+            return_word_ids=False,
+            disable_weights=True,
+        )
+        if len(batches) != 1:
+            raise ValueError("MiniMax H3 projected text exceeds the supported prompt length.")
+        return list(batches[0])
+
+    @staticmethod
+    def _vision_entry(data: torch.Tensor, video_block: bool = False) -> dict[str, Any]:
+        entry = {"type": "image", "data": data, "original_type": "image"}
+        if video_block:
+            entry["minimax_video_block"] = True
+        return entry
+
+    def tokenize_with_weights(
+        self,
+        text: str,
+        return_word_ids: bool = False,
+        images: list = [],
+        minimax_ref_items=None,
+        **_kwargs,
+    ) -> dict[str, list[list[tuple]]]:
+        entries = []
+
+        def add_text(value: str) -> None:
+            entries.extend(self._text_entries(value))
+
+        def add_vision(data: torch.Tensor, video_block: bool = False) -> None:
+            entries.append((MINIMAX_H3_VISION_START, 1.0))
+            entries.append((self._vision_entry(data, video_block), 1.0))
+            entries.append((MINIMAX_H3_VISION_END, 1.0))
+
+        if minimax_ref_items:
+            counters = {"image": 0, "audio": 0, "video": 0}
+            for item in minimax_ref_items:
+                kind = item["type"]
+                if kind not in counters:
+                    raise ValueError(f"Unsupported MiniMax H3 reference type: {kind}.")
+                counters[kind] += 1
+                if kind == "image":
+                    add_text(f"<Picture {counters[kind]}>: ")
+                    add_vision(item["data"])
+                elif kind == "audio":
+                    add_text(f"<Audio {counters[kind]}>: ")
+                else:
+                    frames = item["data"]
+                    timestamps = item.get("timestamps")
+                    if timestamps is None:
+                        timestamps = [index / 2.0 for index in range(frames.shape[0])]
+                    else:
+                        timestamps = list(timestamps)
+                    if frames.shape[0] % 2:
+                        frames = torch.cat([frames, frames[-1:]], dim=0)
+                        timestamps.append(timestamps[-1])
+                    add_text(f"<Video {counters[kind]}>: ")
+                    for index in range(0, frames.shape[0], 2):
+                        midpoint = (timestamps[index] + timestamps[index + 1]) / 2.0
+                        add_text(f"<{float(midpoint):.1f} seconds>")
+                        add_vision(frames[index:index + 2], video_block=True)
+        else:
+            for index, image in enumerate(images, start=1):
+                add_text(f"<Picture {index}>: ")
+                add_vision(image)
+        add_text(text)
+        if not entries:
+            entries.append((MINIMAX_H3_PAD_TOKEN, 1.0))
+        if return_word_ids:
+            entries = [entry + (0,) for entry in entries]
+        return {MINIMAX_H3_PROJECTED_KEY: [entries]}
+
+
+class MiniMaxH3ProjectedCLIP:
+    def __init__(
+        self,
+        base: Any,
+        projection_name: str,
+        projection_model: MiniMaxH3ProjectionModel | None = None,
+        projection_patcher: Any = None,
+        original_methods: tuple[Callable, Callable] | None = None,
+    ):
+        source_key = getattr(base.cond_stage_model, "clip_name", None)
+        if source_key not in MINIMAX_H3_SOURCE_KEYS:
+            raise ValueError("MiniMax H3 projection requires a Qwen3-VL 4B or 8B text encoder.")
+        source_model = getattr(
+            base.cond_stage_model,
+            getattr(base.cond_stage_model, "clip", ""),
+            None,
+        )
+        if type(source_model).__module__ != "comfy.text_encoders.qwen3vl":
+            raise ValueError(
+                "MiniMax H3 projection requires the generic Qwen3-VL wrapper. "
+                "Load the 4B or 8B encoder with CLIP type minimax."
+            )
+        if projection_model is None:
+            data, tap = load_minimax_h3_projection(projection_name)
+            projection_model = MiniMaxH3ProjectionModel(data, tap)
+        self._base = base
+        self._projection_name = projection_name
+        self._projection_model = projection_model
+        self._source_key = source_key
+        self._capture = {}
+        self.tokenizer = _MiniMaxH3ProjectedTokenizer(base.tokenizer, source_key)
+        self._base.clip_layer(projection_model.tap)
+
+        if projection_patcher is None:
+            offload_device = comfy.model_management.text_encoder_offload_device()
+            projection_model.to(offload_device)
+            projection_model.device = offload_device
+            projection_patcher = comfy.model_patcher.CoreModelPatcher(
+                projection_model,
+                load_device=base.patcher.load_device,
+                offload_device=offload_device,
+            )
+        self._projection_patcher = projection_patcher
+        self._install_encoder_patches(original_methods)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base, name)
+
+    def _install_encoder_patches(
+        self, original_methods: tuple[Callable, Callable] | None
+    ) -> None:
+        owner_name = self._base.cond_stage_model.clip
+        submodel = getattr(self._base.cond_stage_model, owner_name)
+        transformer = submodel.transformer
+        if original_methods is None:
+            original_preprocess = transformer.preprocess_embed
+            original_forward = transformer.forward
+        else:
+            original_preprocess, original_forward = original_methods
+        self._original_methods = (original_preprocess, original_forward)
+
+        def preprocess_embed(current, embed, device):
+            if embed.get("type") == "image" and embed.get("minimax_video_block", False):
+                flattened, grid = process_video_block(embed["data"])
+                merged, deepstack = current.visual(
+                    flattened.to(device, dtype=torch.float32), grid
+                )
+                return merged, {"grid": grid, "deepstack": deepstack}
+            return original_preprocess(embed, device)
+
+        def forward(_current, *args, **kwargs):
+            if self._capture.get("active"):
+                embeds_info = kwargs.get("embeds_info", [])
+                embeds = kwargs.get("embeds")
+                if embeds is not None:
+                    self._capture["tags"] = token_tags_from_embeds_info(
+                        embeds.shape[1], embeds_info
+                    )
+            return original_forward(*args, **kwargs)
+
+        prefix = f"{owner_name}.transformer"
+        self._base.patcher.add_object_patch(
+            f"{prefix}.preprocess_embed",
+            types.MethodType(preprocess_embed, transformer),
+        )
+        self._base.patcher.add_object_patch(
+            f"{prefix}.forward",
+            types.MethodType(forward, transformer),
+        )
+
+    def clone(self):
+        return MiniMaxH3ProjectedCLIP(
+            self._base.clone(),
+            self._projection_name,
+            projection_model=self._projection_model,
+            projection_patcher=self._projection_patcher.clone(),
+            original_methods=self._original_methods,
+        )
+
+    def tokenize(self, text: str, return_word_ids: bool = False, **kwargs):
+        return self.tokenizer.tokenize_with_weights(text, return_word_ids, **kwargs)
+
+    def _source_tokens(self, tokens: dict) -> dict:
+        try:
+            batches = tokens[MINIMAX_H3_PROJECTED_KEY]
+        except (KeyError, TypeError) as exc:
+            raise ValueError("Projected MiniMax H3 CLIP requires qwen3vl_32b tokens.") from exc
+        return {self._source_key: batches}
+
+    def _capture_encode(self, function: Callable, tokens: dict):
+        self._capture.clear()
+        self._capture["active"] = True
+        try:
+            output = function(self._source_tokens(tokens))
+            tags = self._capture.get("tags")
+        finally:
+            self._capture.clear()
+        if not torch.is_tensor(tags):
+            raise RuntimeError("Projected MiniMax H3 encoder did not produce modality tags.")
+        return output, tags
+
+    def _project(self, hidden: torch.Tensor) -> torch.Tensor:
+        comfy.model_management.load_models_gpu([self._projection_patcher])
+        device = self._projection_patcher.load_device
+        with comfy.model_management.cuda_device_context(device):
+            projected = self._projection_model(hidden.to(device))
+        return projected.to(comfy.model_management.intermediate_device())
+
+    def encode_from_tokens(self, tokens, return_pooled=False, return_dict=False):
+        output, tags = self._capture_encode(
+            lambda source: self._base.encode_from_tokens(
+                source, return_pooled=True, return_dict=True
+            ),
+            tokens,
+        )
+        output["cond"] = self._project(output["cond"])
+        output["minimax_token_tags"] = tags
+        if return_dict:
+            return output
+        pooled = output.get("pooled_output")
+        if return_pooled:
+            return output["cond"], pooled
+        return output["cond"]
+
+    def encode_from_tokens_scheduled(
+        self, tokens, unprojected=False, add_dict={}, show_pbar=True
+    ):
+        conditioning, tags = self._capture_encode(
+            lambda source: self._base.encode_from_tokens_scheduled(
+                source,
+                unprojected=unprojected,
+                add_dict=add_dict,
+                show_pbar=show_pbar,
+            ),
+            tokens,
+        )
+        projected = []
+        for hidden, metadata in conditioning:
+            metadata = metadata.copy()
+            metadata["minimax_token_tags"] = tags
+            projected.append([self._project(hidden), metadata])
+        return projected
+
+
+def patch_minimax_h3_clip_projection(clip: Any, projection_name: str) -> MiniMaxH3ProjectedCLIP:
+    return MiniMaxH3ProjectedCLIP(clip.clone(), projection_name)
 
 
 # Cache heuristic adapted from ComfyUI-MiniMaxH3-Cache by lihaoyun6:

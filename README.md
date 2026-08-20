@@ -30,7 +30,21 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_VLMInputEmbeds`
 - `UC_Krea2LayerProbe`
 - `UC_Krea2LayerAblator`
+- `UC_MiniMaxH3ClipProjectionPatcher`
 - `UC_EncoderNodesGuide`
+
+#### MiniMax H3 CLIP projection models
+
+`UC_MiniMaxH3ClipProjectionPatcher` projects a Qwen3-VL 4B or 8B text encoder into MiniMax H3's 32B conditioning space. Load the encoder with Core's **Load CLIP** node using type `minimax`, then connect it to the projection patcher.
+
+Download one projection matching the encoder size into `ComfyUI/models/clip_projections/`:
+
+- [Qwen3-VL 4B v3.1](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/blob/main/mmh3-4b-ClipProj-v3.1.safetensors)
+- [Qwen3-VL 4B v3.1 with residual MLP](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/blob/main/mmh3-4b-ClipProj-v3.1-mlp.safetensors)
+- [Qwen3-VL 8B v3.1](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/blob/main/mmh3-8b-ClipProj-v3.1.safetensors)
+- [Qwen3-VL 8B v3.1 with residual MLP](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/blob/main/mmh3-8b-ClipProj-v3.1-mlp.safetensors)
+
+Only one projection is used at a time. The control and `obsolete/` files in the model repository are not normal generation models.
 
 #### UC_AdvancedMiniMaxH3ImageToVideo: Qwen-only 1024 VLM example
 
