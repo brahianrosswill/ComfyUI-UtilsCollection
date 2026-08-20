@@ -2499,10 +2499,6 @@ def _execute_advanced_minimax_h3_image_to_video(
         raise ValueError(
             "MiniMax H3 frame inputs cannot be combined with native reference images."
         )
-    if flat_references and flat_fusion_images:
-        raise ValueError(
-            "MiniMax H3 native reference images cannot be combined with fusion images."
-        )
     native_reference_mode = bool(flat_references)
     reference_keyframe_mode = None
     reference_size_mode = ref_image_size
@@ -2596,12 +2592,13 @@ def _execute_advanced_minimax_h3_image_to_video(
     base_vlm_images.extend(
         prepare_vlm_image(image, vlm_resolution) for image in flat_references
     )
+    config = dict(visual_fusion_config or {})
+    visual_method = config.get("visual_fusion_method", "off")
     fusion_vlm_images = [
         prepare_vlm_image(image, vlm_resolution) for image in flat_fusion_images
     ]
-
-    config = dict(visual_fusion_config or {})
-    visual_method = config.get("visual_fusion_method", "off")
+    if native_reference_mode and visual_method == "off":
+        fusion_vlm_images = []
     fusion_active = visual_method != "off" and bool(fusion_vlm_images)
     visual_encoder_path = config.get("visual_encoder_path", "grid-deepstack")
     if media_config is not None and fusion_active and visual_encoder_path == "legacy-flat":
@@ -2622,14 +2619,33 @@ def _execute_advanced_minimax_h3_image_to_video(
             )
         return clip.tokenize(text, images=images)
 
-    if fusion_active and keyframe_mode:
-        if any(
-            socket_number < 1 or socket_number > len(base_vlm_images)
-            for socket_number, _ in fusion_socket_batches
+    if fusion_active and (keyframe_mode or native_reference_mode):
+        if keyframe_mode:
+            if any(
+                socket_number < 1 or socket_number > len(base_vlm_images)
+                for socket_number, _ in fusion_socket_batches
+            ):
+                raise ValueError(
+                    "MiniMax H3 frame fusion has a fusion image without a matching picture slot."
+                )
+            fusion_slot_batches = [
+                (socket_number - 1, socket_images)
+                for socket_number, socket_images in fusion_socket_batches
+            ]
+        elif (
+            len(fusion_socket_batches) == 1
+            and fusion_socket_batches[0][0] == 1
+            and len(fusion_socket_batches[0][1]) == 1
         ):
-            raise ValueError(
-                "MiniMax H3 frame fusion has a fusion image without a matching picture slot."
-            )
+            fusion_slot_batches = [
+                (index, fusion_socket_batches[0][1])
+                for index in range(len(base_vlm_images))
+            ]
+        else:
+            fusion_slot_batches = [
+                (index, [image])
+                for index, image in enumerate(fusion_vlm_images[:len(base_vlm_images)])
+            ]
 
         tokenize_callback = lambda text: tokenize_presentation(text, base_vlm_images)
         conditioning = encode_embedding_classical_scaled_bias(
@@ -2646,8 +2662,7 @@ def _execute_advanced_minimax_h3_image_to_video(
         base_tensor, base_metadata = conditioning[0]
         base_tokens = tokenize_callback(prompt)
         fused_tensor = base_tensor.clone()
-        for socket_number, socket_images in fusion_socket_batches:
-            visual_index = socket_number - 1
+        for visual_index, socket_images in fusion_slot_batches:
             branches = []
             branch_sources = [
                 (

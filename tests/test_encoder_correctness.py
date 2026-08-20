@@ -1079,10 +1079,6 @@ def test_advanced_combined_minimax_h3_validates_model_before_encoding():
     ("extra_inputs", "message"),
     [
         ({"first_frame": torch.ones(1, 32, 32, 3)}, "frame inputs cannot be combined"),
-        (
-            {"fusion_images": {"fusion_image_1": torch.ones(1, 32, 32, 3)}},
-            "native reference images cannot be combined",
-        ),
     ],
 )
 def test_advanced_combined_minimax_h3_rejects_conflicting_hybrid_inputs(
@@ -1255,6 +1251,165 @@ def test_advanced_minimax_h3_reference_mode_preserves_flat_order_and_pixels():
     assert audio.shape == (1, 32, 2, 8)
 
 
+def test_advanced_minimax_h3_reference_fusion_pairs_flattened_inputs():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    references = [
+        torch.full((1, 4, 6, 3), value)
+        for value in (0.25, 0.5, 0.75)
+    ]
+    fusion = [
+        torch.full((1, 4, 6, 3), value)
+        for value in (1.0, 0.125, 0.375, 0.625)
+    ]
+
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        width=64,
+        height=32,
+        length=5,
+        vlm_resolution=0,
+        reference_images={
+            "reference_image_1": torch.cat(references[:2], dim=0),
+            "reference_image_2": references[2],
+        },
+        fusion_images={"fusion_image_1": torch.cat(fusion, dim=0)},
+        visual_fusion_config={
+            "visual_fusion_method": "linear",
+            "visual_encoder_path": "grid-deepstack",
+        },
+    )
+
+    encoded_images = [
+        [float(entry[0]["data"].mean()) for entry in tokens["qwen3vl_32b"][0] if encoder_helpers.is_image_token(entry)]
+        for tokens in clip.encoded_tokens
+    ]
+    assert np.allclose(
+        encoded_images,
+        [
+            [0.25, 0.5, 0.75],
+            [1.0, 0.5, 0.75],
+            [0.25, 0.125, 0.75],
+            [0.25, 0.5, 0.375],
+        ],
+        atol=0.004,
+    )
+    assert [float(image.mean()) for image in vae.images] == pytest.approx(
+        [0.25, 0.5, 0.75], abs=0.004
+    )
+
+
+def test_advanced_minimax_h3_reference_fusion_singleton_broadcasts():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    references = [
+        torch.full((1, 4, 6, 3), value)
+        for value in (0.25, 0.5, 0.75)
+    ]
+    fusion = torch.full((1, 4, 6, 3), 1.0)
+
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        width=64,
+        height=32,
+        length=5,
+        vlm_resolution=0,
+        reference_images={"reference_image_1": torch.cat(references, dim=0)},
+        fusion_images={"fusion_image_1": fusion},
+        visual_fusion_config={
+            "visual_fusion_method": "linear",
+            "visual_encoder_path": "grid-deepstack",
+        },
+    )
+
+    encoded_images = [
+        [float(entry[0]["data"].mean()) for entry in tokens["qwen3vl_32b"][0] if encoder_helpers.is_image_token(entry)]
+        for tokens in clip.encoded_tokens
+    ]
+    assert np.allclose(
+        encoded_images,
+        [[0.25, 0.5, 0.75], [1.0, 0.5, 0.75], [0.25, 1.0, 0.75], [0.25, 0.5, 1.0]],
+        atol=0.004,
+    )
+
+
+def test_advanced_minimax_h3_reference_fusion_second_socket_disables_broadcast():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    references = torch.stack(
+        [
+            torch.full((4, 6, 3), 0.25),
+            torch.full((4, 6, 3), 0.5),
+            torch.full((4, 6, 3), 0.75),
+        ]
+    )
+
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        width=64,
+        height=32,
+        length=5,
+        vlm_resolution=0,
+        reference_images={"reference_image_1": references},
+        fusion_images={
+            "fusion_image_1": torch.full((1, 4, 6, 3), 1.0),
+            "fusion_image_2": torch.full((1, 4, 6, 3), 0.125),
+        },
+        visual_fusion_config={
+            "visual_fusion_method": "linear",
+            "visual_encoder_path": "grid-deepstack",
+        },
+    )
+
+    encoded_images = [
+        [float(entry[0]["data"].mean()) for entry in tokens["qwen3vl_32b"][0] if encoder_helpers.is_image_token(entry)]
+        for tokens in clip.encoded_tokens
+    ]
+    assert np.allclose(
+        encoded_images,
+        [[0.25, 0.5, 0.75], [1.0, 0.5, 0.75], [0.25, 0.125, 0.75]],
+        atol=0.004,
+    )
+
+
+def test_advanced_minimax_h3_reference_fusion_off_ignores_fusion_inputs():
+    clip = _MiniMaxH3TestClip()
+    vae = _RecordingMiniMaxVAE()
+    references = torch.stack(
+        [
+            torch.full((4, 6, 3), 0.25),
+            torch.full((4, 6, 3), 0.5),
+        ]
+    )
+    fusion = torch.full((1, 4, 6, 3), 1.0)
+
+    UC_AdvancedMiniMaxH3ImageToVideo.execute(
+        clip,
+        vae,
+        prompt="subject",
+        width=64,
+        height=32,
+        length=5,
+        vlm_resolution=0,
+        reference_images={"reference_image_1": references},
+        fusion_images={"fusion_image_1": fusion},
+        visual_fusion_config=None,
+    )
+
+    entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+    qwen_images = [entry[0]["data"] for entry in entries if encoder_helpers.is_image_token(entry)]
+    assert [float(image.mean()) for image in qwen_images] == pytest.approx(
+        [0.25, 0.5], abs=0.004
+    )
+    assert len(clip.encoded_tokens) == 1
+
+
 def test_advanced_minimax_h3_reference_save_exports_each_visual_span(monkeypatch):
     clip = _MiniMaxH3TestClip()
     vae = _RecordingMiniMaxVAE()
@@ -1421,19 +1576,11 @@ def test_advanced_minimax_h3_vlm_resolution_is_independent_for_every_role():
 def test_advanced_minimax_h3_rejects_simultaneous_native_modes_before_encoding():
     first = torch.full((1, 32, 64, 3), 0.125)
     reference = torch.full((1, 32, 64, 3), 0.25)
-    fusion = torch.full((1, 32, 64, 3), 0.5)
 
     for kwargs, message in [
         (
             {"first_frame": first, "reference_images": {"reference_image_1": reference}},
             "frame inputs cannot be combined",
-        ),
-        (
-            {
-                "reference_images": {"reference_image_1": reference},
-                "fusion_images": {"fusion_image_1": fusion},
-            },
-            "reference images cannot be combined",
         ),
     ]:
         clip = _MiniMaxH3TestClip()
