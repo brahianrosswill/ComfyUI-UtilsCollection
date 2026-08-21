@@ -71,7 +71,8 @@ def test_encoder_guide_covers_current_visual_fusion_contract():
             "UC_AdvancedVisualConditioningEncode",
             "encode only the selected base VLM resolution",
             "`1` remains one resolution sample",
-            "complete conditioning until consensus",
+            "complete conditioning until cross-resolution consensus",
+            "visual and DeepStack tokens fuse before",
         )
     )
     assert all(
@@ -86,6 +87,7 @@ def test_encoder_guide_covers_current_visual_fusion_contract():
             "`dither-random-forward`",
             "optional spatial-only configuration",
             "UC_AdvancedVisConEncoder",
+            "UC_AdvancedVisConEncoderTokenFusion",
             "sequential stages",
             "never crossfaded",
         )
@@ -104,6 +106,8 @@ def test_encoder_guide_makes_primary_and_specialized_hierarchy_explicit():
     assert "no image connected" in catalog
     assert "text-only conditioning" in catalog
     assert "It is not a replacement for `UC_AdvancedVisualConditioningEncode`" in catalog
+    assert "`UC_AdvancedVisConEncoderTokenFusion`" in catalog
+    assert "fuses visual and DeepStack tokens before one encode" in catalog
     assert "### Specialized encoders" in catalog
     assert "### Embedding export" in catalog
 
@@ -114,8 +118,8 @@ def test_encoder_guide_makes_primary_and_specialized_hierarchy_explicit():
     assert primary_position < consensus_position < specialized_position < export_position
 
     assert catalog.index("`UC_VisualFusionConfig`") < consensus_position
-    assert "`UC_AdvancedVisualConfiguration`" in catalog
     assert "`UC_AdvancedConsensusConfiguration`" in catalog
+    assert "extends Text Consensus Blend Configurator" in catalog
     assert "`UC_ConditioningConsensusBlend`" in catalog
 
 

@@ -20,7 +20,6 @@ cli_args.cpu = True
 try:
     from utils_collection_test import embedding_helpers, encoder_helpers, encoder_nodes
     from utils_collection_test.encoder_nodes import (
-        TextEncodeEditScaledAdv,
         UC_AdvancedVisualConditioningEncode,
         UC_Krea2TokenAttentionWeight,
         UC_VisualFusionConfig,
@@ -320,7 +319,6 @@ def test_config_seed_and_legacy_call_compatibility():
 def test_visual_fusion_consumers_use_aligned_integer_resolution():
     for node in (
         UC_AdvancedVisualConditioningEncode,
-        TextEncodeEditScaledAdv,
         UC_Krea2TokenAttentionWeight,
     ):
         resolution = {
@@ -366,10 +364,19 @@ def test_resolution_samples_alternate_and_raise_low_base():
         256,
         384,
     ]
+    assert encoder_helpers.vlm_resolution_samples(image, 512, 5, 64) == [
+        512,
+        448,
+        576,
+        384,
+        640,
+    ]
     assert encoder_helpers.vlm_resolution_samples(image, 0, 15) == [None]
     assert len(encoder_helpers.vlm_resolution_samples(image, 512, 15)) == 15
     with pytest.raises(ValueError, match="odd integer"):
         encoder_helpers.vlm_resolution_samples(image, 512, 4)
+    with pytest.raises(ValueError, match="multiple of 32 from 32 to 512"):
+        encoder_helpers.vlm_resolution_samples(image, 512, 5, 48)
 
 
 def test_stale_consensus_keys_do_not_change_spatial_result():
@@ -617,6 +624,237 @@ def test_advanced_visual_encoder_exports_default_unfused_visual_input(monkeypatc
     assert tokens == {"qwen3vl_4b": [[(0, 1.0)]]}
     assert key == "qwen3vl_4b"
     assert device is not None
+
+
+def test_token_fusion_preprocesses_each_source_then_encodes_once(monkeypatch, caplog):
+    calls = {"process": 0, "forward": 0}
+    caplog.set_level("INFO")
+
+    class Transformer:
+        last_token_tags = None
+
+        def __call__(self, _ids, _mask, embeds=None, embeds_info=None, **_kwargs):
+            calls["forward"] += 1
+            calls["embeds"] = embeds.clone()
+            calls["info"] = embeds_info
+            return embeds + 100.0, None, None
+
+    class ClipModel:
+        layer = "last"
+        layer_idx = None
+        layer_norm_hidden_state = False
+        enable_attention_masks = False
+        zero_out_masked = False
+        return_projected_pooled = True
+        return_attention_masks = False
+
+        def __init__(self):
+            self.transformer = Transformer()
+
+        def process_tokens(self, rows, device):
+            calls["process"] += 1
+            value = float(next(item["data"] for item in rows[0] if isinstance(item, dict)))
+            embeds = torch.tensor([[[10.0], [value], [value], [value], [value], [20.0], [30.0]]], device=device)
+            info = [{
+                "type": "image",
+                "index": 1,
+                "size": 4,
+                "extra": {
+                    "grid": torch.tensor([1, 4, 4]),
+                    "deepstack": [torch.full((4, 1), value * 10.0, device=device)],
+                },
+            }]
+            return embeds, torch.ones((1, 7), dtype=torch.long, device=device), [7], info
+
+    model = ClipModel()
+
+    class Stage:
+        clip = "qwen"
+        qwen = model
+
+        @staticmethod
+        def reset_clip_options():
+            pass
+
+        @staticmethod
+        def set_clip_options(_options):
+            pass
+
+    class Patcher:
+        forced_hooks = None
+        load_device = torch.device("cpu")
+
+    class Clip:
+        cond_stage_model = Stage()
+        patcher = Patcher()
+        layer_idx = None
+        use_clip_schedule = False
+
+        @staticmethod
+        def load_model(_tokens):
+            pass
+
+        @staticmethod
+        def add_hooks_to_dict(_metadata):
+            pass
+
+    def tokens(value):
+        return {"qwen": [[(151652, 1.0), ({"type": "image", "data": value}, 1.0), (151653, 1.0), (42, 1.0)]]}
+
+    output = encoder_helpers.encode_token_fused_visual_sources(
+        Clip(),
+        [tokens(1.0), tokens(10.0)],
+        {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 1},
+    )
+
+    assert calls["process"] == 2
+    assert calls["forward"] == 1
+    assert set(calls["embeds"][0, 1:5, 0].tolist()) == {1.0, 10.0}
+    deepstack = calls["info"][0]["extra"]["deepstack"][0]
+    assert set(deepstack[:, 0].tolist()) == {10.0, 100.0}
+    assert torch.equal(output[0][0], calls["embeds"] + 100.0)
+    assert "fused 2 visual sources into 1 block (4 visual tokens)" in caplog.text
+
+
+def test_token_fusion_alternative_nodes_have_distinct_ids_and_matching_sockets():
+    pairs = [
+        (encoder_nodes.UC_AdvancedVisualConditioningEncodeTokenFusion, encoder_nodes.UC_AdvancedVisualConditioningEncode),
+        (encoder_nodes.UC_Krea2TokenAttentionWeightTokenFusion, encoder_nodes.UC_Krea2TokenAttentionWeight),
+        (encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTokenFusion, encoder_nodes.UC_AdvancedMiniMaxH3ImageToVideo),
+        (encoder_nodes.UC_AdvMiniMaxH3ImageToVideoCombinedTokenFusion, encoder_nodes.UC_AdvancedMiniMaxH3ImageToVideoCombined),
+    ]
+    for alternative, original in pairs:
+        alternative_schema = alternative.define_schema()
+        original_schema = original.define_schema()
+        assert "TokenFusion" in alternative_schema.display_name
+        assert alternative_schema.node_id != original_schema.node_id
+        assert [value.id for value in alternative_schema.inputs] == [value.id for value in original_schema.inputs]
+        assert [value.id for value in alternative_schema.outputs] == [value.id for value in original_schema.outputs]
+
+
+def test_token_fusion_minimax_slots_share_one_final_encode(monkeypatch, caplog):
+    calls = {"process": 0, "encode": 0}
+    caplog.set_level("INFO")
+
+    class ClipModel:
+        transformer = object()
+
+        @staticmethod
+        def process_tokens(rows, device):
+            calls["process"] += 1
+            values = [float(item["data"]) for item in rows[0] if isinstance(item, dict)]
+            chunks = [torch.tensor([[10.0]], device=device)]
+            info = []
+            index = 1
+            for value in values:
+                chunks.extend([
+                    torch.full((4, 1), value, device=device),
+                    torch.tensor([[20.0]], device=device),
+                ])
+                info.append({
+                    "type": "image", "index": index, "size": 4,
+                    "extra": {
+                        "grid": torch.tensor([1, 4, 4]),
+                        "deepstack": [torch.full((4, 1), value * 10.0, device=device)],
+                    },
+                })
+                index += 5
+            chunks.append(torch.tensor([[30.0]], device=device))
+            embeds = torch.cat(chunks)[None]
+            return embeds, torch.ones((1, embeds.shape[1]), dtype=torch.long), [embeds.shape[1]], info
+
+    model = ClipModel()
+
+    class Stage:
+        clip = "qwen"
+        qwen = model
+
+        @staticmethod
+        def reset_clip_options():
+            pass
+
+        @staticmethod
+        def set_clip_options(_options):
+            pass
+
+    class Patcher:
+        forced_hooks = None
+        load_device = torch.device("cpu")
+
+    class Clip:
+        cond_stage_model = Stage()
+        patcher = Patcher()
+        layer_idx = None
+        use_clip_schedule = False
+
+        @staticmethod
+        def load_model(_tokens):
+            pass
+
+        @staticmethod
+        def add_hooks_to_dict(_metadata):
+            pass
+
+    def tokens(first, second):
+        return {"qwen3vl_32b": [[
+            (151652, 1.0), ({"type": "image", "data": first}, 1.0), (151653, 1.0),
+            (151652, 1.0), ({"type": "image", "data": second}, 1.0), (151653, 1.0),
+            (42, 1.0),
+        ]]}
+
+    def encode(_model, embeds, _mask, _counts, info):
+        calls["encode"] += 1
+        calls["embeds"] = embeds
+        calls["info"] = info
+        return embeds, {"minimax_token_tags": torch.zeros(embeds.shape[1])}
+
+    monkeypatch.setattr(encoder_helpers, "_encode_preprocessed_clip_model", encode)
+    output = encoder_helpers.encode_token_fused_visual_slots(
+        Clip(),
+        tokens(1.0, 2.0),
+        [(0, [tokens(10.0, 2.0)]), (1, [tokens(1.0, 20.0)])],
+        {"visual_fusion_method": "spatial-checkerboard", "visual_block_size": 1},
+    )
+
+    assert calls["process"] == 3
+    assert calls["encode"] == 1
+    assert set(calls["embeds"][0, 1:5, 0].tolist()) == {1.0, 10.0}
+    assert set(calls["embeds"][0, 6:10, 0].tolist()) == {2.0, 20.0}
+    assert output[0][1]["minimax_token_tags"].numel() == calls["embeds"].shape[1]
+    assert "Picture 1: 2 sources -> 4 tokens, Picture 2: 2 sources -> 4 tokens" in caplog.text
+
+
+def test_token_fusion_applies_krea2_outer_shape_and_attention_mask_contract():
+    tokens = {"qwen3vl_4b": [[
+        (151644, 1.0), (1, 1.0), (151644, 1.0),
+        (872, 1.0), (198, 1.0), (42, 1.0), (43, 1.0),
+    ]]}
+    tapped_layers = torch.arange(1 * 12 * 7 * 2, dtype=torch.float32).reshape(1, 12, 7, 2)
+    metadata = {"attention_mask": torch.ones((1, 7), dtype=torch.long)}
+
+    conditioning, normalized = encoder_helpers._normalize_token_fused_conditioning(
+        object(), tokens, tapped_layers, metadata
+    )
+
+    expected = tapped_layers[:, :, 5:].permute(0, 2, 1, 3).reshape(1, 2, 24)
+    assert torch.equal(conditioning, expected)
+    assert conditioning.ndim == 3
+    assert "attention_mask" not in normalized
+
+
+def test_token_fusion_keeps_nontrivial_krea2_attention_mask_after_template_slice():
+    tokens = {"qwen3vl_4b": [[
+        (151644, 1.0), (1, 1.0), (151644, 1.0),
+        (872, 1.0), (198, 1.0), (42, 1.0), (43, 1.0),
+    ]]}
+    tapped_layers = torch.zeros((1, 12, 7, 2))
+    metadata = {"attention_mask": torch.tensor([[1, 1, 1, 1, 1, 1, 0]])}
+
+    _, normalized = encoder_helpers._normalize_token_fused_conditioning(
+        object(), tokens, tapped_layers, metadata
+    )
+
+    assert torch.equal(normalized["attention_mask"], torch.tensor([[1, 0]]))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")

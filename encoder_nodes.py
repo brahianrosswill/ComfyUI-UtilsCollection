@@ -49,6 +49,7 @@ from .encoder_helpers import(
     execute_advanced_minimax_h3_image_to_video_combined,
     build_minimax_h3_media_config,
     execute_minimax_h3_first_frame_references,
+    execute_token_fusion_visual_conditioning,
 )
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
@@ -188,7 +189,6 @@ class UC_AttentionBiasTextEncode(io.ComfyNode):
 # --- Type Definitions for Modular Configurations ---
 TextBlendConfig = io.Custom("TEXT_BLEND_CONFIG")
 VisualFusionConfig = io.Custom("VISUAL_FUSION_CONFIG")
-AdvancedVisualConfig = io.Custom("ADVANCED_VISUAL_CONFIG")
 AdvancedConsensusConfig = io.Custom("ADVANCED_CONSENSUS_CONFIG")
 VisualConsensusConfig = io.Custom("VISUAL_CONSENSUS_CONFIG")
 MiniMaxH3MediaConfig = io.Custom("MINIMAX_H3_MEDIA_CONFIG")
@@ -350,95 +350,44 @@ class UC_VisualFusionConfig(io.ComfyNode):
         return io.NodeOutput(config)
 
 
-class UC_AdvancedVisualConfiguration(io.ComfyNode):
+class UC_AdvancedConsensusConfiguration(UC_TextConsensusBlendConfig):
     @classmethod
     def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="UC_AdvancedVisualConfiguration",
-            display_name="Advanced Visual Configuration",
-            category="advanced/conditioning",
-            inputs=[
-                io.Int.Input("block_size", default=2, min=1, max=8, step=1, tooltip="Overrides the joint block size for block-interleave."),
-                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Overrides the joint first-source probability for random-dither."),
-                io.Combo.Input("dither_pattern", options=["checkerboard", "block-interleave", "dither-random-reverse", "dither-random-forward"], default="checkerboard", tooltip="Overrides how remaining random-dither sources are combined. Reverse accumulates last to first; forward accumulates first to last."),
-                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Overrides the joint spatial seed."),
-                io.Combo.Input("visual_encoder_path", options=["grid-deepstack", "legacy-flat"], default="grid-deepstack", tooltip="Core grid/DeepStack is the current encoder path. Legacy flat is exposed only as an explicit advanced choice."),
-                io.Boolean.Input("dither_mask_cleanup", default=False, tooltip="Apply the existing deterministic one-token island cleanup to hard dither masks."),
-                io.Float.Input("spatial_perturbation", default=0.0, min=0.0, max=1.0, step=0.01, tooltip="Seeded source-cell exchanges for hard spatial methods."),
-                io.Boolean.Input("save_blended_embeds", default=False, tooltip="Export the base-resolution raw spatially fused visual embedding using the same spatial mask as conditioning fusion."),
-                io.String.Input("save_path", default="blended_visual_embeds.safetensors", tooltip="Relative output path under ComfyUI's embeddings directory."),
-            ],
-            outputs=[
-                AdvancedVisualConfig.Output("advanced_visual_config", display_name="Advanced Visual Config"),
-            ],
-            is_experimental=True,
+        schema = super().define_schema()
+        schema.node_id = "UC_AdvancedConsensusConfiguration"
+        schema.display_name = "Advanced Consensus Configuration"
+        schema.inputs.append(
+            io.Int.Input(
+                "resolution_samples",
+                default=1,
+                min=1,
+                max=15,
+                step=2,
+                tooltip="Exact odd adjacent-resolution sample count used only when consensus is enabled. A value of 1 remains one resolution sample.",
+            )
         )
+        schema.inputs.append(
+            io.Int.Input(
+                "sample_offset",
+                default=32,
+                min=32,
+                max=512,
+                step=32,
+                tooltip="Equivalent-square resolution distance between adjacent samples. Larger values create more distinct visual grids at greater scale separation.",
+            )
+        )
+        schema.outputs = [
+            AdvancedConsensusConfig.Output(
+                "advanced_consensus_config",
+                display_name="Advanced Consensus Config",
+            )
+        ]
+        return schema
 
     @classmethod
     def execute(
         cls,
-        block_size,
-        dither_ratio,
-        dither_pattern,
-        seed,
-        visual_encoder_path,
-        dither_mask_cleanup,
-        spatial_perturbation,
-        save_blended_embeds,
-        save_path,
-    ) -> io.NodeOutput:
-        return io.NodeOutput({
-            "visual_block_size": block_size,
-            "dither_ratio": dither_ratio,
-            "dither_secondary_pattern": dither_pattern,
-            "seed": seed,
-            "visual_encoder_path": visual_encoder_path,
-            "dither_mask_cleanup": dither_mask_cleanup,
-            "spatial_perturbation": spatial_perturbation,
-            "save_blended_embeds": save_blended_embeds,
-            "save_path": save_path,
-        })
-
-
-class UC_AdvancedConsensusConfiguration(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="UC_AdvancedConsensusConfiguration",
-            display_name="Advanced Consensus Configuration",
-            category="advanced/conditioning",
-            inputs=[
-                io.Combo.Input(
-                    "consensus_preset",
-                    options=["custom", *CONSENSUS_BLEND_PRESETS],
-                    default="custom",
-                    tooltip="Authoritative advanced selection. Named presets use their stored consensus mathematics while position weight, common-prefix preservation, global scale, and resolution samples remain available here. Custom uses the full manual parameter set below.",
-                ),
-                io.Combo.Input("blend_method", options=["linear", "consensus"], default="consensus", tooltip="Consensus aligns inputs and suppresses outliers; linear averages them without consensus weighting."),
-                io.Combo.Input("consensus_type", options=["mean", "median"], default="median", tooltip="Median is more resistant to outliers; mean averages all aligned values smoothly."),
-                io.Combo.Input("alignment_method", options=["index", "similarity"], default="similarity", tooltip="Alignment applies to complete conditioning sequences."),
-                io.Float.Input("alignment_threshold", default=0.4, min=0.0, max=1.0, step=0.01, tooltip="Minimum token similarity required for a match when similarity alignment is selected."),
-                io.Float.Input("similarity_threshold", default=0.0, min=-1.0, max=1.0, step=0.01, tooltip="Removes matched tokens whose similarity to the consensus falls below this value."),
-                io.Float.Input("power_alpha", default=2.0, min=0.0, max=10.0, step=0.1, tooltip="Exponent that penalizes conditioning outliers; higher values suppress disagreement more strongly."),
-                io.Float.Input("diversity_beta", default=0.0, min=0.0, max=10.0, step=0.1, tooltip="Exponent that reduces overly common details; zero disables diversity weighting."),
-                io.Boolean.Input("rescale_norm", default=True, tooltip="Restores the blended conditioning norm to avoid losing overall activation strength."),
-                io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Multiplier applied to the final blended conditioning."),
-                io.Boolean.Input("dynamic_similarity_contrast", default=False, tooltip="Expands the observed similarity range before weighting to separate close matches more strongly."),
-                io.Boolean.Input("soft_comfort_bandpass", default=False, tooltip="Softens the diversity-weight ceiling instead of clipping it abruptly."),
-                io.Float.Input("position_weight", default=0.0, min=0.0, max=1.0, step=0.01, tooltip="Biases similarity matching toward nearby normalized token positions; zero uses similarity alone."),
-                io.Boolean.Input("preserve_common_prefix", default=False, tooltip="Copies the longest numerically identical conditioning prefix from the first input unchanged."),
-                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Exact odd adjacent-resolution sample count used only when consensus is enabled. A value of 1 remains one resolution sample."),
-            ],
-            outputs=[
-                AdvancedConsensusConfig.Output("advanced_consensus_config", display_name="Advanced Consensus Config"),
-            ],
-            is_experimental=True,
-        )
-
-    @classmethod
-    def execute(
-        cls,
-        consensus_preset,
+        blend_preset,
         blend_method,
         consensus_type,
         alignment_method,
@@ -453,24 +402,27 @@ class UC_AdvancedConsensusConfiguration(io.ComfyNode):
         position_weight,
         preserve_common_prefix,
         resolution_samples,
+        sample_offset,
     ) -> io.NodeOutput:
-        return io.NodeOutput({
-            "blend_preset": consensus_preset,
-            "blend_method": blend_method,
-            "consensus_type": consensus_type,
-            "alignment_method": alignment_method,
-            "alignment_threshold": alignment_threshold,
-            "similarity_threshold": similarity_threshold,
-            "power_alpha": power_alpha,
-            "diversity_beta": diversity_beta,
-            "rescale_norm": rescale_norm,
-            "global_scale": global_scale,
-            "dynamic_similarity_contrast": dynamic_similarity_contrast,
-            "soft_comfort_bandpass": soft_comfort_bandpass,
-            "position_weight": position_weight,
-            "preserve_common_prefix": preserve_common_prefix,
-            "resolution_samples": resolution_samples,
-        })
+        config = super().execute(
+            blend_preset,
+            blend_method,
+            consensus_type,
+            alignment_method,
+            alignment_threshold,
+            similarity_threshold,
+            power_alpha,
+            diversity_beta,
+            rescale_norm,
+            global_scale,
+            dynamic_similarity_contrast,
+            soft_comfort_bandpass,
+            position_weight,
+            preserve_common_prefix,
+        ).args[0]
+        config["resolution_samples"] = resolution_samples
+        config["sample_offset"] = sample_offset
+        return io.NodeOutput(config)
 
 
 class UC_VisualConsensusConfiguration(io.ComfyNode):
@@ -481,18 +433,16 @@ class UC_VisualConsensusConfiguration(io.ComfyNode):
             display_name="Visual Consensus Configuration",
             category="advanced/conditioning",
             inputs=[
-                io.Boolean.Input("enable_spatial_fusion", default=True, tooltip="Authoritative activation switch, including when Advanced Visual Configuration is connected."),
-                io.Combo.Input("visual_fusion_method", options=["linear", "checkerboard", "block-interleave", "random-dither"], default="checkerboard", tooltip="Always controls the spatial method. Advanced Visual Configuration does not replace it."),
-                io.Int.Input("block_size", default=2, min=1, max=8, step=1, tooltip="Used by block-interleave; overridden by Advanced Visual Configuration."),
-                io.Float.Input("dither_ratio", default=0.5, min=0.0, max=1.0, step=0.01, tooltip="Used by random-dither; overridden by Advanced Visual Configuration."),
-                io.Combo.Input("dither_pattern", options=["checkerboard", "block-interleave", "dither-random-reverse", "dither-random-forward"], default="checkerboard", tooltip="Used by random-dither. Reverse accumulates last to first; forward accumulates first to last. Overridden by Advanced Visual Configuration."),
-                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True, tooltip="Spatial seed; overridden by Advanced Visual Configuration."),
-                io.Boolean.Input("enable_consensus", default=True, tooltip="Authoritative activation switch, including when Advanced Consensus Configuration is connected."),
-                io.Combo.Input("consensus_preset", options=list(CONSENSUS_BLEND_PRESETS), default="baseline", tooltip="Existing named consensus mathematics. Advanced Consensus Configuration replaces this preset and global scale."),
-                io.Float.Input("global_scale", default=1.0, min=0.0, max=10.0, step=0.01, tooltip="Basal consensus scale. Advanced Consensus Configuration replaces it."),
-                io.Int.Input("resolution_samples", default=1, min=1, max=15, step=2, tooltip="Exact odd adjacent-resolution sample count used when consensus is enabled. A value of 1 remains one resolution sample. Advanced Consensus Configuration overrides this value."),
-                AdvancedVisualConfig.Input("advanced_visual_config", display_name="Advanced Visual Configuration", optional=True, tooltip="Overrides duplicated simple visual tuning. The spatial activation and method above remain authoritative."),
-                AdvancedConsensusConfig.Input("advanced_consensus_config", display_name="Advanced Consensus Configuration", optional=True, tooltip="Completely replaces the simple preset, global scale, and resolution sample count. Its own authoritative preset defaults to custom. Consensus activation above remains authoritative."),
+                VisualFusionConfig.Input(
+                    "visual_fusion_config",
+                    display_name="Visual Fusion Configuration",
+                    tooltip="Complete visual-stage configuration from Visual Component Fusion Configurator. Its method is authoritative; off disables spatial fusion.",
+                ),
+                AdvancedConsensusConfig.Input(
+                    "consensus_config",
+                    display_name="Consensus Configuration",
+                    tooltip="Complete consensus configuration from Advanced Consensus Configuration. Its preset is authoritative; off disables cross-resolution consensus.",
+                ),
             ],
             outputs=[
                 VisualConsensusConfig.Output("visual_consensus_config", display_name="Visual Consensus Config"),
@@ -503,51 +453,14 @@ class UC_VisualConsensusConfiguration(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        enable_spatial_fusion,
-        visual_fusion_method,
-        block_size,
-        dither_ratio,
-        dither_pattern,
-        seed,
-        enable_consensus,
-        consensus_preset,
-        global_scale,
-        resolution_samples,
-        advanced_visual_config=None,
-        advanced_consensus_config=None,
+        visual_fusion_config,
+        consensus_config,
     ) -> io.NodeOutput:
-        method_names = {
-            "linear": "linear",
-            "checkerboard": "spatial-checkerboard",
-            "block-interleave": "spatial-block-interleave",
-            "random-dither": "spatial-dither-random",
-        }
-        visual = {
-            "visual_fusion_method": method_names[visual_fusion_method],
-            "visual_block_size": block_size,
-            "dither_ratio": dither_ratio,
-            "dither_secondary_pattern": dither_pattern,
-            "seed": seed,
-            "visual_encoder_path": "grid-deepstack",
-            "dither_mask_cleanup": False,
-            "spatial_perturbation": 0.0,
-            "save_blended_embeds": False,
-            "save_path": "blended_visual_embeds.safetensors",
-        }
-        if advanced_visual_config is not None:
-            visual.update(advanced_visual_config)
-        consensus = (
-            dict(advanced_consensus_config)
-            if advanced_consensus_config is not None
-            else {
-                "blend_preset": consensus_preset,
-                "global_scale": global_scale,
-                "resolution_samples": resolution_samples,
-            }
-        )
+        visual = dict(visual_fusion_config)
+        consensus = dict(consensus_config)
         return io.NodeOutput({
-            "enable_spatial_fusion": enable_spatial_fusion,
-            "enable_consensus": enable_consensus,
+            "enable_spatial_fusion": visual.get("visual_fusion_method") != "off",
+            "enable_consensus": consensus.get("blend_preset") != "off",
             "visual": visual,
             "consensus": consensus,
         })
@@ -660,6 +573,7 @@ class UC_ScaledBiasTextEncodeFlux2SystemPrompt(io.ComfyNode):
             outputs=[
                 io.Conditioning.Output(),
             ],
+            is_experimental=True,
         )
 
     @classmethod
@@ -2056,7 +1970,7 @@ class UC_WeightedTextEncodeSystemPrompt(io.ComfyNode):
 
 
 
-class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
+class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         autogrow_template = io.Autogrow.TemplatePrefix(
@@ -2066,9 +1980,10 @@ class TextEncodeKrea2SystemEditScaledAdv(io.ComfyNode):
             max=16
         )
         return io.Schema(
-            node_id="TextEncodeKrea2SystemEditScaledAdv",
-            display_name="Krea2 System Prompt Scaled Encoder (Advanced)",
+            node_id="UC_AdvancedVisualConditioningEncode",
+            display_name="Advanced Visual Conditioning Encode",
             category="advanced/conditioning",
+            is_experimental=True,
             inputs=[
                 # --- Primary Inputs ---
                 io.Clip.Input("clip", tooltip="CLIP/T5 dual text encoder reference."),
@@ -3004,7 +2919,7 @@ class Krea2WeightPatch:
     def __get__(self, obj, objtype=None):
         return types.MethodType(krea2_attn_forward_weight, obj)
 
-class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
+class UC_Krea2TokenAttentionWeight(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         autogrow_template = io.Autogrow.TemplatePrefix(
@@ -3014,8 +2929,8 @@ class TextEncodeKrea2SysEditScaledAdvAttn(io.ComfyNode):
             max=16
         )
         return io.Schema(
-            node_id="TextEncodeKrea2SysEditScaledAdvAttn",
-            display_name="Krea2 System Prompt Scaled Attention Encoder (Advanced)",
+            node_id="UC_Krea2TokenAttentionWeight",
+            display_name="Krea2 Token Attention Weight",
             category="advanced/conditioning",
             inputs=[
                 # --- Primary Inputs ---
@@ -3365,15 +3280,13 @@ class UC_TextEncodeGemmaSystemEditAdvanced(TextEncodeGemmaSystemEditPlusAdvanced
         return schema
 
 
-class UC_AdvancedVisualConditioningEncode(TextEncodeKrea2SystemEditScaledAdv):
+class TextEncodeKrea2SystemEditScaledAdv(UC_AdvancedVisualConditioningEncode):
     @classmethod
     def define_schema(cls):
         schema = super().define_schema()
-        schema.node_id = "UC_AdvancedVisualConditioningEncode"
-        schema.display_name = "Advanced Visual Conditioning Encode"
-        schema.is_deprecated = False
-        # Model-backed validation is required before this can be stable.
-        schema.is_experimental = True
+        schema.node_id = "TextEncodeKrea2SystemEditScaledAdv"
+        schema.display_name = "Krea2 System Prompt Scaled Encoder (Advanced)"
+        schema.is_deprecated = True
         return schema
 
 
@@ -3472,7 +3385,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     tooltip=(
                         "Optional spatial method. With frame inputs, fusion_image_1 targets Picture 1 and "
                         "fusion_image_2 targets Picture 2; disconnected or off keeps fusion images as separate "
-                        "numbered Qwen pictures. Native reference mode does not use fusion."
+                        "numbered Qwen pictures outside native-reference mode. See fusion_images for the complete routing contract."
                     ),
                 ),
                 io.Float.Input(
@@ -3511,7 +3424,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     optional=True,
                     tooltip=(
                         "Ordered native H3 references and numbered Qwen pictures. This mode cannot be combined with "
-                        "frame or fusion inputs."
+                        "explicit first/last frame inputs. See fusion_images for supported reference-picture fusion."
                     ),
                 ),
                 io.Autogrow.Input(
@@ -3519,9 +3432,12 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     template=fusion_template,
                     optional=True,
                     tooltip=(
-                        "Ordered Qwen-only images. With frame inputs, each numbered socket fuses into its matching picture "
-                        "and every batch item on that socket is an additional fusion source; fusion off keeps them separate. "
-                        "Without frames, an active method combines this group into Picture 1."
+                        "Qwen-only fusion contract. Active method: with frames, socket N targets Picture N and every batch "
+                        "item is another source; an unmatched socket errors. With native references, one image on "
+                        "fusion_image_1 broadcasts to every reference Picture; otherwise flattened fusion images pair by "
+                        "index and extras beyond the reference count are ignored. Without frames or references, all fusion "
+                        "images combine into Picture 1. Method off keeps them as separate Pictures, except native-reference "
+                        "mode ignores them. Video blocks are never fusion targets."
                     ),
                 ),
                 MiniMaxH3MediaConfig.Input(
@@ -3804,6 +3720,11 @@ class UC_MiniMaxH3FirstFrameReferences(io.ComfyNode):
 
 
 class UC_AdvancedVisConEncoder(io.ComfyNode):
+    NODE_ID = "UC_AdvancedVisConEncoder"
+    DISPLAY_NAME = "Advanced Visual Consensus Encoder"
+    TOKEN_FUSION = False
+    CONFIG_TOOLTIP = "Required joint configuration. Spatial fusion completes independently at every resolution before complete-conditioning consensus."
+
     @classmethod
     def define_schema(cls):
         autogrow_template = io.Autogrow.TemplatePrefix(
@@ -3813,8 +3734,8 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
             max=16,
         )
         return io.Schema(
-            node_id="UC_AdvancedVisConEncoder",
-            display_name="Advanced Visual Consensus Encoder",
+            node_id=cls.NODE_ID,
+            display_name=cls.DISPLAY_NAME,
             category="advanced/conditioning",
             inputs=[
                 io.Clip.Input("clip", tooltip="CLIP/T5 dual text encoder reference."),
@@ -3831,7 +3752,7 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
                 VisualConsensusConfig.Input(
                     "visual_consensus_config",
                     display_name="Visual Consensus Configuration",
-                    tooltip="Required joint configuration. Spatial fusion completes independently at every resolution before complete-conditioning consensus.",
+                    tooltip=cls.CONFIG_TOOLTIP,
                 ),
                 io.Combo.Input(
                     "vae_resolution",
@@ -3885,8 +3806,16 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
             multiplier,
             vae_dimension_multiple,
             apply_parallel_ref_latents,
+            token_fusion=cls.TOKEN_FUSION,
         )
         return io.NodeOutput(conditioning)
+
+
+class UC_AdvancedVisConEncoderTokenFusion(UC_AdvancedVisConEncoder):
+    NODE_ID = "UC_AdvancedVisConEncoderTokenFusion"
+    DISPLAY_NAME = "Advanced Visual Consensus Encoder (TokenFusion)"
+    TOKEN_FUSION = True
+    CONFIG_TOOLTIP = "Required joint configuration. At each resolution, TokenFusion fuses visual and DeepStack tokens before one conditioning encode; complete-conditioning consensus then combines the encoded resolution samples."
 
 
 class UC_VLMInputEmbeds(UC_Qwen3VLInputEmbeds):
@@ -3899,14 +3828,13 @@ class UC_VLMInputEmbeds(UC_Qwen3VLInputEmbeds):
         return schema
 
 
-class UC_Krea2TokenAttentionWeight(TextEncodeKrea2SysEditScaledAdvAttn):
+class TextEncodeKrea2SysEditScaledAdvAttn(UC_Krea2TokenAttentionWeight):
     @classmethod
     def define_schema(cls):
         schema = super().define_schema()
-        schema.node_id = "UC_Krea2TokenAttentionWeight"
-        schema.display_name = "Krea2 Token Attention Weight"
-        schema.is_deprecated = False
-        schema.is_experimental = True
+        schema.node_id = "TextEncodeKrea2SysEditScaledAdvAttn"
+        schema.display_name = "Krea2 System Prompt Scaled Attention Encoder (Advanced)"
+        schema.is_deprecated = True
         return schema
 
 
@@ -3946,5 +3874,274 @@ for _deprecated_node in (
     TextEncodeKrea2SysEditScaledAdvAttn,
 ):
     _mark_deprecated_node(_deprecated_node)
+
+
+class _TokenFusionConditioningNode(io.ComfyNode):
+    BASE_NODE = None
+    NODE_ID = ""
+    DISPLAY_NAME = ""
+    USE_SYSTEM_PROMPT = False
+    DEPRECATED = False
+
+    @classmethod
+    def define_schema(cls):
+        schema = cls.BASE_NODE.define_schema()
+        schema.node_id = cls.NODE_ID
+        schema.display_name = cls.DISPLAY_NAME
+        schema.is_deprecated = cls.DEPRECATED
+        schema.is_experimental = True
+        return schema
+
+    @classmethod
+    def execute(
+        cls,
+        clip,
+        prompt,
+        vlm_resolution,
+        image_inputs,
+        visual_fusion_config=None,
+        formula="",
+        padding_method="zero-pad",
+        vae_resolution="Fast (1024)",
+        ref_latent_mode="off",
+        vae=None,
+        multiplier=1.0,
+        vae_dimension_multiple=8,
+        system_prompt="",
+    ):
+        config = visual_fusion_config or {"visual_fusion_method": "off"}
+        if config.get("visual_fusion_method", "off") == "off":
+            kwargs = dict(
+                clip=clip,
+                prompt=prompt,
+                vlm_resolution=vlm_resolution,
+                image_inputs=image_inputs,
+                visual_fusion_config=visual_fusion_config,
+                formula=formula,
+                padding_method=padding_method,
+                vae_resolution=vae_resolution,
+                ref_latent_mode=ref_latent_mode,
+                vae=vae,
+                multiplier=multiplier,
+                vae_dimension_multiple=vae_dimension_multiple,
+            )
+            if cls.USE_SYSTEM_PROMPT:
+                kwargs["system_prompt"] = system_prompt
+            return cls.BASE_NODE.execute(**kwargs)
+
+        _, active_images, _ = extract_and_flatten_images(image_inputs)
+        if not active_images:
+            kwargs = dict(
+                clip=clip,
+                prompt=prompt,
+                vlm_resolution=vlm_resolution,
+                image_inputs=image_inputs,
+                visual_fusion_config=visual_fusion_config,
+                formula=formula,
+                padding_method=padding_method,
+                vae_resolution=vae_resolution,
+                ref_latent_mode=ref_latent_mode,
+                vae=vae,
+                multiplier=multiplier,
+                vae_dimension_multiple=vae_dimension_multiple,
+            )
+            if cls.USE_SYSTEM_PROMPT:
+                kwargs["system_prompt"] = system_prompt
+            return cls.BASE_NODE.execute(**kwargs)
+        if is_minimax_h3_text_encoder(clip) and ref_latent_mode != "off":
+            raise ValueError(
+                "MiniMax H3 reference latents require Core's MiniMax H3 reference conditioning node; set ref_latent_mode to off."
+            )
+        conditioning, _ = execute_token_fusion_visual_conditioning(
+            clip,
+            prompt,
+            active_images,
+            config,
+            vlm_resolution,
+            system_prompt if cls.USE_SYSTEM_PROMPT else None,
+            multiplier,
+            cls.USE_SYSTEM_PROMPT,
+        )
+        ref_latents = []
+        if vae is not None and ref_latent_mode != "off":
+            resolutions = {
+                "Ultra (512)": 512,
+                "Turbo (768)": 768,
+                "Fast (1024)": 1024,
+                "Balanced (1280)": 1280,
+                "Detailed (1536)": 1536,
+            }
+            for image in active_images:
+                if "single" in ref_latent_mode and ref_latents:
+                    break
+                samples = image.movedim(-1, 1)
+                target = None if vae_resolution == "Original" else resolutions[vae_resolution]
+                prepared = prepare_vae_reference_image(samples, target, vae_dimension_multiple)
+                ref_latents.append(vae.encode(prepared.movedim(1, -1)[:, :, :, :3]))
+        return io.NodeOutput(
+            apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
+        )
+
+
+class UC_AdvancedVisualConditioningEncodeTokenFusion(_TokenFusionConditioningNode):
+    BASE_NODE = UC_AdvancedVisualConditioningEncode
+    NODE_ID = "UC_AdvancedVisualConditioningEncodeTokenFusion"
+    DISPLAY_NAME = "Advanced Visual Conditioning Encode (TokenFusion)"
+    USE_SYSTEM_PROMPT = True
+
+
+class UC_Krea2TokenAttentionWeightTokenFusion(UC_Krea2TokenAttentionWeight):
+    NODE_ID = "UC_Krea2TokenAttentionWeightTokenFusion"
+    DISPLAY_NAME = "Krea2 Token Attention Weight (TokenFusion)"
+    DEPRECATED = False
+
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = cls.NODE_ID
+        schema.display_name = cls.DISPLAY_NAME
+        schema.is_deprecated = cls.DEPRECATED
+        schema.is_experimental = True
+        return schema
+
+    @classmethod
+    def execute(
+        cls, model, clip, prompt, system_prompt, attention_weights, image_inputs,
+        vlm_resolution, visual_fusion_config=None, formula="",
+        padding_method="zero-pad", vae_resolution="Fast (1024)",
+        ref_latent_mode="off", vae=None, multiplier=1.0, strength=1.0,
+        vae_dimension_multiple=8,
+    ):
+        config = visual_fusion_config or {"visual_fusion_method": "off"}
+        if config.get("visual_fusion_method", "off") == "off":
+            return super().execute(
+                model, clip, prompt, system_prompt, attention_weights, image_inputs,
+                vlm_resolution, visual_fusion_config, formula, padding_method,
+                vae_resolution, ref_latent_mode, vae, multiplier, strength,
+                vae_dimension_multiple,
+            )
+        _, active_images, _ = extract_and_flatten_images(image_inputs)
+        if not active_images:
+            return super().execute(
+                model, clip, prompt, system_prompt, attention_weights, image_inputs,
+                vlm_resolution, visual_fusion_config, formula, padding_method,
+                vae_resolution, ref_latent_mode, vae, multiplier, strength,
+                vae_dimension_multiple,
+            )
+        terms = [
+            (match.group(1).strip(), float(match.group(2)))
+            for match in re.finditer(r"\(([^():]+):(-?\d*\.?\d+)\)", attention_weights)
+        ]
+        if any(not math.isfinite(weight) or weight < 0 for _, weight in terms):
+            raise ValueError("Krea2 attention weights must be finite and non-negative.")
+        conditioning, token_sources = execute_token_fusion_visual_conditioning(
+            clip, prompt, active_images, config, vlm_resolution, system_prompt, multiplier, True
+        )
+        token_list = token_sources[0][next(iter(token_sources[0]))][0]
+        ids = [
+            -1 if isinstance(token, dict)
+            else int(token[0] if isinstance(token, tuple) else token)
+            for token in token_list
+        ]
+        mapping = build_token_to_conditioning_map(token_list, conditioning[0][0])
+        weight_pairs = []
+        for phrase, weight in terms:
+            bias = math.log(max(weight, 1e-6)) * strength
+            for variant in (" " + phrase, phrase):
+                sub = krea2_token_ids(clip, variant)
+                start, end = krea2_user_content_span(sub)
+                if start is not None:
+                    sub = sub[start:end]
+                matches = find_subsequence(ids, sub, 0, len(ids))
+                if matches:
+                    for match in matches:
+                        for offset in range(len(sub)):
+                            index = match + offset
+                            if index < len(mapping) and mapping[index][0] >= 0:
+                                weight_pairs.append((mapping[index][0], bias))
+                    break
+        model_clone = model.clone()
+        if weight_pairs:
+            diffusion_model = model_clone.get_model_object("diffusion_model")
+            transformer_options = model_clone.model_options.get("transformer_options", {}).copy()
+            transformer_options["krea2_token_weights"] = weight_pairs
+            model_clone.model_options["transformer_options"] = transformer_options
+            for index, block in enumerate(diffusion_model.blocks):
+                if hasattr(block, "attn"):
+                    patched = Krea2WeightPatch().__get__(block.attn, block.attn.__class__)
+                    model_clone.add_object_patch(f"diffusion_model.blocks.{index}.attn.forward", patched)
+        ref_latents = []
+        if vae is not None and ref_latent_mode != "off":
+            resolutions = {
+                "Ultra (512)": 512, "Turbo (768)": 768, "Fast (1024)": 1024,
+                "Balanced (1280)": 1280, "Detailed (1536)": 1536,
+            }
+            for image in active_images:
+                if "single" in ref_latent_mode and ref_latents:
+                    break
+                samples = image.movedim(-1, 1)
+                target = None if vae_resolution == "Original" else resolutions[vae_resolution]
+                prepared = prepare_vae_reference_image(samples, target, vae_dimension_multiple)
+                ref_latents.append(vae.encode(prepared.movedim(1, -1)[:, :, :, :3]))
+        conditioning = apply_parallel_ref_latents(
+            clip, conditioning, ref_latents, ref_latent_mode
+        )
+        return io.NodeOutput(model_clone, conditioning)
+
+
+class UC_AdvMiniMaxH3ImageToVideoTokenFusion(UC_AdvancedMiniMaxH3ImageToVideo):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "UC_AdvMiniMaxH3ImageToVideoTokenFusion"
+        schema.display_name = "Adv MiniMax H3 Image to Video (TokenFusion)"
+        return schema
+
+    @classmethod
+    def execute(
+        cls, clip, vae, prompt, width, height, length, first_frame=None,
+        last_frame=None, reference_images=None, fusion_images=None,
+        visual_fusion_config=None, multiplier=1.0, ref_image_size="match",
+        vlm_resolution=384, media_config=None,
+    ):
+        conditioning, latent = execute_advanced_minimax_h3_image_to_video(
+            clip, vae, prompt, width, height, length,
+            first_frame=first_frame, last_frame=last_frame,
+            reference_images=reference_images, fusion_images=fusion_images,
+            visual_fusion_config=visual_fusion_config, multiplier=multiplier,
+            ref_image_size=ref_image_size, vlm_resolution=vlm_resolution,
+            media_config=media_config, token_fusion=True,
+        )
+        return io.NodeOutput(conditioning, latent)
+
+
+class UC_AdvMiniMaxH3ImageToVideoCombinedTokenFusion(
+    UC_AdvancedMiniMaxH3ImageToVideoCombined
+):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "UC_AdvMiniMaxH3ImageToVideoCombinedTokenFusion"
+        schema.display_name = "Adv MiniMax H3 Image to Video Combined (TokenFusion)"
+        return schema
+
+    @classmethod
+    def execute(
+        cls, model, clip, vae, prompt, width, height, length,
+        first_frame=None, last_frame=None, reference_images=None,
+        fusion_images=None, visual_fusion_config=None, multiplier=1.0,
+        ref_image_size="match", vlm_resolution=384, media_config=None,
+    ):
+        patched_model, conditioning, latent = (
+            execute_advanced_minimax_h3_image_to_video_combined(
+                model, clip, vae, prompt, width, height, length,
+                first_frame=first_frame, last_frame=last_frame,
+                reference_images=reference_images, fusion_images=fusion_images,
+                visual_fusion_config=visual_fusion_config, multiplier=multiplier,
+                ref_image_size=ref_image_size, vlm_resolution=vlm_resolution,
+                media_config=media_config, token_fusion=True,
+            )
+        )
+        return io.NodeOutput(patched_model, conditioning, latent)
 
 

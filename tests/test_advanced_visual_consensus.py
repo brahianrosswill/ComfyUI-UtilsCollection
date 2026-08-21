@@ -20,12 +20,14 @@ try:
     from utils_collection_visual_consensus_test import encoder_helpers
     from utils_collection_visual_consensus_test.encoder_nodes import (
         AdvancedConsensusConfig,
-        AdvancedVisualConfig,
         UC_AdvancedConsensusConfiguration,
         UC_AdvancedVisConEncoder,
-        UC_AdvancedVisualConfiguration,
+        UC_AdvancedVisConEncoderTokenFusion,
         UC_ConditioningConsensusBlend,
+        UC_TextConsensusBlendConfig,
+        UC_VisualFusionConfig,
         UC_VisualConsensusConfiguration,
+        VisualFusionConfig,
         VisualConsensusConfig,
     )
 finally:
@@ -42,13 +44,13 @@ def test_fresh_node_ids_names_and_socket_types():
             "UC_AdvancedVisConEncoder",
             "Advanced Visual Consensus Encoder",
         ),
+        UC_AdvancedVisConEncoderTokenFusion: (
+            "UC_AdvancedVisConEncoderTokenFusion",
+            "Advanced Visual Consensus Encoder (TokenFusion)",
+        ),
         UC_VisualConsensusConfiguration: (
             "UC_VisualConsensusConfiguration",
             "Visual Consensus Configuration",
-        ),
-        UC_AdvancedVisualConfiguration: (
-            "UC_AdvancedVisualConfiguration",
-            "Advanced Visual Configuration",
         ),
         UC_AdvancedConsensusConfiguration: (
             "UC_AdvancedConsensusConfiguration",
@@ -60,63 +62,43 @@ def test_fresh_node_ids_names_and_socket_types():
         assert schema.node_id == node_id
         assert schema.display_name == display_name
 
-    assert AdvancedVisualConfig.io_type == "ADVANCED_VISUAL_CONFIG"
     assert AdvancedConsensusConfig.io_type == "ADVANCED_CONSENSUS_CONFIG"
+    assert VisualFusionConfig.io_type == "VISUAL_FUSION_CONFIG"
     assert VisualConsensusConfig.io_type == "VISUAL_CONSENSUS_CONFIG"
     assert _inputs(UC_AdvancedVisConEncoder)["visual_consensus_config"].optional is False
+    assert list(_inputs(UC_AdvancedVisConEncoderTokenFusion)) == list(
+        _inputs(UC_AdvancedVisConEncoder)
+    )
+    assert UC_AdvancedVisConEncoder.TOKEN_FUSION is False
+    assert UC_AdvancedVisConEncoderTokenFusion.TOKEN_FUSION is True
+    assert "fuses visual and DeepStack tokens before one conditioning encode" in (
+        _inputs(UC_AdvancedVisConEncoderTokenFusion)[
+            "visual_consensus_config"
+        ].tooltip
+    )
 
 
-def test_joint_schema_has_literal_simple_contract():
+def test_joint_schema_accepts_complete_child_configs():
     inputs = _inputs(UC_VisualConsensusConfiguration)
-    assert list(inputs) == [
-        "enable_spatial_fusion",
-        "visual_fusion_method",
-        "block_size",
-        "dither_ratio",
-        "dither_pattern",
-        "seed",
-        "enable_consensus",
-        "consensus_preset",
-        "global_scale",
-        "resolution_samples",
-        "advanced_visual_config",
-        "advanced_consensus_config",
-    ]
-    assert inputs["visual_fusion_method"].options == [
-        "linear",
-        "checkerboard",
-        "block-interleave",
-        "random-dither",
-    ]
-    assert inputs["dither_pattern"].options == [
-        "checkerboard",
-        "block-interleave",
-        "dither-random-reverse",
-        "dither-random-forward",
-    ]
-    assert _inputs(UC_AdvancedVisualConfiguration)["dither_pattern"].options == [
-        "checkerboard",
-        "block-interleave",
-        "dither-random-reverse",
-        "dither-random-forward",
-    ]
-    assert "off" not in inputs["consensus_preset"].options
-    assert "custom" not in inputs["consensus_preset"].options
+    assert list(inputs) == ["visual_fusion_config", "consensus_config"]
+    assert inputs["visual_fusion_config"].io_type == "VISUAL_FUSION_CONFIG"
+    assert inputs["consensus_config"].io_type == "ADVANCED_CONSENSUS_CONFIG"
 
 
-def test_advanced_configs_override_only_their_side():
-    advanced_visual = UC_AdvancedVisualConfiguration.execute(
+def test_joint_config_uses_authoritative_child_configs():
+    visual = UC_VisualFusionConfig.execute(
+        "spatial-block-interleave",
         7,
         0.2,
-        "block-interleave",
-        99,
-        "legacy-flat",
-        True,
-        0.4,
         True,
         "fresh.safetensors",
+        99,
+        "legacy-flat",
+        "block-interleave",
+        True,
+        0.4,
     ).args[0]
-    advanced_consensus = UC_AdvancedConsensusConfiguration.execute(
+    consensus = UC_AdvancedConsensusConfiguration.execute(
         "custom",
         "linear",
         "mean",
@@ -132,38 +114,32 @@ def test_advanced_configs_override_only_their_side():
         0.8,
         True,
         7,
+        96,
     ).args[0]
-    config = UC_VisualConsensusConfiguration.execute(
-        False,
-        "checkerboard",
-        2,
-        0.5,
-        "checkerboard",
-        0,
-        False,
-        "baseline",
-        0.5,
-        5,
-        advanced_visual,
-        advanced_consensus,
-    ).args[0]
+    config = UC_VisualConsensusConfiguration.execute(visual, consensus).args[0]
 
-    assert config["enable_spatial_fusion"] is False
-    assert config["enable_consensus"] is False
-    assert config["visual"]["visual_fusion_method"] == "spatial-checkerboard"
+    assert config["enable_spatial_fusion"] is True
+    assert config["enable_consensus"] is True
+    assert config["visual"]["visual_fusion_method"] == "spatial-block-interleave"
     assert config["visual"]["visual_block_size"] == 7
     assert config["visual"]["dither_secondary_pattern"] == "block-interleave"
-    assert config["consensus"] == advanced_consensus
+    assert config["consensus"] == consensus
     assert config["consensus"]["blend_preset"] == "custom"
 
 
-def test_advanced_consensus_preset_is_authoritative_and_defaults_to_custom():
+def test_advanced_consensus_inherits_text_config_and_adds_sampling_controls():
     inputs = _inputs(UC_AdvancedConsensusConfiguration)
-    preset = inputs["consensus_preset"]
-    assert preset.default == "custom"
-    assert preset.options[0] == "custom"
+    base_inputs = _inputs(UC_TextConsensusBlendConfig)
+    assert list(inputs) == [*base_inputs, "resolution_samples", "sample_offset"]
+    assert inputs["sample_offset"].default == 32
+    assert inputs["sample_offset"].min == 32
+    assert inputs["sample_offset"].max == 512
+    assert inputs["sample_offset"].step == 32
+    preset = inputs["blend_preset"]
+    assert preset.default == "baseline"
+    assert "custom" in preset.options
     assert "baseline" in preset.options
-    assert "off" not in preset.options
+    assert "off" in preset.options
 
     config = UC_AdvancedConsensusConfiguration.execute(
         "high_clarity",
@@ -181,12 +157,14 @@ def test_advanced_consensus_preset_is_authoritative_and_defaults_to_custom():
         0.65,
         True,
         5,
+        64,
     ).args[0]
     assert config["blend_preset"] == "high_clarity"
     assert config["position_weight"] == 0.65
     assert config["preserve_common_prefix"] is True
     assert config["global_scale"] == 1.4
     assert config["resolution_samples"] == 5
+    assert config["sample_offset"] == 64
     resolved = encoder_helpers.resolve_consensus_blend_settings(config)
     assert resolved["blend_preset"] == "high_clarity"
     assert resolved["power_alpha"] == 3.0
@@ -195,21 +173,18 @@ def test_advanced_consensus_preset_is_authoritative_and_defaults_to_custom():
     assert resolved["global_scale"] == 1.4
 
 
-def test_simple_resolution_samples_reaches_consensus_config():
-    config = UC_VisualConsensusConfiguration.execute(
-        True,
-        "linear",
-        2,
-        0.5,
-        "checkerboard",
-        0,
-        True,
-        "baseline",
-        1.0,
-        7,
+def test_resolution_samples_reaches_consensus_config():
+    visual = UC_VisualFusionConfig.execute("off", 2, 0.5).args[0]
+    consensus = UC_AdvancedConsensusConfiguration.execute(
+        "baseline", "consensus", "median", "similarity", 0.4, 0.0, 2.0,
+        0.0, True, 1.0, False, False, 0.0, False, 7, 128,
     ).args[0]
+    config = UC_VisualConsensusConfiguration.execute(visual, consensus).args[0]
 
     assert config["consensus"]["resolution_samples"] == 7
+    assert config["consensus"]["sample_offset"] == 128
+    assert config["enable_spatial_fusion"] is False
+    assert config["enable_consensus"] is True
 
 
 def test_one_batched_socket_is_one_lane_of_separate_sources():
@@ -395,6 +370,69 @@ def _execute_mocked(image_inputs, config):
         8,
         lambda clip, conditioning, latents, mode: conditioning,
     )
+
+
+def test_token_fusion_variant_fuses_before_one_resolution_encode(monkeypatch):
+    tokenized = []
+    fused = []
+    blended = []
+
+    def tokenize(_clip, source, resolution, _prompt):
+        value = float(source.flatten()[0])
+        tokenized.append((value, resolution))
+        return {"qwen": [[(int(value), 1.0)]]}
+
+    def encode(_clip, token_sources, config, **kwargs):
+        fused.append((len(token_sources), config["save_blended_embeds"], kwargs))
+        return [[torch.ones(1, 2, 3), {}]]
+
+    def consensus(conditionings, config):
+        blended.append((len(conditionings), config))
+        return conditionings[0]
+
+    monkeypatch.setattr(
+        encoder_helpers, "_tokenize_visual_consensus_source", tokenize
+    )
+    monkeypatch.setattr(
+        encoder_helpers, "encode_token_fused_visual_sources", encode
+    )
+    monkeypatch.setattr(
+        encoder_helpers,
+        "_encode_visual_consensus_source",
+        lambda *_args, **_kwargs: pytest.fail("legacy full encode must not run"),
+    )
+    monkeypatch.setattr(
+        encoder_helpers, "blend_complete_conditionings", consensus
+    )
+    config = _execution_config()
+    config["visual"]["save_blended_embeds"] = True
+    images = torch.tensor([[[[1.0]]], [[[2.0]]], [[[3.0]]]])
+
+    encoder_helpers.execute_advanced_visual_consensus(
+        object(),
+        "prompt",
+        "",
+        384,
+        {"image0": images},
+        config,
+        "Original",
+        "off",
+        None,
+        1.0,
+        8,
+        lambda clip, conditioning, latents, mode: conditioning,
+        token_fusion=True,
+    )
+
+    assert tokenized == [(1.0, 384), (2.0, 384), (3.0, 384)]
+    assert fused == [
+        (
+            3,
+            True,
+            {"visual_encoder_path": "grid-deepstack"},
+        )
+    ]
+    assert blended[0][0] == 1
 
 
 def test_one_requested_resolution_sample_is_not_automatically_expanded(monkeypatch):

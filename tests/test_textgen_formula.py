@@ -159,6 +159,12 @@ def test_text_generate_appends_optional_visual_fusion_config():
     inputs = textgen_nodes.UC_TextGenerate.define_schema().inputs
     assert "visual_fusion_config" in {value.id for value in inputs}
     assert "visual_fusion_config" in inspect.signature(textgen_nodes.UC_TextGenerate.execute).parameters
+
+
+def test_text_generate_schema_exposes_token_fusion_capability():
+    schema = textgen_nodes.UC_TextGenerate.define_schema()
+    assert schema.display_name == "Text Generate (TokenFusion)"
+    assert "visual_fusion_config" in [value.id for value in schema.inputs]
     assert [output.id for output in textgen_nodes.UC_TextGenerate.define_schema().outputs] == [
         "generated_text",
         "seed",

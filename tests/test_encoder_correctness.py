@@ -24,6 +24,7 @@ cli_args.cpu = True
 try:
     from utils_collection_encoder_test import encoder_helpers, encoder_nodes
     from utils_collection_encoder_test.encoder_nodes import (
+        TextEncodeKrea2SystemEditScaledAdv,
         TextEncodeKrea2SysEditScaledAdvAttn,
         UC_AdvancedMiniMaxH3ImageToVideo,
         UC_AdvancedMiniMaxH3ImageToVideoCombined,
@@ -51,7 +52,6 @@ VAE_MULTIPLE_ENCODERS = (
     "TextEncodeGemmaSystemEditPlusAdvanced",
     "UC_TextEncodeLtxv2SystemPrompt",
     "TextEncodeKrea2SystemEditScaledAdv",
-    "TextEncodeEditScaledAdv",
     "TextEncodeKrea2SysEditScaledAdvAttn",
 )
 
@@ -440,6 +440,16 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
     assert inputs["ref_image_size"].default == "match"
     assert inputs["vlm_resolution"].default == 384
     assert "independent" in inputs["vlm_resolution"].tooltip.lower()
+    fusion_tooltip = inputs["fusion_images"].tooltip
+    assert "socket N targets Picture N" in fusion_tooltip
+    assert "broadcasts to every reference Picture" in fusion_tooltip
+    assert "flattened fusion images pair by index" in fusion_tooltip
+    assert "Without frames or references" in fusion_tooltip
+    assert "native-reference mode ignores them" in fusion_tooltip
+    assert "Video blocks are never fusion targets" in fusion_tooltip
+    assert "cannot be combined with explicit first/last frame inputs" in (
+        inputs["reference_images"].tooltip
+    )
     assert [output.display_name for output in schema.outputs] == [
         "positive",
         None,
@@ -2360,6 +2370,9 @@ def test_fusion_placeholder_accepts_image_one_alias_and_logs_fallback(caplog):
 
 def test_canonical_and_compatibility_schema_flags():
     assert UC_AttentionBiasTextEncode.define_schema().is_experimental
+    assert UC_AdvancedVisualConditioningEncode.define_schema().is_experimental
+    assert not UC_AdvancedVisualConditioningEncode.define_schema().is_deprecated
+    assert TextEncodeKrea2SystemEditScaledAdv.define_schema().is_deprecated
     assert UC_Krea2TokenAttentionWeight.define_schema().is_experimental
     assert TextEncodeKrea2SysEditScaledAdvAttn.define_schema().is_deprecated
     assert UC_Qwen3VLInputEmbeds.define_schema().is_deprecated
@@ -2368,9 +2381,8 @@ def test_canonical_and_compatibility_schema_flags():
 
 def test_visual_fusion_encoder_formula_defaults_are_blank():
     for node in (
-        encoder_nodes.TextEncodeKrea2SystemEditScaledAdv,
-        encoder_nodes.TextEncodeEditScaledAdv,
-        encoder_nodes.TextEncodeKrea2SysEditScaledAdvAttn,
+        encoder_nodes.UC_AdvancedVisualConditioningEncode,
+        encoder_nodes.UC_Krea2TokenAttentionWeight,
     ):
         inputs = {value.id: value for value in node.define_schema().inputs}
         assert inputs["formula"].default == ""

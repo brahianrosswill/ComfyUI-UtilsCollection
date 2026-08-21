@@ -158,6 +158,10 @@ def generate_fused_qwen3vl(clip, full_prompt, images, config, generation_args, t
     mask_cache = {}
     canonical, canonical_info, grids, size = _fuse_qwen_primary_sources(passes, config, device, mask_cache)
     fused_deepstack = fuse_deepstack_layers(deepstacks, config, device, mask_cache, size, grids)
+    logging.info(
+        "TokenFusion visual-token fusion complete: fused %d Qwen3-VL visual sources into 1 block (%d visual tokens, %d DeepStack layers).",
+        len(passes), size, len(fused_deepstack),
+    )
     fused_info = dict(canonical_info)
     fused_info["extra"] = dict(canonical_info["extra"])
     fused_info["extra"]["deepstack"] = fused_deepstack
@@ -181,6 +185,10 @@ def generate_fused_qwen35(clip, full_prompt, images, config, generation_args, th
 
     passes = _encode_qwen_visual_sources(clip, model, device, full_prompt, images, thinking)
     canonical, canonical_info, _, _ = _fuse_qwen_primary_sources(passes, config, device, {})
+    logging.info(
+        "TokenFusion visual-token fusion complete: fused %d Qwen3.5 visual sources into 1 block (%d visual tokens, no DeepStack).",
+        len(passes), canonical_info["size"],
+    )
     fused_info = dict(canonical_info)
     fused_info["extra"] = passes[0][2]
     position_ids = qwen2vl_mrope_position_ids([fused_info], canonical.shape[1], canonical.device)
@@ -322,7 +330,7 @@ class UC_TextGenerate(io.ComfyNode):
 
         return io.Schema(
             node_id="UC_TextGenerate",
-            display_name="Text Generate",
+            display_name="Text Generate (TokenFusion)",
             category="advanced/textgen",
             search_aliases=["LLM", "VLM", "textgen", "generate", "chat", "qwen", "gemma", "llama"],
             inputs=[

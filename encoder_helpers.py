@@ -736,18 +736,21 @@ def prepare_vlm_image(image: torch.Tensor, resolution) -> torch.Tensor:
 
 
 def vlm_resolution_samples(
-    image: torch.Tensor, resolution, sample_count: int
+    image: torch.Tensor, resolution, sample_count: int, sample_offset: int = 32
 ) -> list[int | None]:
     """Build distinct alternating VLM grids without crossing the supported lower bound."""
     count = int(sample_count)
     if count < 1 or count > 15 or count % 2 == 0:
         raise ValueError("VLM resolution samples must be an odd integer from 1 to 15.")
+    offset = int(sample_offset)
+    if offset < VLM_RESOLUTION_STEP or offset > 512 or offset % VLM_RESOLUTION_STEP:
+        raise ValueError("VLM resolution sample offset must be a multiple of 32 from 32 to 512.")
     base = resolve_vlm_resolution(resolution)
     if base is None or count == 1:
         return [base]
 
     lower_slots = math.ceil((count - 1) / 2)
-    base = max(base, VLM_RESOLUTION_MIN + lower_slots * VLM_RESOLUTION_STEP)
+    base = max(base, VLM_RESOLUTION_MIN + lower_slots * offset)
     base = min(base, VLM_RESOLUTION_MAX)
     height, width = image.shape[1:3]
     samples = []
@@ -768,12 +771,12 @@ def vlm_resolution_samples(
     append_if_distinct(base)
     radius = 1
     while len(samples) < count and (
-        base - radius * VLM_RESOLUTION_STEP >= VLM_RESOLUTION_MIN
-        or base + radius * VLM_RESOLUTION_STEP <= VLM_RESOLUTION_MAX
+        base - radius * offset >= VLM_RESOLUTION_MIN
+        or base + radius * offset <= VLM_RESOLUTION_MAX
     ):
-        append_if_distinct(base - radius * VLM_RESOLUTION_STEP)
+        append_if_distinct(base - radius * offset)
         if len(samples) < count:
-            append_if_distinct(base + radius * VLM_RESOLUTION_STEP)
+            append_if_distinct(base + radius * offset)
         radius += 1
     return samples
 
@@ -1276,6 +1279,479 @@ def fuse_deepstack_layers(deepstack_tensors, visual_fusion_config, device, mask_
         sources = [deepstack_tensors[key][layer].to(device=device) for key in active_keys]
         blended.append(fuse_visual_token_sources(sources, visual_fusion_config, device, mask_cache, expected_length, source_grids))
     return blended
+
+
+def _active_clip_model(clip):
+    stage = clip.cond_stage_model
+    model_name = getattr(stage, "clip", None)
+    model = getattr(stage, model_name, None) if isinstance(model_name, str) else None
+    if model is None:
+        model = getattr(stage, "clip_model", None) or getattr(stage, "clip_d", None) or stage
+    if not hasattr(model, "process_tokens") or not hasattr(model, "transformer"):
+        raise ValueError("TokenFusion requires a Core multimodal text encoder with process_tokens support.")
+    return model
+
+
+def _token_rows_for_process(tokens):
+    key = next(iter(tokens))
+    return [[entry[0] for entry in batch] for batch in tokens[key]]
+
+
+def _encode_preprocessed_clip_model(clip_model, embeds, attention_mask, num_tokens, embeds_info):
+    attention_mask_model = attention_mask if clip_model.enable_attention_masks else None
+    if isinstance(clip_model.layer, list):
+        intermediate_output = clip_model.layer
+    elif clip_model.layer == "all":
+        intermediate_output = "all"
+    else:
+        intermediate_output = clip_model.layer_idx
+    outputs = clip_model.transformer(
+        None,
+        attention_mask_model,
+        embeds=embeds,
+        num_tokens=num_tokens,
+        intermediate_output=intermediate_output,
+        final_layer_norm_intermediate=clip_model.layer_norm_hidden_state,
+        dtype=torch.float32,
+        embeds_info=embeds_info,
+    )
+    conditioning = outputs[0].float() if clip_model.layer == "last" else outputs[1].float()
+    if clip_model.zero_out_masked:
+        conditioning *= attention_mask.unsqueeze(-1).float()
+    pooled = None
+    if len(outputs) >= 3:
+        if not clip_model.return_projected_pooled and len(outputs) >= 4 and outputs[3] is not None:
+            pooled = outputs[3].float()
+        elif outputs[2] is not None:
+            pooled = outputs[2].float()
+    metadata = {"pooled_output": pooled}
+    if clip_model.return_attention_masks:
+        metadata["attention_mask"] = attention_mask
+    minimax_tags = getattr(clip_model.transformer, "last_token_tags", None)
+    if minimax_tags is not None:
+        metadata["minimax_token_tags"] = minimax_tags
+    return conditioning.to(comfy.model_management.intermediate_device()), metadata
+
+
+def _normalize_token_fused_conditioning(clip, tokens, conditioning, metadata):
+    """Apply outer text-encoder shaping normally performed after the inner Qwen encode."""
+    key = next(iter(tokens))
+    if key != "qwen3vl_4b" or conditioning.ndim != 4:
+        return conditioning, metadata
+
+    token_pairs = tokens[key][0]
+    template_end = -1
+    im_start_count = 0
+    for index, value in enumerate(token_pairs):
+        token = value[0]
+        if not torch.is_tensor(token) and isinstance(token, numbers.Integral):
+            if token == 151644 and im_start_count < 2:
+                template_end = index
+                im_start_count += 1
+    if conditioning.shape[2] > template_end + 3:
+        if token_pairs[template_end + 1][0] == 872 and token_pairs[template_end + 2][0] == 198:
+            template_end += 3
+    conditioning = conditioning[:, :, template_end:]
+    batch, layers, sequence, hidden = conditioning.shape
+    conditioning = conditioning.permute(0, 2, 1, 3).reshape(
+        batch, sequence, layers * hidden
+    )
+    attention_mask = metadata.get("attention_mask")
+    if torch.is_tensor(attention_mask):
+        attention_mask = attention_mask[:, template_end:]
+        if attention_mask.sum() == torch.numel(attention_mask):
+            metadata.pop("attention_mask", None)
+        else:
+            metadata["attention_mask"] = attention_mask
+    return conditioning, metadata
+
+
+def _prepare_fused_visual_inputs(
+    clip_model,
+    token_sources,
+    visual_fusion_config,
+    device,
+    source_grids=None,
+    visual_indices=None,
+):
+    processed = [clip_model.process_tokens(_token_rows_for_process(tokens), device) for tokens in token_sources]
+    if any(len(value[3]) == 0 for value in processed):
+        raise ValueError("TokenFusion source produced no multimodal metadata.")
+    visual_indices = visual_indices or [0] * len(processed)
+    image_entries = []
+    for value, visual_index in zip(processed, visual_indices):
+        images = [entry for entry in value[3] if entry.get("type") == "image"]
+        if not 0 <= visual_index < len(images):
+            raise ValueError("TokenFusion could not locate the requested visual source.")
+        image_entries.append(images[visual_index])
+
+    if source_grids is None:
+        source_grids = []
+        for entry in image_entries:
+            grid = (entry.get("extra") or {}).get("grid")
+            values = grid.reshape(-1).tolist() if torch.is_tensor(grid) else list(grid or [])
+            if len(values) < 3:
+                raise ValueError("TokenFusion source is missing exact visual grid metadata.")
+            source_grids.append((int(values[-2]) // 2, int(values[-1]) // 2))
+
+    canonical_embeds, attention_mask, num_tokens, canonical_info = processed[0]
+    canonical_entry = image_entries[0]
+    start = canonical_entry["index"]
+    size = canonical_entry["size"]
+    sources = []
+    for (embeds, _, _, _), entry in zip(processed, image_entries):
+        source_start = entry["index"]
+        source_size = entry["size"]
+        if embeds.shape[-1] != canonical_embeds.shape[-1]:
+            raise ValueError("TokenFusion sources produced incompatible embedding dimensions.")
+        sources.append(embeds[0, source_start:source_start + source_size].to(device))
+
+    mask_cache = {}
+    fused = fuse_visual_token_sources(
+        sources,
+        visual_fusion_config,
+        device,
+        mask_cache,
+        size,
+        source_grids,
+    )
+    fused_embeds = canonical_embeds.clone()
+    fused_embeds[0, start:start + size] = fused
+    fused_info = [dict(entry) for entry in canonical_info]
+    canonical_position = next(
+        index for index, entry in enumerate(fused_info)
+        if entry.get("type") == "image" and entry.get("index") == start
+    )
+    fused_entry = dict(fused_info[canonical_position])
+    fused_entry["extra"] = dict(fused_entry.get("extra") or {})
+    deepstacks = {
+        index: entry.get("extra", {}).get("deepstack")
+        for index, entry in enumerate(image_entries)
+    }
+    if all(deepstacks.values()):
+        fused_entry["extra"]["deepstack"] = fuse_deepstack_layers(
+            deepstacks,
+            visual_fusion_config,
+            device,
+            mask_cache,
+            size,
+            source_grids,
+        )
+    fused_info[canonical_position] = fused_entry
+    return fused_embeds, attention_mask, num_tokens, fused_info, fused
+
+
+def encode_token_fused_visual_sources(
+    clip,
+    token_sources,
+    visual_fusion_config,
+    source_grids=None,
+    visual_indices=None,
+    visual_encoder_path="grid-deepstack",
+):
+    """Fuse pre-transformer visual tokens, then run one language encode per CLIP schedule."""
+    if not token_sources:
+        raise ValueError("TokenFusion requires at least one token source.")
+    clip.cond_stage_model.reset_clip_options()
+    if clip.layer_idx is not None:
+        clip.cond_stage_model.set_clip_options({"layer": clip.layer_idx})
+    clip.load_model(token_sources[0])
+    device = clip.patcher.load_device
+    clip.cond_stage_model.set_clip_options({"execution_device": device})
+    clip_model = _active_clip_model(clip)
+
+    def encode_once():
+        prepared = _prepare_fused_visual_inputs(
+            clip_model,
+            token_sources,
+            visual_fusion_config,
+            device,
+            source_grids,
+            visual_indices,
+        )
+        embeds, attention_mask, num_tokens, embeds_info, fused = prepared
+        with qwen3vl_visual_encoder_path(clip, visual_encoder_path):
+            conditioning, metadata = _encode_preprocessed_clip_model(
+                clip_model, embeds, attention_mask, num_tokens, embeds_info
+            )
+            conditioning, metadata = _normalize_token_fused_conditioning(
+                clip, token_sources[0], conditioning, metadata
+            )
+        return conditioning, metadata, embeds, embeds_info, fused
+
+    schedules = None
+    hooks = clip.patcher.forced_hooks
+    if hooks is not None and clip.use_clip_schedule:
+        schedules = hooks.get_hooks_for_clip_schedule()
+    output = []
+    last_prepared = None
+    with comfy.model_management.cuda_device_context(device):
+        if schedules is None:
+            conditioning, metadata, *last_prepared = encode_once()
+            clip.add_hooks_to_dict(metadata)
+            output.append([conditioning, metadata])
+        else:
+            hooks.reset()
+            clip.patcher.patch_hooks(None)
+            for time_range, scheduled_hooks in schedules:
+                for hook, keyframe in scheduled_hooks:
+                    hook.hook_keyframe._current_keyframe = keyframe
+                clip.patcher.patch_hooks(hooks)
+                conditioning, metadata, *last_prepared = encode_once()
+                metadata["clip_start_percent"] = time_range[0]
+                metadata["clip_end_percent"] = time_range[1]
+                clip.add_hooks_to_dict(metadata)
+                output.append([conditioning, metadata])
+            hooks.reset()
+    if visual_fusion_config.get("save_blended_embeds", False):
+        embeds, embeds_info, fused = last_prepared
+        image_entry = next(entry for entry in embeds_info if entry.get("type") == "image")
+        start = image_entry["index"]
+        block = torch.cat([embeds[:, start - 1:start], fused[None], embeds[:, start + image_entry["size"]:start + image_entry["size"] + 1]], dim=1)
+        save_blended_visual_embeddings(
+            [block[batch].detach() for batch in range(block.shape[0])],
+            visual_fusion_config,
+            next(iter(token_sources[0])),
+        )
+    fused_tokens = last_prepared[2].shape[0] if last_prepared else 0
+    logging.info(
+        "TokenFusion visual-token fusion complete: fused %d visual sources into 1 block (%d visual tokens), then ran %d conditioning encode%s.",
+        len(token_sources),
+        fused_tokens,
+        len(output),
+        "s" if len(output) != 1 else "",
+    )
+    return output
+
+
+def encode_token_fused_visual_slots(
+    clip,
+    canonical_tokens,
+    slot_sources,
+    visual_fusion_config,
+    visual_encoder_path="grid-deepstack",
+):
+    """Fuse one or more canonical visual slots before one transformer encode."""
+    clip.cond_stage_model.reset_clip_options()
+    if clip.layer_idx is not None:
+        clip.cond_stage_model.set_clip_options({"layer": clip.layer_idx})
+    clip.load_model(canonical_tokens)
+    device = clip.patcher.load_device
+    clip.cond_stage_model.set_clip_options({"execution_device": device})
+    clip_model = _active_clip_model(clip)
+
+    def encode_once():
+        canonical = clip_model.process_tokens(_token_rows_for_process(canonical_tokens), device)
+        embeds, attention_mask, num_tokens, info = canonical
+        fused_embeds = embeds.clone()
+        fused_info = [dict(entry) for entry in info]
+        canonical_images = [entry for entry in fused_info if entry.get("type") == "image"]
+        saved_blocks = []
+        for visual_index, alternative_tokens in slot_sources:
+            if not 0 <= visual_index < len(canonical_images):
+                raise ValueError("TokenFusion could not locate the canonical MiniMax picture slot.")
+            canonical_entry = canonical_images[visual_index]
+            alternatives = [
+                clip_model.process_tokens(_token_rows_for_process(tokens), device)
+                for tokens in alternative_tokens
+            ]
+            selected = [canonical_entry]
+            selected_embeds = [embeds]
+            for value in alternatives:
+                images = [entry for entry in value[3] if entry.get("type") == "image"]
+                if not 0 <= visual_index < len(images):
+                    raise ValueError("TokenFusion branch changed the MiniMax picture layout.")
+                selected.append(images[visual_index])
+                selected_embeds.append(value[0])
+            grids = []
+            sources = []
+            for source_embeds, entry in zip(selected_embeds, selected):
+                grid = (entry.get("extra") or {}).get("grid")
+                values = grid.reshape(-1).tolist() if torch.is_tensor(grid) else list(grid or [])
+                if len(values) < 3:
+                    raise ValueError("TokenFusion MiniMax source is missing visual grid metadata.")
+                grids.append((int(values[-2]) // 2, int(values[-1]) // 2))
+                start = entry["index"]
+                sources.append(source_embeds[0, start:start + entry["size"]].to(device))
+            start = canonical_entry["index"]
+            size = canonical_entry["size"]
+            mask_cache = {}
+            fused = fuse_visual_token_sources(
+                sources, visual_fusion_config, device, mask_cache, size, grids
+            )
+            fused_embeds[0, start:start + size] = fused
+            replacement = dict(canonical_entry)
+            replacement["extra"] = dict(replacement.get("extra") or {})
+            deepstacks = {
+                index: entry.get("extra", {}).get("deepstack")
+                for index, entry in enumerate(selected)
+            }
+            if all(deepstacks.values()):
+                replacement["extra"]["deepstack"] = fuse_deepstack_layers(
+                    deepstacks, visual_fusion_config, device, mask_cache, size, grids
+                )
+            position = next(
+                index for index, entry in enumerate(fused_info)
+                if entry is canonical_entry
+            )
+            fused_info[position] = replacement
+            canonical_images[visual_index] = replacement
+            saved_blocks.append((start, size, fused))
+        with qwen3vl_visual_encoder_path(clip, visual_encoder_path):
+            conditioning, metadata = _encode_preprocessed_clip_model(
+                clip_model, fused_embeds, attention_mask, num_tokens, fused_info
+            )
+            conditioning, metadata = _normalize_token_fused_conditioning(
+                clip, canonical_tokens, conditioning, metadata
+            )
+        return conditioning, metadata, fused_embeds, saved_blocks
+
+    hooks = clip.patcher.forced_hooks
+    schedules = hooks.get_hooks_for_clip_schedule() if hooks is not None and clip.use_clip_schedule else None
+    output = []
+    last_payload = None
+    with comfy.model_management.cuda_device_context(device):
+        if schedules is None:
+            conditioning, metadata, *last_payload = encode_once()
+            clip.add_hooks_to_dict(metadata)
+            output.append([conditioning, metadata])
+        else:
+            hooks.reset()
+            clip.patcher.patch_hooks(None)
+            for time_range, scheduled_hooks in schedules:
+                for hook, keyframe in scheduled_hooks:
+                    hook.hook_keyframe._current_keyframe = keyframe
+                clip.patcher.patch_hooks(hooks)
+                conditioning, metadata, *last_payload = encode_once()
+                metadata["clip_start_percent"], metadata["clip_end_percent"] = time_range
+                clip.add_hooks_to_dict(metadata)
+                output.append([conditioning, metadata])
+            hooks.reset()
+    if visual_fusion_config.get("save_blended_embeds", False) and last_payload:
+        fused_embeds, saved_blocks = last_payload
+        for output_index, (start, size, fused) in enumerate(saved_blocks):
+            config = visual_fusion_config
+            if output_index:
+                config = dict(config)
+                stem, suffix = os.path.splitext(config.get("save_path", "blended_visual_embeds"))
+                config["save_path"] = f"{stem}_{output_index + 1}{suffix}"
+            block = torch.cat([fused_embeds[:, start - 1:start], fused[None], fused_embeds[:, start + size:start + size + 1]], dim=1)
+            save_blended_visual_embeddings(
+                [block[batch].detach() for batch in range(block.shape[0])],
+                config,
+                next(iter(canonical_tokens)),
+            )
+    completed_blocks = last_payload[1] if last_payload else []
+    summary = ", ".join(
+        f"Picture {visual_index + 1}: {len(alternatives) + 1} sources -> {block[1]} tokens"
+        for (visual_index, alternatives), block in zip(slot_sources, completed_blocks)
+    )
+    logging.info(
+        "TokenFusion visual-token fusion complete: %s, then ran %d conditioning encode%s.",
+        summary or "no Picture slots",
+        len(output),
+        "s" if len(output) != 1 else "",
+    )
+    return output
+
+
+def encode_token_fused_text(
+    clip,
+    text,
+    images,
+    visual_fusion_config,
+    tokenize_source,
+    visual_encoder_path="grid-deepstack",
+):
+    clean_text = text
+    biases = []
+    if "(" in text and ")" in text:
+        clean_text = ""
+        for segment, strength in _contextual_token_weights(text):
+            start_tokens = tokenize_source(clean_text, images[0])
+            key = next(iter(start_tokens))
+            start = len(start_tokens[key][0])
+            clean_text += segment
+            end_tokens = tokenize_source(clean_text, images[0])
+            end = len(end_tokens[key][0])
+            if strength != 1.0 and end > start:
+                if not math.isfinite(strength):
+                    raise ValueError("Contextual prompt weights must be finite.")
+                biases.append((start, end, float(strength)))
+    token_sources = [tokenize_source(clean_text, image) for image in images]
+    conditioning = encode_token_fused_visual_sources(
+        clip,
+        token_sources,
+        visual_fusion_config,
+        visual_encoder_path=visual_encoder_path,
+    )
+    if biases:
+        token_list = token_sources[0][next(iter(token_sources[0]))][0]
+        for tensor, _ in conditioning:
+            mapping = build_token_to_conditioning_map(token_list, tensor)
+            for start_token, end_token, strength in biases:
+                if start_token >= len(mapping):
+                    continue
+                start = mapping[start_token][0]
+                end = mapping[min(end_token - 1, len(mapping) - 1)][1]
+                if 0 <= start < end:
+                    tensor[:, start:end, :] *= strength
+    return conditioning, token_sources
+
+
+def execute_token_fusion_visual_conditioning(
+    clip,
+    prompt,
+    images,
+    visual_fusion_config,
+    vlm_resolution,
+    system_prompt=None,
+    multiplier=1.0,
+    skip_template=True,
+):
+    processed = [prepare_vlm_image(image, vlm_resolution) for image in images]
+    prepared_prompt, _ = prepare_image_placeholder_prompt(
+        prompt,
+        image_count=len(processed),
+        fusion_active=True,
+        context="TokenFusion",
+    )
+    if not any(tag in prepared_prompt for tag in ("<|image_pad|>", "<|image|>", "<|vision_start|>")):
+        prepared_prompt = VISION_BLOCK + prepared_prompt
+    minimax_h3 = is_minimax_h3_text_encoder(clip)
+    if system_prompt is None:
+        full_prompt = prepared_prompt
+    elif minimax_h3:
+        full_prompt = format_minimax_h3_prompt(prepared_prompt, system_prompt)
+    else:
+        full_prompt = (
+            "<|im_start|>user\n<|im_end|>\n"
+            f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+            f"<|im_start|>user\n{prepared_prompt}<|im_end|>\n"
+            "<|im_start|>assistant\n"
+        )
+
+    def tokenize_source(text, image):
+        if minimax_h3:
+            return tokenize_minimax_h3_prompt(clip, text, [image])
+        kwargs = {"skip_template": True} if skip_template else {}
+        return clip.tokenize(text, images=[image], **kwargs)
+
+    conditioning, token_sources = encode_token_fused_text(
+        clip,
+        full_prompt,
+        processed,
+        visual_fusion_config,
+        tokenize_source,
+        visual_fusion_config.get("visual_encoder_path", "grid-deepstack"),
+    )
+    if multiplier != 1.0:
+        for tensor, metadata in conditioning:
+            tensor *= multiplier
+            pooled = metadata.get("pooled_output")
+            if pooled is not None:
+                metadata["pooled_output"] = pooled * multiplier
+    return conditioning, token_sources
 
 
 # =====================================================================
@@ -2422,6 +2898,16 @@ def _encode_visual_consensus_source(
     }
 
 
+def _tokenize_visual_consensus_source(clip, source_image, resolution, prompt):
+    processed = prepare_vlm_image(source_image, resolution)
+    tokens = (
+        tokenize_minimax_h3_prompt(clip, prompt, [processed])
+        if is_minimax_h3_text_encoder(clip)
+        else clip.tokenize(prompt, images=[processed], skip_template=True)
+    )
+    return tokens
+
+
 def _spatially_fuse_visual_consensus_sources(
     branches, visual_config, clip, allow_export
 ):
@@ -2485,6 +2971,7 @@ def _execute_advanced_minimax_h3_image_to_video(
     vlm_resolution=384,
     media_config=None,
     allow_combined_reference_routing=False,
+    token_fusion=False,
 ):
     """Build coordinated Qwen conditioning, H3 image controls, and AV latent."""
     if not is_minimax_h3_text_encoder(clip):
@@ -2648,93 +3135,20 @@ def _execute_advanced_minimax_h3_image_to_video(
             ]
 
         tokenize_callback = lambda text: tokenize_presentation(text, base_vlm_images)
-        conditioning = encode_embedding_classical_scaled_bias(
-            clip,
-            prompt,
-            tokenize_callback=tokenize_callback,
-            visual_encoder_path=visual_encoder_path,
-        )
-        if len(conditioning) != 1:
-            raise ValueError(
-                "MiniMax H3 visual conditioning requires one schedule entry."
+        if token_fusion:
+            canonical_tokens = tokenize_callback(prompt)
+            slot_sources = []
+            for visual_index, socket_images in fusion_slot_batches:
+                alternatives = []
+                for fusion_image in socket_images:
+                    branch_images = list(base_vlm_images)
+                    branch_images[visual_index] = fusion_image
+                    alternatives.append(tokenize_presentation(prompt, branch_images))
+                slot_sources.append((visual_index, alternatives))
+            conditioning = encode_token_fused_visual_slots(
+                clip, canonical_tokens, slot_sources, config, visual_encoder_path
             )
-
-        base_tensor, base_metadata = conditioning[0]
-        base_tokens = tokenize_callback(prompt)
-        fused_tensor = base_tensor.clone()
-        for visual_index, socket_images in fusion_slot_batches:
-            branches = []
-            branch_sources = [
-                (
-                    base_vlm_images[visual_index],
-                    base_tensor,
-                    base_metadata,
-                    base_tokens,
-                )
-            ]
-            for fusion_image in socket_images:
-                branch_images = list(base_vlm_images)
-                branch_images[visual_index] = fusion_image
-                branch_callback = lambda text, images=branch_images: tokenize_presentation(
-                    text, images
-                )
-                branch_conditioning = encode_embedding_classical_scaled_bias(
-                    clip,
-                    prompt,
-                    tokenize_callback=branch_callback,
-                    visual_encoder_path=visual_encoder_path,
-                )
-                if len(branch_conditioning) != 1:
-                    raise ValueError(
-                        "MiniMax H3 visual fusion requires one conditioning schedule entry."
-                    )
-                branch_tensor, branch_metadata = branch_conditioning[0]
-                branch_sources.append(
-                    (fusion_image, branch_tensor, branch_metadata, branch_callback(prompt))
-                )
-            for image, tensor, metadata, tokens in branch_sources:
-                visual_range = find_visual_token_range(
-                    tokens,
-                    tensor,
-                    legacy_krea_spatial=visual_encoder_path == "legacy-flat",
-                    minimax_token_tags=metadata.get("minimax_token_tags"),
-                    minimax_visual_index=visual_index,
-                )
-                if visual_range == (0, 0):
-                    raise ValueError(
-                        f"Could not locate MiniMax H3 picture {visual_index + 1} for fusion."
-                    )
-                branches.append(
-                    {
-                        "tensor": tensor,
-                        "pooled": metadata.get("pooled_output"),
-                        "metadata": metadata,
-                        "tokens": tokens,
-                        "visual_range": visual_range,
-                        "grid": visual_fusion_grid(
-                            image,
-                            visual_range[1] - visual_range[0],
-                            visual_encoder_path == "legacy-flat",
-                        ),
-                        "raw_visual_index": visual_index,
-                    }
-                )
-            slot_conditioning = _spatially_fuse_visual_consensus_sources(
-                branches, config, clip, allow_export=True
-            )
-            slot_tensor = slot_conditioning[0][0]
-            base_range = branches[0]["visual_range"]
-            fused_tensor[:, base_range[0]:base_range[1], :] = slot_tensor[
-                :, base_range[0]:base_range[1], :
-            ]
-        conditioning = [[fused_tensor, base_metadata]]
-    elif fusion_active:
-        branches = []
-        for index, image in enumerate(fusion_vlm_images):
-            branch_images = [*base_vlm_images, image]
-            tokenize_callback = lambda text, images=branch_images: tokenize_presentation(
-                text, images
-            )
+        else:
             conditioning = encode_embedding_classical_scaled_bias(
                 clip,
                 prompt,
@@ -2743,39 +3157,91 @@ def _execute_advanced_minimax_h3_image_to_video(
             )
             if len(conditioning) != 1:
                 raise ValueError(
-                    "MiniMax H3 visual fusion requires one conditioning schedule entry."
+                    "MiniMax H3 visual conditioning requires one schedule entry."
                 )
-            tensor, metadata = conditioning[0]
-            tokens = tokenize_callback(prompt)
-            visual_range = find_visual_token_range(
-                tokens,
-                tensor,
-                legacy_krea_spatial=visual_encoder_path == "legacy-flat",
-                minimax_token_tags=metadata.get("minimax_token_tags"),
-                minimax_visual_index=len(branch_images) - 1,
+
+            base_tensor, base_metadata = conditioning[0]
+            base_tokens = tokenize_callback(prompt)
+            fused_tensor = base_tensor.clone()
+            for visual_index, socket_images in fusion_slot_batches:
+                branches = []
+                branch_sources = [(base_vlm_images[visual_index], base_tensor, base_metadata, base_tokens)]
+                for fusion_image in socket_images:
+                    branch_images = list(base_vlm_images)
+                    branch_images[visual_index] = fusion_image
+                    branch_callback = lambda text, images=branch_images: tokenize_presentation(text, images)
+                    branch_conditioning = encode_embedding_classical_scaled_bias(
+                        clip, prompt, tokenize_callback=branch_callback,
+                        visual_encoder_path=visual_encoder_path,
+                    )
+                    if len(branch_conditioning) != 1:
+                        raise ValueError("MiniMax H3 visual fusion requires one conditioning schedule entry.")
+                    branch_tensor, branch_metadata = branch_conditioning[0]
+                    branch_sources.append((fusion_image, branch_tensor, branch_metadata, branch_callback(prompt)))
+                for image, tensor, metadata, tokens in branch_sources:
+                    visual_range = find_visual_token_range(
+                        tokens, tensor,
+                        legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                        minimax_token_tags=metadata.get("minimax_token_tags"),
+                        minimax_visual_index=visual_index,
+                    )
+                    if visual_range == (0, 0):
+                        raise ValueError(f"Could not locate MiniMax H3 picture {visual_index + 1} for fusion.")
+                    branches.append({
+                        "tensor": tensor, "pooled": metadata.get("pooled_output"),
+                        "metadata": metadata, "tokens": tokens, "visual_range": visual_range,
+                        "grid": visual_fusion_grid(image, visual_range[1] - visual_range[0], visual_encoder_path == "legacy-flat"),
+                        "raw_visual_index": visual_index,
+                    })
+                slot_conditioning = _spatially_fuse_visual_consensus_sources(branches, config, clip, allow_export=True)
+                slot_tensor = slot_conditioning[0][0]
+                base_range = branches[0]["visual_range"]
+                fused_tensor[:, base_range[0]:base_range[1], :] = slot_tensor[:, base_range[0]:base_range[1], :]
+            conditioning = [[fused_tensor, base_metadata]]
+    elif fusion_active:
+        if token_fusion:
+            canonical_images = [*base_vlm_images, fusion_vlm_images[0]]
+            canonical_tokens = tokenize_presentation(prompt, canonical_images)
+            visual_index = len(canonical_images) - 1
+            alternatives = [
+                tokenize_presentation(prompt, [*base_vlm_images, image])
+                for image in fusion_vlm_images[1:]
+            ]
+            conditioning = encode_token_fused_visual_slots(
+                clip,
+                canonical_tokens,
+                [(visual_index, alternatives)],
+                config,
+                visual_encoder_path,
             )
-            if visual_range == (0, 0):
-                raise ValueError(
-                    f"Could not locate the MiniMax H3 visual span for fusion image {index + 1}."
+        else:
+            branches = []
+            for index, image in enumerate(fusion_vlm_images):
+                branch_images = [*base_vlm_images, image]
+                tokenize_callback = lambda text, images=branch_images: tokenize_presentation(text, images)
+                conditioning = encode_embedding_classical_scaled_bias(
+                    clip, prompt, tokenize_callback=tokenize_callback,
+                    visual_encoder_path=visual_encoder_path,
                 )
-            branches.append(
-                {
-                    "tensor": tensor,
-                    "pooled": metadata.get("pooled_output"),
-                    "metadata": metadata,
-                    "tokens": tokens,
-                    "visual_range": visual_range,
-                    "grid": visual_fusion_grid(
-                        image,
-                        visual_range[1] - visual_range[0],
-                        visual_encoder_path == "legacy-flat",
-                    ),
+                if len(conditioning) != 1:
+                    raise ValueError("MiniMax H3 visual fusion requires one conditioning schedule entry.")
+                tensor, metadata = conditioning[0]
+                tokens = tokenize_callback(prompt)
+                visual_range = find_visual_token_range(
+                    tokens, tensor,
+                    legacy_krea_spatial=visual_encoder_path == "legacy-flat",
+                    minimax_token_tags=metadata.get("minimax_token_tags"),
+                    minimax_visual_index=len(branch_images) - 1,
+                )
+                if visual_range == (0, 0):
+                    raise ValueError(f"Could not locate the MiniMax H3 visual span for fusion image {index + 1}.")
+                branches.append({
+                    "tensor": tensor, "pooled": metadata.get("pooled_output"),
+                    "metadata": metadata, "tokens": tokens, "visual_range": visual_range,
+                    "grid": visual_fusion_grid(image, visual_range[1] - visual_range[0], visual_encoder_path == "legacy-flat"),
                     "raw_visual_index": len(branch_images) - 1,
-                }
-            )
-        conditioning = _spatially_fuse_visual_consensus_sources(
-            branches, config, clip, allow_export=True
-        )
+                })
+            conditioning = _spatially_fuse_visual_consensus_sources(branches, config, clip, allow_export=True)
     else:
         presentation_images = [*base_vlm_images, *fusion_vlm_images]
         tokenize_callback = lambda text: tokenize_presentation(
@@ -2869,6 +3335,7 @@ def execute_advanced_minimax_h3_image_to_video(
     ref_image_size="match",
     vlm_resolution=384,
     media_config=None,
+    token_fusion=False,
 ):
     conditioning, latent, _requires_combined_wrapper = (
         _execute_advanced_minimax_h3_image_to_video(
@@ -2887,6 +3354,7 @@ def execute_advanced_minimax_h3_image_to_video(
             ref_image_size=ref_image_size,
             vlm_resolution=vlm_resolution,
             media_config=media_config,
+            token_fusion=token_fusion,
         )
     )
     return conditioning, latent
@@ -2909,6 +3377,7 @@ def execute_advanced_minimax_h3_image_to_video_combined(
     ref_image_size="match",
     vlm_resolution=384,
     media_config=None,
+    token_fusion=False,
 ):
     """Build Advanced H3 conditioning and patch only mixed visual payloads."""
     validate_minimax_h3_model_patcher(
@@ -2932,6 +3401,7 @@ def execute_advanced_minimax_h3_image_to_video_combined(
             vlm_resolution=vlm_resolution,
             media_config=media_config,
             allow_combined_reference_routing=True,
+            token_fusion=token_fusion,
         )
     )
     output_model = (
@@ -3099,6 +3569,7 @@ def execute_advanced_visual_consensus(
     multiplier,
     vae_dimension_multiple,
     apply_reference_latents,
+    token_fusion=False,
 ):
     """Run spatial fusion per resolution, then consensus over complete outputs."""
     if not isinstance(joint_config, dict):
@@ -3192,7 +3663,10 @@ def execute_advanced_visual_consensus(
     export_pending = True
     for lane in lanes:
         targets = vlm_resolution_samples(
-            lane[0], vlm_resolution, effective_samples
+            lane[0],
+            vlm_resolution,
+            effective_samples,
+            consensus_config.get("sample_offset", VLM_RESOLUTION_STEP),
         )
         if len(targets) < effective_samples:
             raise ValueError(
@@ -3201,6 +3675,29 @@ def execute_advanced_visual_consensus(
             )
         for target in targets:
             sources = lane if spatial_enabled or consensus_enabled else lane[:1]
+            if spatial_enabled and token_fusion:
+                token_sources = [
+                    _tokenize_visual_consensus_source(
+                        clip, source, target, full_prompt
+                    )
+                    for source in sources
+                ]
+                token_fusion_config = dict(visual_config)
+                token_fusion_config["save_blended_embeds"] = bool(
+                    export_pending
+                    and token_fusion_config.get("save_blended_embeds", False)
+                )
+                completed = encode_token_fused_visual_sources(
+                    clip,
+                    token_sources,
+                    token_fusion_config,
+                    visual_encoder_path=visual_encoder_path,
+                )
+                export_pending = False
+                completed_conditionings.append(completed)
+                if base_conditioning is None:
+                    base_conditioning = completed
+                continue
             branches = [
                 _encode_visual_consensus_source(
                     clip, source, target, full_prompt, visual_encoder_path

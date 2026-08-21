@@ -14,15 +14,19 @@ The list below uses the canonical node IDs. Deprecated compatibility aliases rem
 - `UC_TextEncodeSystemEditAdvanced`
 - `UC_TextEncodeGemmaSystemEditAdvanced`
 - `UC_AdvancedVisualConditioningEncode`
+- `UC_AdvancedVisualConditioningEncodeTokenFusion`
 - `UC_AdvancedMiniMaxH3ImageToVideo`
+- `UC_AdvMiniMaxH3ImageToVideoTokenFusion`
 - `UC_AdvancedMiniMaxH3ImageToVideoCombined`
+- `UC_AdvMiniMaxH3ImageToVideoCombinedTokenFusion`
 - `UC_MiniMaxH3MediaConfig`
 - `UC_MiniMaxH3FirstFrameReferences`
 - `UC_AdvancedVisConEncoder`
+- `UC_AdvancedVisConEncoderTokenFusion`
 - `UC_VisualConsensusConfiguration`
-- `UC_AdvancedVisualConfiguration`
 - `UC_AdvancedConsensusConfiguration`
 - `UC_Krea2TokenAttentionWeight`
+- `UC_Krea2TokenAttentionWeightTokenFusion`
 - `UC_AttentionBiasTextEncode`
 - `UC_TextConsensusBlendConfig`
 - `UC_VisualFusionConfig`
@@ -78,21 +82,23 @@ resolution, then passes those complete conditionings through the same consensus
 mathematics as `UC_ConditioningConsensusBlend`. Spatial fusion and consensus
 are not alternatives and are never crossfaded.
 
-Use `UC_VisualConsensusConfiguration` for the required joint configuration.
-Its two activation Booleans remain authoritative. The visual method is always
-selected there. A connected `UC_AdvancedVisualConfiguration` overrides the
-duplicated block, dither, seed, encoder-path, cleanup, perturbation, and raw
-export values. A connected `UC_AdvancedConsensusConfiguration` replaces the
-named consensus preset and basal global scale with the complete custom
-consensus configuration. Its authoritative preset selector defaults to
-`custom`; named selections reuse their stored mathematics while advanced
-position weighting, common-prefix preservation, global scale, and resolution
-sampling remain available.
+`UC_AdvancedVisConEncoderTokenFusion` is the additive token-first alternative.
+At each lane and resolution it fuses per-source visual and DeepStack tokens,
+runs one conditioning encode, then applies the same complete-conditioning
+consensus across resolution samples. The original node remains unchanged.
+
+Use `UC_VisualConsensusConfiguration` to combine one complete
+`UC_VisualFusionConfig` with one `UC_AdvancedConsensusConfiguration`. Fusion
+method `off` disables the spatial stage; consensus preset `off` disables the
+cross-resolution consensus stage. Advanced Consensus Configuration inherits
+the complete Text Consensus Blend Configurator contract and adds
+`resolution_samples` plus a 32-aligned `sample_offset`.
 
 `block_size` is specific to block-interleave. `dither_ratio` and
-`dither_pattern` are specific to random-dither. The simple joint node exposes
-`resolution_samples` as a consensus control; Advanced Consensus Configuration
-overrides it when connected. The configured value is exact, so `1` remains one
+`dither_secondary_pattern` are specific to random-dither. Advanced Consensus
+Configuration exposes `resolution_samples` and `sample_offset`. Offset defaults
+to `32` and supports `32` through `512` in 32-unit steps. The configured sample
+count is exact, so `1` remains one
 resolution sample regardless of visual-source or batch-lane count. Original VLM
 resolution supports one sample but cannot construct adjacent resolution
 variants.
