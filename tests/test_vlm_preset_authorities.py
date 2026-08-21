@@ -1,8 +1,12 @@
+import json
 from pathlib import Path
 import runpy
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOL_PATH = ROOT / "scripts" / "manage_vlm_preset_authorities.py"
 CONFIG = (
     (
         "vlm_presets.py",
@@ -68,3 +72,44 @@ def test_nonlegacy_vlm_authorities_match_runtime_and_use_crlf():
                 f"{authority_name}:{scalar_name}", authoritative_values[scalar_name]
             )
             assert_crlf_only(f"{runtime_name}:{scalar_name}", runtime[scalar_name])
+
+
+def test_authority_tool_dry_run_and_apply_changed_content(tmp_path, capsys):
+    runtime_path = tmp_path / "runtime.py"
+    authority_path = tmp_path / "authority.py"
+    runtime_path.write_text('sample = {"entry": "old\\r\\nvalue"}\n', encoding="utf-8")
+    authority_path.write_text(
+        'RUNTIME_DICTIONARIES = {"sample": {"entry": "new\\r\\nvalue"}}\n'
+        "RUNTIME_VALUES = {}\n",
+        encoding="utf-8",
+    )
+
+    tool = runpy.run_path(str(TOOL_PATH))
+    main = tool["main"]
+    main.__globals__["ROOT"] = tmp_path
+    main.__globals__["CONFIG"] = (("runtime.py", "authority.py", ("sample",), ()),)
+
+    original = runtime_path.read_bytes()
+    main([])
+    report = json.loads(capsys.readouterr().out)
+    assert report["changed"] == ["runtime.py"]
+    assert runtime_path.read_bytes() == original
+
+    main(["--apply"])
+    capsys.readouterr()
+    source = runtime_path.read_bytes()
+    assert b"\r\n" in source
+    assert b"\n" not in source.replace(b"\r\n", b"")
+    assert runpy.run_path(str(runtime_path))["sample"] == {"entry": "new\r\nvalue"}
+
+
+def test_authority_tool_preservation_guard_rejects_content_changes():
+    validate_preserved = runpy.run_path(str(TOOL_PATH))["validate_preserved"]
+    runtime = {"sample": {"entry": "old\r\nvalue"}}
+    authority = {
+        "RUNTIME_DICTIONARIES": {"sample": {"entry": "new\r\nvalue"}},
+        "RUNTIME_VALUES": {},
+    }
+
+    with pytest.raises(RuntimeError, match="Non-newline content changed"):
+        validate_preserved(runtime, authority, ("sample",), ())
