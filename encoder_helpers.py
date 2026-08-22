@@ -3578,6 +3578,7 @@ def execute_advanced_visual_consensus(
     vae_dimension_multiple,
     apply_reference_latents,
     token_fusion=False,
+    semantic_anchor=False,
 ):
     """Run spatial fusion per resolution, then consensus over complete outputs."""
     if not isinstance(joint_config, dict):
@@ -3639,6 +3640,12 @@ def execute_advanced_visual_consensus(
         for marker in ("<|image_pad|>", "<|image|>", "<|vision_start|>")
     ):
         prepared_prompt = VISION_BLOCK + prepared_prompt
+    if semantic_anchor and not minimax_h3:
+        segments = prepared_prompt.split(VISION_BLOCK)
+        anchored_prompt = [segments[0]]
+        for index, segment in enumerate(segments[1:], start=1):
+            anchored_prompt.extend((f"<Picture {index}>: {VISION_BLOCK}", segment))
+        prepared_prompt = "".join(anchored_prompt)
     full_prompt = (
         format_minimax_h3_prompt(prepared_prompt, system_prompt)
         if minimax_h3

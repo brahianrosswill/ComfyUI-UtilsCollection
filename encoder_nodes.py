@@ -3786,6 +3786,7 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True),
+                io.Boolean.Input("semantic_anchor", default=False, tooltip="Prefixes each encoded visual slot with its numbered <Picture N>: semantic anchor."),
                 io.Autogrow.Input(
                     "image_inputs",
                     template=autogrow_template,
@@ -3810,6 +3811,7 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
         vae=None,
         multiplier=1.0,
         vae_dimension_multiple=8,
+        semantic_anchor=False,
     ) -> io.NodeOutput:
         conditioning = execute_advanced_visual_consensus(
             clip,
@@ -3825,6 +3827,7 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
             vae_dimension_multiple,
             apply_parallel_ref_latents,
             token_fusion=cls.TOKEN_FUSION,
+            semantic_anchor=semantic_anchor,
         )
         return io.NodeOutput(conditioning)
 
@@ -3925,6 +3928,7 @@ class _TokenFusionConditioningNode(io.ComfyNode):
         vae=None,
         multiplier=1.0,
         vae_dimension_multiple=8,
+        semantic_anchor=False,
         system_prompt="",
     ):
         config = visual_fusion_config or {"visual_fusion_method": "off"}
@@ -3942,6 +3946,7 @@ class _TokenFusionConditioningNode(io.ComfyNode):
                 vae=vae,
                 multiplier=multiplier,
                 vae_dimension_multiple=vae_dimension_multiple,
+                semantic_anchor=semantic_anchor,
             )
             if cls.USE_SYSTEM_PROMPT:
                 kwargs["system_prompt"] = system_prompt
@@ -3962,6 +3967,7 @@ class _TokenFusionConditioningNode(io.ComfyNode):
                 vae=vae,
                 multiplier=multiplier,
                 vae_dimension_multiple=vae_dimension_multiple,
+                semantic_anchor=semantic_anchor,
             )
             if cls.USE_SYSTEM_PROMPT:
                 kwargs["system_prompt"] = system_prompt
