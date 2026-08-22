@@ -274,6 +274,16 @@ def test_visual_block_export_rejects_unframed_placeholder():
         )
 
 
+def test_visual_embedding_key_uses_projected_h3_source_clip():
+    projected_clip = types.SimpleNamespace(
+        cond_stage_model=types.SimpleNamespace(clip_name="qwen3vl_8b")
+    )
+
+    assert encoder_helpers.visual_embedding_key(
+        projected_clip, {"qwen3vl_32b": [[(0, 1.0)]]}
+    ) == "qwen3vl_8b"
+
+
 @pytest.mark.parametrize("method", ["index-consensus", "similarity-consensus", "unknown"])
 def test_unsupported_methods_raise(method):
     with pytest.raises(ValueError, match="Unsupported visual fusion method"):
@@ -483,12 +493,14 @@ def test_advanced_visual_encoder_uses_one_base_resolution_pass_per_source(
 ):
     prepared_resolutions = []
     encoded_images = []
+    encoded_prompts = []
 
     def prepare(image, resolution):
         prepared_resolutions.append(resolution)
         return image
 
-    def encode(_clip, _prompt, images, **_kwargs):
+    def encode(_clip, prompt, images, **_kwargs):
+        encoded_prompts.append(prompt)
         encoded_images.append(images[0])
         return [[torch.ones(1, 6, 2), {}]]
 
@@ -528,10 +540,15 @@ def test_advanced_visual_encoder_uses_one_base_resolution_pass_per_source(
             "fusion_strength": 0.0,
             "resolution_samples": 15,
         },
+        semantic_anchor=True,
     )
 
     assert prepared_resolutions[:2] == [384, 384]
     assert len(encoded_images) == 2
+    assert all(
+        f"<Picture 1>: {encoder_nodes.VISION_BLOCK}" in prompt
+        for prompt in encoded_prompts
+    )
 
 
 def test_advanced_visual_encoder_spatial_output_contains_every_source(monkeypatch):

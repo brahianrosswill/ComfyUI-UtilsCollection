@@ -230,6 +230,14 @@ def visual_text_encoder_key(clip) -> str | None:
     return next(iter(tokens))
 
 
+def visual_embedding_key(clip, tokens: dict) -> str:
+    """Return the source model key required to load saved visual embeddings."""
+    source_key = getattr(getattr(clip, "cond_stage_model", None), "clip_name", None)
+    if isinstance(source_key, str):
+        return source_key
+    return next(iter(tokens))
+
+
 def is_minimax_h3_text_encoder(clip) -> bool:
     return visual_text_encoder_key(clip) == "qwen3vl_32b"
 
@@ -3263,7 +3271,7 @@ def _execute_advanced_minimax_h3_image_to_video(
                 clip,
                 tokens,
                 config,
-                next(iter(tokens)),
+                visual_embedding_key(clip, tokens),
                 comfy.model_management.get_torch_device(),
                 list(range(len(presentation_images))),
             )

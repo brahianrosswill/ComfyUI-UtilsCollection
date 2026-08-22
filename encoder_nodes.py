@@ -2034,6 +2034,7 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
                 io.Vae.Input("vae", optional=True),
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
+                io.Boolean.Input("semantic_anchor", default=False, tooltip="Prefixes each encoded visual slot with its numbered <Picture N>: semantic anchor."),
                 io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
             ],
             outputs=[
@@ -2042,7 +2043,7 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8, semantic_anchor: bool = False) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
         minimax_h3 = is_minimax_h3_text_encoder(clip)
@@ -2066,6 +2067,21 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
                 f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
                 "<|im_start|>assistant\n"
             )
+
+        def add_semantic_anchors(user_prompt, picture_numbers):
+            if not semantic_anchor or minimax_h3:
+                return user_prompt
+            prompt_segments = user_prompt.split(VISION_BLOCK)
+            anchored_prompt = [prompt_segments[0]]
+            for index, segment in enumerate(prompt_segments[1:]):
+                if index < len(picture_numbers):
+                    anchored_prompt.append(
+                        f"<Picture {picture_numbers[index]}>: {VISION_BLOCK}"
+                    )
+                else:
+                    anchored_prompt.append(VISION_BLOCK)
+                anchored_prompt.append(segment)
+            return "".join(anchored_prompt)
 
         if not active_images:
             # Fallback if no images are connected: encode prompt as plain text
@@ -2112,7 +2128,9 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
         inline_mode = False
         if visual_method == "off" and inline_numbers:
             inline_images = [processed_active_images[number - 1] for number in inline_numbers]
-            inline_prompt = format_krea_prompt(prepared_prompt)
+            inline_prompt = format_krea_prompt(
+                add_semantic_anchors(prepared_prompt, inline_numbers)
+            )
             if strip_contextual_weight_syntax(inline_prompt) != inline_prompt:
                 logging.warning(
                     "AdvancedVisualConditioning: custom contextual vector scaling is disabled for native multi-image inline encoding."
@@ -2120,9 +2138,7 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
             try:
                 with qwen3vl_visual_encoder_path(clip, visual_encoder_path):
                     inline_tokens = (
-                        tokenize_minimax_h3_prompt(
-                            clip, inline_prompt, inline_images
-                        )
+                        tokenize_minimax_h3_prompt(clip, inline_prompt, inline_images)
                         if minimax_h3
                         else clip.tokenize(
                             inline_prompt, images=inline_images, skip_template=True,
@@ -2173,6 +2189,10 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
             modified_prompt = prepared_prompt
             if not any(tag in modified_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
                 modified_prompt = VISION_BLOCK + modified_prompt
+            picture_number = 1 if visual_method != "off" else idx + 1
+            modified_prompt = add_semantic_anchors(
+                modified_prompt, (picture_number,)
+            )
             full_prompt = format_krea_prompt(modified_prompt)
 
             processed_img = prepare_vlm_image(source_image, vlm_resolution)
@@ -2205,9 +2225,7 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
             if visual_method != "off" or save_visual_embedding:
                 try:
                     tokens = (
-                        tokenize_minimax_h3_prompt(
-                            clip, full_prompt, [processed_img]
-                        )
+                        tokenize_minimax_h3_prompt(clip, full_prompt, [processed_img])
                         if minimax_h3
                         else clip.tokenize(
                             full_prompt, images=[processed_img], skip_template=True

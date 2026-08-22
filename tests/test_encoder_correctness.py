@@ -1422,6 +1422,8 @@ def test_advanced_minimax_h3_reference_fusion_off_ignores_fusion_inputs():
 
 def test_advanced_minimax_h3_reference_save_exports_each_visual_span(monkeypatch):
     clip = _MiniMaxH3TestClip()
+    clip.cond_stage_model = types.SimpleNamespace(clip_name="qwen3vl_8b")
+    clip.tokenizer = types.SimpleNamespace(clip_name="qwen3vl_32b")
     vae = _RecordingMiniMaxVAE()
     exported = []
     monkeypatch.setattr(
@@ -1451,9 +1453,9 @@ def test_advanced_minimax_h3_reference_save_exports_each_visual_span(monkeypatch
 
     assert len(exported) == 1
     _, tokens, _config, key, _device, visual_indices = exported[0]
-    assert key == "qwen3vl_32b"
+    assert key == "qwen3vl_8b"
     assert visual_indices == [0, 1]
-    assert sum(encoder_helpers.is_image_token(entry) for entry in tokens[key][0]) == 2
+    assert sum(encoder_helpers.is_image_token(entry) for entry in tokens["qwen3vl_32b"][0]) == 2
 
 
 def test_advanced_minimax_h3_none_keeps_frame_pictures_without_vae_keyframes():
@@ -2328,6 +2330,88 @@ def test_advanced_visual_image_only_path_uses_anti_stripping_template(monkeypatc
     assert "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>" in Clip.tokenized_text
 
 
+def test_advanced_visual_semantic_anchor_numbers_unfused_inputs(monkeypatch):
+    encoded_prompts = []
+
+    def encode(_clip, prompt, **_kwargs):
+        encoded_prompts.append(prompt)
+        return [[torch.ones(1, 1, 1), {}]]
+
+    monkeypatch.setattr(encoder_nodes, "prepare_vlm_image", lambda image, _resolution: image)
+    monkeypatch.setattr(encoder_nodes, "encode_embedding_classical_scaled_bias", encode)
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        object(),
+        prompt="describe",
+        system_prompt="",
+        vlm_resolution=384,
+        image_inputs={
+            "image_1": torch.zeros(1, 2, 2, 3),
+            "image_2": torch.ones(1, 2, 2, 3),
+        },
+        semantic_anchor=True,
+    )
+
+    assert f"<Picture 1>: {encoder_nodes.VISION_BLOCK}" in encoded_prompts[0]
+    assert f"<Picture 2>: {encoder_nodes.VISION_BLOCK}" in encoded_prompts[1]
+
+
+def test_advanced_visual_semantic_anchor_is_disabled_by_default(monkeypatch):
+    encoded_prompts = []
+
+    def encode(_clip, prompt, **_kwargs):
+        encoded_prompts.append(prompt)
+        return [[torch.ones(1, 1, 1), {}]]
+
+    monkeypatch.setattr(encoder_nodes, "prepare_vlm_image", lambda image, _resolution: image)
+    monkeypatch.setattr(encoder_nodes, "encode_embedding_classical_scaled_bias", encode)
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        object(),
+        prompt="describe",
+        system_prompt="",
+        vlm_resolution=384,
+        image_inputs={"image_1": torch.ones(1, 2, 2, 3)},
+    )
+
+    assert "<Picture 1>:" not in encoded_prompts[0]
+
+
+def test_advanced_visual_semantic_anchor_preserves_inline_image_numbers(monkeypatch):
+    class Clip:
+        cond_stage_model = object()
+        tokenized_text = None
+
+        @classmethod
+        def tokenize(cls, text, **_kwargs):
+            cls.tokenized_text = text
+            return {"fake": [[(1, 1.0)]]}
+
+        @staticmethod
+        def encode_from_tokens_scheduled(_tokens):
+            return [[torch.ones(1, 1, 1), {}]]
+
+    monkeypatch.setattr(encoder_nodes, "prepare_vlm_image", lambda image, _resolution: image)
+
+    UC_AdvancedVisualConditioningEncode.execute(
+        Clip(),
+        prompt="image_input_2 then image_input_1",
+        system_prompt="",
+        vlm_resolution=384,
+        image_inputs={
+            "image_1": torch.zeros(1, 2, 2, 3),
+            "image_2": torch.ones(1, 2, 2, 3),
+        },
+        semantic_anchor=True,
+    )
+
+    picture_two = f"<Picture 2>: {encoder_nodes.VISION_BLOCK}"
+    picture_one = f"<Picture 1>: {encoder_nodes.VISION_BLOCK}"
+    assert picture_two in Clip.tokenized_text, Clip.tokenized_text
+    assert picture_one in Clip.tokenized_text, Clip.tokenized_text
+    assert Clip.tokenized_text.index(picture_two) < Clip.tokenized_text.index(picture_one)
+
+
 def test_numbered_image_placeholders_preserve_prompt_order_and_strip_invalid(caplog):
     prompt, numbers = encoder_helpers.prepare_image_placeholder_prompt(
         "first image_input_2 then IMAGE_INPUT_1 repeat image_input_2 missing image_input_3 image_input_fusion",
@@ -2387,3 +2471,11 @@ def test_visual_fusion_encoder_formula_defaults_are_blank():
         inputs = {value.id: value for value in node.define_schema().inputs}
         assert inputs["formula"].default == ""
         assert inspect.signature(node.execute).parameters["formula"].default == ""
+
+    schema = encoder_nodes.UC_AdvancedVisualConditioningEncode.define_schema()
+    assert [value.id for value in schema.inputs][-2:] == [
+        "semantic_anchor",
+        "image_inputs",
+    ]
+    assert {value.id: value for value in schema.inputs}["semantic_anchor"].default is False
+    assert list(inspect.signature(encoder_nodes.UC_AdvancedVisualConditioningEncode.execute).parameters)[-1] == "semantic_anchor"
