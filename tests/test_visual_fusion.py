@@ -841,6 +841,36 @@ def test_token_fusion_minimax_slots_share_one_final_encode(monkeypatch, caplog):
     assert "Picture 1: 2 sources -> 4 tokens, Picture 2: 2 sources -> 4 tokens" in caplog.text
 
 
+def test_token_fusion_minimax_rebuilds_stale_modality_tags():
+    class Transformer:
+        model_type = "qwen3vl_32b"
+        last_token_tags = torch.ones(6, dtype=torch.long)
+
+        def __call__(self, *_args, **_kwargs):
+            return torch.zeros(1, 5, 2), None
+
+    class ClipModel:
+        transformer = Transformer()
+        enable_attention_masks = False
+        layer = "last"
+        layer_idx = None
+        layer_norm_hidden_state = False
+        zero_out_masked = False
+        return_projected_pooled = True
+        return_attention_masks = False
+
+    conditioning, metadata = encoder_helpers._encode_preprocessed_clip_model(
+        ClipModel(),
+        torch.zeros(1, 6, 2),
+        torch.ones(1, 6, dtype=torch.long),
+        [6],
+        [{"type": "image", "index": 1, "size": 2}],
+    )
+
+    assert conditioning.shape[1] == 5
+    assert metadata["minimax_token_tags"].tolist() == [0, 0, 0, 0, 1]
+
+
 def test_token_fusion_applies_krea2_outer_shape_and_attention_mask_contract():
     tokens = {"qwen3vl_4b": [[
         (151644, 1.0), (1, 1.0), (151644, 1.0),

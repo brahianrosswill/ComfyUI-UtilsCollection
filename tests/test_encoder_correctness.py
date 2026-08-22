@@ -460,41 +460,27 @@ def test_minimax_h3_media_config_schema_and_payload():
     schema = UC_MiniMaxH3MediaConfig.define_schema()
     inputs = {value.id: value for value in schema.inputs}
     assert schema.is_input_list is True
-    assert inputs["video_images"].template.names[0] == "video_image_1"
-    assert inputs["video_images"].template.names[-1] == "video_image_64"
-    image = torch.ones(2, 4, 6, 3)
-    payload = encoder_helpers.build_minimax_h3_media_config(
-        [["0; 1.2"]], [{"video_image_1": image}]
-    )
-    assert payload["schema_version"] == 1
-    assert len(payload["image_timeline"]["images"]) == 2
-    assert payload["image_timeline"]["timestamps_seconds"] == (Fraction(0), Fraction(6, 5))
-
-
-@pytest.mark.parametrize("timestamp, expected", [
-    (Fraction("0.00"), "0.00"),
-    (Fraction("1.21"), "1.21"),
-    (Fraction("2.46"), "2.46"),
-    (Fraction("5.30"), "5.30"),
-    (Fraction("10.84"), "10.84"),
-    (Fraction("1.234"), "1.234"),
-])
-def test_minimax_h3_timestamp_format_preserves_useful_precision(timestamp, expected):
-    assert encoder_helpers._format_minimax_h3_timestamp(timestamp) == expected
+    assert inputs["timestamp_format"].default == "0.0s"
+    assert inputs["structure"].default == encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE
+    assert "video_images" not in inputs
+    payload = encoder_helpers.build_minimax_h3_media_config([["0; 1.2"]])
+    assert payload["schema_version"] == 2
+    assert payload["timestamps_seconds"] == (Fraction(0), Fraction(6, 5))
+    assert payload["timestamp_format"] == "0.0s"
+    assert payload["structure"] == encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE
 
 
 def test_minimax_h3_media_config_rejects_timestamp_beyond_output_duration():
     config = {
-        "schema_version": 1,
-        "image_timeline": {
-            "images": (torch.ones(1, 2, 2, 3),),
-            "timestamps_seconds": (Fraction("1.01"),),
-        },
+        "schema_version": 2,
+        "timestamps_seconds": (Fraction("1.01"),),
+        "timestamp_format": "0.0s",
+        "structure": encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
         "audio": None,
         "audio_vae": None,
     }
     with pytest.raises(ValueError, match="output duration"):
-        encoder_helpers._validate_minimax_h3_media_config(config, 24, 0)
+        encoder_helpers._validate_minimax_h3_media_config(config, 24)
 
 
 def test_minimax_h3_audio_reference_matches_core_contract(monkeypatch):
@@ -516,20 +502,85 @@ def test_minimax_h3_audio_reference_matches_core_contract(monkeypatch):
     assert block["ref_audio_t"] == 4
 
 
-def test_minimax_h3_media_tokenization_builds_one_video_prefix():
+def test_minimax_h3_media_tokenization_builds_picture_anchors_before_prompt():
     clip = _MiniMaxH3TestClip()
     first = torch.ones(1, 2, 3, 3)
     second = torch.ones(1, 3, 2, 3)
-    tokens = encoder_helpers.tokenize_minimax_h3_media_prompt(clip, "prompt", [], [first, second], [Fraction("1.21"), Fraction("2.46")])
+    tokens = encoder_helpers.tokenize_minimax_h3_media_prompt(
+        clip,
+        "prompt",
+        [first, second],
+        [Fraction("1.21"), Fraction("2.46")],
+        "0.00s",
+        encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
+    )
     entries = tokens["qwen3vl_32b"][0]
     text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
     visuals = [entry[0] for entry in entries if encoder_helpers.is_image_token(entry)]
-    assert text.count("<Video 1>: ") == 1
-    assert "<1.21 seconds>" in text and "<2.46 seconds>" in text
-    assert "<1.2 seconds>" not in text and "<2.5 seconds>" not in text
-    assert all(item["minimax_video_block"] for item in visuals)
-    assert visuals[0]["data"].shape == (2, 2, 3, 3)
-    assert visuals[1]["data"].shape == (2, 3, 2, 3)
+    assert "At 1.21s, <Picture 1>: " in text
+    assert "(from [Shot 1]) is fully anchored." in text
+    assert "At 2.46s, <Picture 2>: " in text
+    assert "(from [Shot 2]) is fully anchored." in text
+    assert text.index("At 1.21s") < text.index("At 2.46s") < text.index("prompt")
+    assert visuals[0]["data"].shape == (1, 2, 3, 3)
+    assert visuals[1]["data"].shape == (1, 3, 2, 3)
+    image_calls = [call for call in clip.tokenize_calls if call["images"] is not None]
+    assert len(image_calls) == 1
+    assert len(image_calls[0]["images"]) == 2
+    conditioning = clip.encode_from_tokens_scheduled(tokens)
+    tensor, metadata = conditioning[0]
+    assert metadata["minimax_token_tags"].numel() == tensor.shape[1]
+
+
+def test_minimax_h3_media_tokenization_leaves_unanchored_pictures_once():
+    clip = _MiniMaxH3TestClip()
+    base = torch.zeros(1, 2, 2, 3)
+    shot = torch.ones(1, 2, 2, 3)
+    tokens = encoder_helpers.tokenize_minimax_h3_media_prompt(
+        clip,
+        "prompt",
+        [base, shot],
+        [Fraction("61.25")],
+        "MM:SS.mmm",
+        "<<shot>> @ <<time>> uses <<picture>> = <<visual>>",
+    )
+    entries = tokens["qwen3vl_32b"][0]
+    text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
+    assert "[Shot 1] @ 01:01.250 uses <Picture 1> = " in text
+    assert "<Picture 2>: " in text
+    visuals = [entry[0] for entry in entries if encoder_helpers.is_image_token(entry)]
+    assert len(visuals) == 2
+
+
+def test_minimax_h3_media_tokenization_rejects_more_timestamps_than_pictures():
+    with pytest.raises(ValueError, match="2 timestamps for 1 available Pictures"):
+        encoder_helpers.tokenize_minimax_h3_media_prompt(
+            _MiniMaxH3TestClip(),
+            "prompt",
+            [torch.ones(1, 2, 2, 3)],
+            [Fraction(0), Fraction(1)],
+            "0.0s",
+            encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
+        )
+
+
+@pytest.mark.parametrize(
+    "structure, message",
+    [
+        ("", "must not be empty"),
+        ("<<picture>> <<visual>> <<shot>>", "missing <<time>>"),
+        ("<<time>> <<picture>> <<visual>> <<shot>> <<unknown>>", "Unknown"),
+        ("<<time>> <<picture>> <<visual>> <<visual>> <<shot>>", "exactly one <<visual>>"),
+    ],
+)
+def test_minimax_h3_media_structure_validation(structure, message):
+    with pytest.raises(ValueError, match=message):
+        encoder_helpers._validate_minimax_h3_media_structure(structure)
+
+
+def test_minimax_h3_media_structure_allows_omitting_shot_label():
+    structure = "At <<time>>, <<picture>>: <<visual>> is fully anchored."
+    assert encoder_helpers._validate_minimax_h3_media_structure(structure) == structure
 
 
 def test_advanced_combined_minimax_h3_schema_is_additive():

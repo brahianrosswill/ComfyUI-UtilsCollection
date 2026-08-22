@@ -48,9 +48,11 @@ from .encoder_helpers import(
     execute_advanced_minimax_h3_image_to_video,
     execute_advanced_minimax_h3_image_to_video_combined,
     build_minimax_h3_media_config,
+    MINIMAX_H3_MEDIA_STRUCTURE,
     execute_minimax_h3_first_frame_references,
     execute_token_fusion_visual_conditioning,
 )
+from .image_helpers import VIDEO_FRAME_TIMESTAMP_FORMATS
 
 def apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode):
     if not ref_latents:
@@ -3311,17 +3313,14 @@ class TextEncodeKrea2SystemEditScaledAdv(UC_AdvancedVisualConditioningEncode):
 class UC_MiniMaxH3MediaConfig(io.ComfyNode):
     @classmethod
     def define_schema(cls):
-        image_template = io.Autogrow.TemplateNames(
-            io.Image.Input("video_image", tooltip="Ordered Qwen-only timeline image. Each batch item becomes one duplicated-frame temporal block; images are not VAE encoded or fused."),
-            names=[f"video_image_{index}" for index in range(1, 65)], min=1,
-        )
         return io.Schema(
             node_id="UC_MiniMaxH3MediaConfig", display_name="MiniMax H3 Media Configurator",
             category="advanced/conditioning", is_input_list=True, is_experimental=True,
-            description="Packages timestamped images as one Qwen Video sequence and can add optional native MiniMax H3 audio conditioning.",
+            description="Anchors existing MiniMax H3 Picture slots at formatted timestamps and can add optional native audio conditioning.",
             inputs=[
-                io.AnyType.Input("timestamps", tooltip="One exact timestamp per flattened image. Accepts lists or comma, semicolon, or newline-delimited seconds and HH:MM:SS formats. Values must be chronological and within the output duration."),
-                io.Autogrow.Input("video_images", template=image_template, tooltip="Images flatten in numeric socket and batch order. The encoder applies vlm_resolution, duplicates each image into one Qwen temporal block, and never VAE encodes or fuses these Video blocks."),
+                io.AnyType.Input("timestamps", tooltip="Sequential timestamps for existing Picture slots. Accepts lists or comma, semicolon, or newline-delimited seconds and HH:MM:SS formats."),
+                io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="0.0s", tooltip="Formatting used when <<time>> is expanded."),
+                io.String.Input("structure", multiline=True, dynamic_prompts=False, default=MINIMAX_H3_MEDIA_STRUCTURE, tooltip="Per-shot structure using <<time>>, <<picture>>, <<visual>>, and <<shot>>."),
                 io.Audio.Input("audio", optional=True, tooltip="Optional native H3 reference audio. Qwen receives only an Audio label; hard synchronization with Video timestamps is not guaranteed."),
                 io.Vae.Input("audio_vae", optional=True, tooltip="Required with audio. Resamples to this MiniMax H3 audio VAE rate and creates native audio reference rows."),
             ],
@@ -3329,8 +3328,10 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, timestamps, video_images, audio=None, audio_vae=None):
-        return io.NodeOutput(build_minimax_h3_media_config(timestamps, video_images, audio, audio_vae))
+    def execute(cls, timestamps, timestamp_format, structure, audio=None, audio_vae=None):
+        return io.NodeOutput(build_minimax_h3_media_config(
+            timestamps, timestamp_format, structure, audio, audio_vae
+        ))
 
 
 class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):

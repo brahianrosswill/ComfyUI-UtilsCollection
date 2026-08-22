@@ -28,11 +28,12 @@ import comfy.nested_tensor
 import comfy.patcher_extension
 import comfy.utils
 from .helper_functions import resize_nchw
-from .image_helpers import parse_video_timestamps
+from .image_helpers import VIDEO_FRAME_TIMESTAMP_FORMATS, format_video_timestamp, parse_video_timestamps
 
 from comfy.ldm.flux.math import apply_rope
 from comfy.ldm.modules.attention import optimized_attention
 from comfy.sd1_clip import token_weights, escape_important, unescape_important
+from comfy.text_encoders.minimax import token_tags_from_embeds_info
 
 
 _VISUAL_ENCODER_PATH_LOCK = threading.RLock()
@@ -43,6 +44,9 @@ _MINIMAX_H3_REFERENCE_KEYFRAME_MODES = {
     "first + last + match": ("first_last", "match"),
     "first + last + max": ("first_last", "max"),
 }
+MINIMAX_H3_MEDIA_STRUCTURE = "At <<time>>, <<picture>>: <<visual>> (from <<shot>>) is fully anchored."
+_MINIMAX_H3_MEDIA_KEYWORDS = {"time", "picture", "visual", "shot"}
+_MINIMAX_H3_REQUIRED_MEDIA_KEYWORDS = {"time", "picture", "visual"}
 
 
 def prepare_vae_reference_image(samples, target_size, dimension_multiple, upscale_method="bicubic"):
@@ -260,8 +264,7 @@ def _minimax_h3_text_entries(clip, text: str) -> list:
     return _token_entries(clip.tokenize(text), "qwen3vl_32b")
 
 
-def _minimax_h3_visual_entries(clip, image, picture_number: int) -> list:
-    """Build one numbered H3 picture block through Core's active tokenizer."""
+def _minimax_h3_visual_token_entries(clip, image) -> list:
     full = _token_entries(
         clip.tokenize("", images=[image]), "qwen3vl_32b"
     )
@@ -275,103 +278,124 @@ def _minimax_h3_visual_entries(clip, image, picture_number: int) -> list:
     visual = full[len(picture_one) :]
     if sum(is_image_token(item) for item in visual) != 1:
         raise ValueError("MiniMax H3 picture block must contain exactly one image entry.")
+    return visual
+
+
+def _minimax_h3_visual_token_blocks(clip, images) -> list[list]:
+    if not images:
+        return []
+    entries = _token_entries(
+        clip.tokenize("", images=list(images)), "qwen3vl_32b"
+    )
+    blocks = []
+    for index, entry in enumerate(entries):
+        if not is_image_token(entry):
+            continue
+        if index < 1 or index + 1 >= len(entries):
+            raise ValueError("MiniMax H3 tokenizer returned an incomplete visual block.")
+        blocks.append(entries[index - 1:index + 2])
+    if len(blocks) != len(images):
+        raise ValueError(
+            f"MiniMax H3 tokenizer returned {len(blocks)} visual blocks for {len(images)} Pictures."
+        )
+    return blocks
+
+
+def _minimax_h3_visual_entries(clip, image, picture_number: int) -> list:
+    """Build one numbered H3 picture block through Core's active tokenizer."""
     return _minimax_h3_text_entries(
         clip, f"<Picture {picture_number}>: "
-    ) + visual
+    ) + _minimax_h3_visual_token_entries(clip, image)
 
 
-def _minimax_h3_video_block_entries(clip, image, timestamp, include_prefix):
-    pair = image.expand(2, -1, -1, -1)
-    full = _token_entries(clip.tokenize("", minimax_ref_items=[{
-        "type": "video", "data": pair, "timestamps": [timestamp, timestamp],
-    }]), "qwen3vl_32b")
-    prefix = _minimax_h3_text_entries(clip, "<Video 1>: ")
-    if len(full) <= len(prefix) or [item[0] for item in full[:len(prefix)]] != [item[0] for item in prefix]:
-        raise ValueError("MiniMax H3 tokenizer returned an unexpected video prefix.")
-    block = full[len(prefix):]
-    core_timestamp = _minimax_h3_text_entries(clip, f"<{float(timestamp):.1f} seconds>")
-    if len(block) <= len(core_timestamp) or [item[0] for item in block[:len(core_timestamp)]] != [item[0] for item in core_timestamp]:
-        raise ValueError("MiniMax H3 tokenizer returned an unexpected video timestamp.")
-    block = block[len(core_timestamp):]
-    visuals = [item for item in block if is_image_token(item)]
-    if len(visuals) != 1 or not visuals[0][0].get("minimax_video_block", False):
-        raise ValueError("MiniMax H3 tokenizer returned an invalid temporal video block.")
-    exact_timestamp = _minimax_h3_text_entries(clip, f"<{_format_minimax_h3_timestamp(timestamp)} seconds>")
-    return (prefix if include_prefix else []) + exact_timestamp + block
+def _validate_minimax_h3_media_structure(structure):
+    if not isinstance(structure, str) or not structure.strip():
+        raise ValueError("MiniMax H3 media structure must not be empty.")
+    keywords = re.findall(r"<<([^<>]+)>>", structure)
+    unknown = sorted(set(keywords) - _MINIMAX_H3_MEDIA_KEYWORDS)
+    if unknown:
+        raise ValueError(f"Unknown MiniMax H3 media structure keyword: <<{unknown[0]}>>.")
+    missing = sorted(_MINIMAX_H3_REQUIRED_MEDIA_KEYWORDS - set(keywords))
+    if missing:
+        raise ValueError(f"MiniMax H3 media structure is missing <<{missing[0]}>>.")
+    if keywords.count("visual") != 1:
+        raise ValueError("MiniMax H3 media structure requires exactly one <<visual>>.")
+    return structure
 
 
-def _format_minimax_h3_timestamp(timestamp):
-    if not isinstance(timestamp, Fraction):
-        timestamp = Fraction(str(timestamp))
-    denominator = timestamp.denominator
-    precision = 0
-    while denominator % 2 == 0:
-        denominator //= 2
-        precision += 1
-    fives = 0
-    while denominator % 5 == 0:
-        denominator //= 5
-        fives += 1
-    if denominator != 1:
-        raise ValueError("MiniMax H3 timestamps require finite decimal values.")
-    precision = max(2, precision, fives)
-    return f"{float(timestamp):.{precision}f}"
-
-
-def tokenize_minimax_h3_media_prompt(clip, text, pictures, timeline_images, timestamps, audio=False):
+def tokenize_minimax_h3_media_prompt(
+    clip, text, pictures, timestamps, timestamp_format, structure, audio=False,
+):
+    if len(timestamps) > len(pictures):
+        raise ValueError(
+            f"MiniMax H3 media config received {len(timestamps)} timestamps "
+            f"for {len(pictures)} available Pictures."
+        )
     entries = []
-    for index, image in enumerate(pictures, start=1):
-        entries.extend(_minimax_h3_visual_entries(clip, image, index))
+    visual_blocks = _minimax_h3_visual_token_blocks(clip, pictures)
+    for index, visual in enumerate(visual_blocks, start=1):
+        if index > len(timestamps):
+            entries.extend(_minimax_h3_text_entries(clip, f"<Picture {index}>: "))
+            entries.extend(visual)
+            continue
+        timestamp = timestamps[index - 1]
+        expanded = structure.replace("<<time>>", format_video_timestamp(timestamp, timestamp_format))
+        expanded = expanded.replace("<<picture>>", f"<Picture {index}>")
+        expanded = expanded.replace("<<shot>>", f"[Shot {index}]")
+        before, after = expanded.split("<<visual>>")
+        entries.extend(_minimax_h3_text_entries(clip, before))
+        entries.extend(visual)
+        entries.extend(_minimax_h3_text_entries(clip, after + "\n"))
     if audio:
         entries.extend(_minimax_h3_text_entries(clip, "<Audio 1>: "))
-    for index, (image, timestamp) in enumerate(zip(timeline_images, timestamps)):
-        entries.extend(_minimax_h3_video_block_entries(clip, image, timestamp, index == 0))
     entries.extend(_minimax_h3_text_entries(clip, text))
     return {"qwen3vl_32b": [entries]}
 
 
-def build_minimax_h3_media_config(timestamps, video_images, audio=None, audio_vae=None):
-    if isinstance(video_images, list) and len(video_images) == 1:
-        video_images = video_images[0]
+def build_minimax_h3_media_config(
+    timestamps, timestamp_format="0.0s", structure=MINIMAX_H3_MEDIA_STRUCTURE,
+    audio=None, audio_vae=None,
+):
     if isinstance(audio, list):
         audio = audio[0] if audio else None
     if isinstance(audio_vae, list):
         audio_vae = audio_vae[0] if audio_vae else None
+    if isinstance(timestamp_format, list):
+        timestamp_format = timestamp_format[0] if timestamp_format else "0.0s"
+    if isinstance(structure, list):
+        structure = structure[0] if structure else MINIMAX_H3_MEDIA_STRUCTURE
     timestamps = parse_video_timestamps(timestamps)
-    _, images, _ = extract_and_flatten_images(video_images)
-    if not images:
-        raise ValueError("MiniMax H3 media config requires at least one video image.")
-    if len(timestamps) != len(images):
-        raise ValueError(f"MiniMax H3 media config received {len(timestamps)} timestamps for {len(images)} images.")
+    if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
+        raise ValueError(f"Unsupported video timestamp format: {timestamp_format}")
+    structure = _validate_minimax_h3_media_structure(structure)
     if (audio is None) != (audio_vae is None):
         raise ValueError("MiniMax H3 media config requires audio and audio_vae together.")
     return {
-        "schema_version": 1,
-        "image_timeline": {"images": tuple(images), "timestamps_seconds": tuple(timestamps)},
+        "schema_version": 2,
+        "timestamps_seconds": tuple(timestamps),
+        "timestamp_format": timestamp_format,
+        "structure": structure,
         "audio": audio,
         "audio_vae": audio_vae,
     }
 
 
-def _validate_minimax_h3_media_config(media_config, frame_count, vlm_resolution):
-    if not isinstance(media_config, dict) or media_config.get("schema_version") != 1:
+def _validate_minimax_h3_media_config(media_config, frame_count):
+    if not isinstance(media_config, dict) or media_config.get("schema_version") != 2:
         raise ValueError("Unsupported MiniMax H3 media config payload.")
-    timeline = media_config.get("image_timeline")
-    if not isinstance(timeline, dict):
-        raise ValueError("MiniMax H3 media config has no image timeline.")
-    images = list(timeline.get("images", ()))
-    timestamps = list(timeline.get("timestamps_seconds", ()))
-    if not images or len(images) != len(timestamps):
-        raise ValueError("MiniMax H3 media config image and timestamp counts must match and be non-empty.")
-    for index, image in enumerate(images, start=1):
-        if not torch.is_tensor(image) or image.ndim != 4 or image.shape[0] != 1 or min(image.shape[1:3]) < 1 or image.shape[3] < 3:
-            raise ValueError(f"MiniMax H3 timeline image {index} must be one BHWC image with at least three channels.")
+    timestamps = list(media_config.get("timestamps_seconds", ()))
+    if not timestamps:
+        raise ValueError("MiniMax H3 media config requires at least one timestamp.")
     if any(not isinstance(timestamp, Fraction) or timestamp < 0 for timestamp in timestamps):
         raise ValueError("MiniMax H3 media config timestamps must be parsed nonnegative exact seconds.")
     duration = Fraction(frame_count, 24)
     if any(timestamp > duration for timestamp in timestamps):
         raise ValueError(f"MiniMax H3 timeline timestamps must not exceed output duration {float(duration):.3f}s.")
-    return [prepare_vlm_image(image, vlm_resolution) for image in images], timestamps
+    timestamp_format = media_config.get("timestamp_format")
+    if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
+        raise ValueError("MiniMax H3 media config has an unsupported timestamp format.")
+    structure = _validate_minimax_h3_media_structure(media_config.get("structure"))
+    return timestamps, timestamp_format, structure
 
 
 def _encode_minimax_h3_audio_reference(media_config):
@@ -1336,6 +1360,10 @@ def _encode_preprocessed_clip_model(clip_model, embeds, attention_mask, num_toke
     if clip_model.return_attention_masks:
         metadata["attention_mask"] = attention_mask
     minimax_tags = getattr(clip_model.transformer, "last_token_tags", None)
+    if getattr(clip_model.transformer, "model_type", None) == "qwen3vl_32b":
+        if conditioning.ndim != 3:
+            raise ValueError("MiniMax H3 TokenFusion requires a three-dimensional conditioning tensor.")
+        minimax_tags = token_tags_from_embeds_info(conditioning.shape[1], embeds_info)
     if minimax_tags is not None:
         metadata["minimax_token_tags"] = minimax_tags
     return conditioning.to(comfy.model_management.intermediate_device()), metadata
@@ -1612,6 +1640,21 @@ def encode_token_fused_visual_slots(
             conditioning, metadata = _normalize_token_fused_conditioning(
                 clip, canonical_tokens, conditioning, metadata
             )
+            if next(iter(canonical_tokens)) == "qwen3vl_32b":
+                if conditioning.ndim != 3:
+                    raise ValueError(
+                        "MiniMax H3 TokenFusion requires a three-dimensional conditioning tensor."
+                    )
+                metadata["minimax_token_tags"] = token_tags_from_embeds_info(
+                    conditioning.shape[1], fused_info
+                )
+                logging.info(
+                    "MiniMax H3 TokenFusion metadata rebuilt: conditioning=%s tags=%s embeds=%s pictures=%s",
+                    tuple(conditioning.shape),
+                    tuple(metadata["minimax_token_tags"].shape),
+                    tuple(fused_embeds.shape),
+                    [(entry["index"], entry["size"]) for entry in fused_info if entry.get("type") == "image"],
+                )
         return conditioning, metadata, fused_embeds, saved_blocks
 
     hooks = clip.patcher.forced_hooks
@@ -3050,13 +3093,16 @@ def _execute_advanced_minimax_h3_image_to_video(
             )
 
     latent, frame_count = minimax_h3_empty_av_latent(width, height, length)
-    timeline_images = []
     timeline_timestamps = []
+    timeline_timestamp_format = None
+    timeline_structure = None
     audio_reference = None
     if media_config is not None:
-        timeline_images, timeline_timestamps = _validate_minimax_h3_media_config(
-            media_config, frame_count, vlm_resolution
-        )
+        (
+            timeline_timestamps,
+            timeline_timestamp_format,
+            timeline_structure,
+        ) = _validate_minimax_h3_media_config(media_config, frame_count)
         audio_reference = _encode_minimax_h3_audio_reference(media_config)
     prepared_first = (
         prepare_minimax_h3_frame(keyframe_first_image, width, height, "disabled")
@@ -3096,13 +3142,11 @@ def _execute_advanced_minimax_h3_image_to_video(
         fusion_vlm_images = []
     fusion_active = visual_method != "off" and bool(fusion_vlm_images)
     visual_encoder_path = config.get("visual_encoder_path", "grid-deepstack")
-    if media_config is not None and fusion_active and visual_encoder_path == "legacy-flat":
-        raise ValueError("MiniMax H3 mixed Picture and Video fusion requires grid-deepstack.")
-
     def tokenize_presentation(text, images):
         if media_config is not None:
             return tokenize_minimax_h3_media_prompt(
-                clip, text, images, timeline_images, timeline_timestamps,
+                clip, text, images, timeline_timestamps, timeline_timestamp_format,
+                timeline_structure,
                 audio=audio_reference is not None,
             )
         if native_reference_mode:
@@ -3280,7 +3324,10 @@ def _execute_advanced_minimax_h3_image_to_video(
         tags = metadata.get("minimax_token_tags")
         if not torch.is_tensor(tags) or tags.numel() != tensor.shape[1]:
             raise ValueError(
-                "MiniMax H3 modality tags do not match the conditioning sequence length."
+                "MiniMax H3 modality tags do not match the conditioning sequence length: "
+                f"conditioning={tuple(tensor.shape)}, "
+                f"tags={tuple(tags.shape) if torch.is_tensor(tags) else type(tags).__name__}, "
+                f"metadata_keys={sorted(metadata)}."
             )
 
     if multiplier != 1.0:
