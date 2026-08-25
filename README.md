@@ -116,6 +116,7 @@ the base-resolution conditioning fusion.
 - `UC_ModifyMask`
 - `UC_ImageBlendByMask`
 - `UC_ImagePad`
+- `UC_NoHaloLoHaloDownscale`
 - `UC_CropByMask`
 - `UC_StagedLayerCrops`
 - `UC_ImageCropMerge`

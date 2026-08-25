@@ -15,6 +15,208 @@ import torch
 from .helper_functions import resize_nchw
 
 
+_HALO_CONTEXT_RADIUS = 13
+_HALO_WORKSPACE_BYTES = 128 * 1024 * 1024
+_LOHALO_CONTRAST = 3.38589
+
+
+def halo_downscale_dimensions(width: int, height: int, megapixels: float, multiple: int) -> tuple[int, int, float, float, float]:
+    """Return aligned output dimensions and a uniform, centered source transform."""
+    target_pixels = megapixels * 1024 * 1024
+    scale = math.sqrt(target_pixels / (width * height))
+    output_width = max(multiple, int((width * scale + multiple / 2) // multiple) * multiple)
+    output_height = max(multiple, int((height * scale + multiple / 2) // multiple) * multiple)
+    cover_scale = max(output_width / width, output_height / height)
+    if cover_scale >= 1.0:
+        raise ValueError("NoHalo/LoHalo Downscale requires an output smaller than the input.")
+    view_width = output_width / cover_scale
+    view_height = output_height / cover_scale
+    return output_width, output_height, cover_scale, (width - view_width) * 0.5, (height - view_height) * 0.5
+
+
+def _mitchell_kernel(distance: torch.Tensor) -> torch.Tensor:
+    distance = distance.abs()
+    inner = (7.0 / 6.0) * distance**3 - 2.0 * distance**2 + 8.0 / 9.0
+    outer = (-7.0 / 18.0) * distance**3 + 2.0 * distance**2 - (10.0 / 3.0) * distance + 16.0 / 9.0
+    return torch.where(distance < 1.0, inner, torch.where(distance < 2.0, outer, 0.0))
+
+
+def _robidoux_kernel(radius_squared: torch.Tensor) -> torch.Tensor:
+    sqrt_two = math.sqrt(2.0)
+    radius = torch.sqrt(radius_squared.clamp_min(0.0))
+    inner = radius_squared * (-3.0 * radius + (45739.0 + 7164.0 * sqrt_two) / 10319.0) + (-8926.0 - 14328.0 * sqrt_two) / 10319.0
+    outer = (radius + (-103.0 - 36.0 * sqrt_two) / (7.0 + 72.0 * sqrt_two)) * (radius - 2.0) ** 2
+    return torch.where(radius_squared < 1.0, inner, torch.where(radius_squared < 4.0, outer, 0.0))
+
+
+def _inverse_sigmoidal(value: torch.Tensor) -> torch.Tensor:
+    sig1 = math.tanh(0.25 * _LOHALO_CONTRAST)
+    slope = (1.0 / sig1 - sig1) * 0.25 * _LOHALO_CONTRAST
+    middle = torch.atanh(((2.0 * sig1) * value - sig1).clamp(-0.999999, 0.999999)) * (2.0 / _LOHALO_CONTRAST) + 0.5
+    return torch.where(value <= 0.0, value / slope, torch.where(value >= 1.0, value / slope + 1.0 - 1.0 / slope, middle))
+
+
+def _extended_sigmoidal(value: torch.Tensor) -> torch.Tensor:
+    sig1 = math.tanh(0.25 * _LOHALO_CONTRAST)
+    slope = (1.0 / sig1 - sig1) * 0.25 * _LOHALO_CONTRAST
+    middle = (0.5 / sig1) * torch.tanh(0.5 * _LOHALO_CONTRAST * value - 0.25 * _LOHALO_CONTRAST) + 0.5
+    return torch.where(value <= 0.0, slope * value, torch.where(value >= 1.0, slope * value + 1.0 - slope, middle))
+
+
+def _minmod(first: torch.Tensor, second: torch.Tensor) -> torch.Tensor:
+    return torch.where(first * second >= 0.0, torch.where(first.square() <= first * second, first, second), 0.0)
+
+
+def _nohalo_subdivision(p: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    """Vectorized GEGL/libvips NoHalo level-one subdivision for an oriented 5x5 stencil."""
+    u2, u3, u4 = p[..., 0, 1], p[..., 0, 2], p[..., 0, 3]
+    d1, d2, d3, d4, d5 = (p[..., 1, index] for index in range(5))
+    t1, t2, t3, t4, t5 = (p[..., 2, index] for index in range(5))
+    q1, q2, q3, q4, q5 = (p[..., 3, index] for index in range(5))
+    c2, c3, c4 = p[..., 4, 1], p[..., 4, 2], p[..., 4, 3]
+
+    du2, dt2, tq2, qc2 = d2-u2, t2-d2, q2-t2, c2-q2
+    du3, dt3, tq3, qc3 = d3-u3, t3-d3, q3-t3, c3-q3
+    du4, dt4, tq4, qc4 = d4-u4, t4-d4, q4-t4, c4-q4
+    d12, d23, d34, d45 = d2-d1, d3-d2, d4-d3, d5-d4
+    t12, t23, t34, t45 = t2-t1, t3-t2, t4-t3, t5-t4
+    q12, q23, q34, q45 = q2-q1, q3-q2, q4-q3, q5-q4
+
+    d3y, t3y = _minmod(dt3, du3), _minmod(dt3, tq3)
+    q3y = _minmod(qc3, tq3)
+    t4y, q4y, d4y = _minmod(dt4, tq4), _minmod(qc4, tq4), _minmod(dt4, du4)
+    t2x, t3x, t4x = _minmod(t23, t12), _minmod(t23, t34), _minmod(t45, t34)
+    q3x, q4x, q2x = _minmod(q23, q34), _minmod(q45, q34), _minmod(q23, q12)
+    d3x, d4x, d2x = _minmod(d23, d34), _minmod(d45, d34), _minmod(d23, d12)
+    t2y, q2y, d2y = _minmod(dt2, tq2), _minmod(qc2, tq2), _minmod(dt2, du2)
+
+    a12 = 0.5*(d3+t3) + 0.25*(d3y-t3y)
+    a32 = 0.5*(t3+q3) + 0.25*(t3y-q3y)
+    a34 = 0.5*(t4+q4) + 0.25*(t4y-q4y)
+    a14 = 0.5*(d4+t4) + 0.25*(d4y-t4y)
+    a21 = 0.5*(t2+t3) + 0.25*(t2x-t3x)
+    a23 = 0.5*(t3+t4) + 0.25*(t3x-t4x)
+    a43 = 0.5*(q3+q4) + 0.25*(q3x-q4x)
+    a41 = 0.5*(q2+q3) + 0.25*(q2x-q3x)
+    a33 = 0.125*((t3x-t4x)+(q3x-q4x)) + 0.5*(a32+a34)
+    a13 = 0.25*(d4-t3) + 0.125*(d4y-t4y+d3x-d4x) + 0.5*(a12+a23)
+    a31 = 0.25*(q2-t3) + 0.125*(q2x-q3x+t2y-q2y) + 0.5*(a21+a32)
+    a11 = 0.25*(d2+d3+t2+t3) + 0.125*(d2x-d3x+t2x-t3x+d2y+d3y-t2y-t3y)
+    return a11, a12, a13, a14, a21, t3, a23, t4, a31, a32, a33, a34, a41, q3, a43, q4
+
+
+def _lbb(stencil: tuple[torch.Tensor, ...], x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    u1,u2,u3,u4,d1,d2,d3,d4,t1,t2,t3,t4,q1,q2,q3,q4 = stencil
+    min00 = torch.minimum(torch.minimum(torch.minimum(u1,u2),u3), torch.minimum(torch.minimum(d1,d2), torch.minimum(d3, torch.minimum(t1,torch.minimum(t2,t3)))))
+    max00 = torch.maximum(torch.maximum(torch.maximum(u1,u2),u3), torch.maximum(torch.maximum(d1,d2), torch.maximum(d3, torch.maximum(t1,torch.maximum(t2,t3)))))
+    min10 = torch.minimum(torch.minimum(torch.minimum(u2,u3),u4), torch.minimum(torch.minimum(d2,d3), torch.minimum(d4, torch.minimum(t2,torch.minimum(t3,t4)))))
+    max10 = torch.maximum(torch.maximum(torch.maximum(u2,u3),u4), torch.maximum(torch.maximum(d2,d3), torch.maximum(d4, torch.maximum(t2,torch.maximum(t3,t4)))))
+    min01 = torch.minimum(torch.minimum(torch.minimum(d1,d2),d3), torch.minimum(torch.minimum(t1,t2), torch.minimum(t3, torch.minimum(q1,torch.minimum(q2,q3)))))
+    max01 = torch.maximum(torch.maximum(torch.maximum(d1,d2),d3), torch.maximum(torch.maximum(t1,t2), torch.maximum(t3, torch.maximum(q1,torch.maximum(q2,q3)))))
+    min11 = torch.minimum(torch.minimum(torch.minimum(d2,d3),d4), torch.minimum(torch.minimum(t2,t3), torch.minimum(t4, torch.minimum(q2,torch.minimum(q3,q4)))))
+    max11 = torch.maximum(torch.maximum(torch.maximum(d2,d3),d4), torch.maximum(torch.maximum(t2,t3), torch.maximum(t4, torch.maximum(q2,torch.maximum(q3,q4)))))
+
+    values = (d2,d3,t2,t3)
+    mins, maxs = (min00,min10,min01,min11), (max00,max10,max01,max11)
+    dx0 = (d3-d1,d4-d2,t3-t1,t4-t2)
+    dy0 = (t2-u2,t3-u3,q2-d2,q3-d3)
+    cross0 = (u1-u3+t3-t1, u2-u4+t4-t2, q3-q1-d3+d1, q4-q2-d4+d2)
+    dx, dy, cross = [], [], []
+    for value, minimum, maximum, ddx, ddy, dcross in zip(values, mins, maxs, dx0, dy0, cross0):
+        limit = 6.0 * torch.minimum(value-minimum, maximum-value)
+        ddx = ddx.sign() * torch.minimum(ddx.abs(), limit)
+        ddy = ddy.sign() * torch.minimum(ddy.abs(), limit)
+        sum12, dif12 = 6.0*(ddx+ddy), 6.0*(ddx-ddy)
+        lower = torch.maximum(sum12.abs()-36.0*(value-minimum), dif12.abs()-36.0*(maximum-value))
+        upper = torch.minimum(36.0*(maximum-value)-sum12.abs(), 36.0*(value-minimum)-dif12.abs())
+        dx.append(ddx)
+        dy.append(ddy)
+        cross.append(dcross.clamp(min=lower, max=upper))
+
+    hx0, hx1 = 2*x**3-3*x**2+1, -2*x**3+3*x**2
+    hdx0, hdx1 = x**3-2*x**2+x, x**3-x**2
+    hy0, hy1 = 2*y**3-3*y**2+1, -2*y**3+3*y**2
+    hdy0, hdy1 = y**3-2*y**2+y, y**3-y**2
+    c = (hx0*hy0,hx1*hy0,hx0*hy1,hx1*hy1)
+    cx = (hdx0*hy0,hdx1*hy0,hdx0*hy1,hdx1*hy1)
+    cy = (hx0*hdy0,hx1*hdy0,hx0*hdy1,hx1*hdy1)
+    cxy = (hdx0*hdy0,hdx1*hdy0,hdx0*hdy1,hdx1*hdy1)
+    return sum(a*b for a,b in zip(c,values)) + 0.5*sum(a*b for a,b in zip(cx,dx)) + 0.5*sum(a*b for a,b in zip(cy,dy)) + 0.25*sum(a*b for a,b in zip(cxy,cross))
+
+
+def _gather_halo_patch(image: torch.Tensor, x_index: torch.Tensor, y_index: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
+    batch, channels, height, width = image.shape
+    yy = (y_index[..., None, None] + offsets[:, None]).clamp(0, height-1)
+    xx = (x_index[..., None, None] + offsets[None, :]).clamp(0, width-1)
+    linear = (yy * width + xx).reshape(1, 1, -1).expand(batch, channels, -1)
+    return torch.gather(image.reshape(batch, channels, -1), 2, linear).reshape(batch, channels, *x_index.shape, offsets.numel(), offsets.numel())
+
+
+def downscale_nohalo_lohalo(image: torch.Tensor, method: str, megapixels: float, multiple: int) -> torch.Tensor:
+    """Downscale BHWC images using axis-aligned GEGL NoHalo or LoHalo sampling."""
+    original_dtype = image.dtype
+    batch, height, width, channels = image.shape
+    out_width, out_height, scale, offset_x, offset_y = halo_downscale_dimensions(width, height, megapixels, multiple)
+    source = image.movedim(-1, 1).float()
+    support = min(_HALO_CONTEXT_RADIUS, max(2, math.ceil((2.0 if method == "lohalo" else 1.0) / scale + 0.5)))
+    kernel_size = 2 * support + 1
+    bytes_per_pixel = batch * kernel_size * kernel_size * (channels * 4 + 24)
+    tile_rows = max(1, min(out_height, _HALO_WORKSPACE_BYTES // max(1, out_width * bytes_per_pixel)))
+    x = offset_x + (torch.arange(out_width, device=image.device, dtype=torch.float32) + 0.5) / scale
+    x_anchor = torch.floor(x).long()
+    x_fraction = x - (x_anchor.float() + 0.5)
+    offsets = torch.arange(-support, support+1, device=image.device)
+    output = torch.empty((batch, channels, out_height, out_width), device=image.device, dtype=torch.float32)
+
+    for y_start in range(0, out_height, tile_rows):
+        y_stop = min(out_height, y_start + tile_rows)
+        y = offset_y + (torch.arange(y_start, y_stop, device=image.device, dtype=torch.float32) + 0.5) / scale
+        y_anchor = torch.floor(y).long()
+        y_fraction = y - (y_anchor.float() + 0.5)
+        xi = x_anchor.unsqueeze(0).expand(y.numel(), -1)
+        yi = y_anchor.unsqueeze(1).expand(-1, out_width)
+        patch = _gather_halo_patch(source, xi, yi, offsets)
+        dx = x_fraction[None, :, None, None] - offsets.float()[None, None, None, :]
+        dy = y_fraction[:, None, None, None] - offsets.float()[None, None, :, None]
+
+        if method == "lohalo":
+            weights = _mitchell_kernel(dx) * _mitchell_kernel(dy)
+            sigmoid_patch = _inverse_sigmoidal(patch)
+            mitchell = (sigmoid_patch * weights).sum((-1,-2))
+            if channels == 4:
+                mitchell[:, :3] = _extended_sigmoidal(mitchell[:, :3])
+                mitchell[:, 3] = (patch[:, 3] * weights).sum((-1,-2))
+            else:
+                mitchell = _extended_sigmoidal(mitchell)
+            ewa_weights = _robidoux_kernel(scale*scale*(dx*dx+dy*dy))
+            ewa_total = ewa_weights.sum((-1,-2))
+            ewa_total = torch.where(ewa_total.abs() < 1e-8, torch.ones_like(ewa_total), ewa_total)
+            ewa = (patch * ewa_weights).sum((-1,-2)) / ewa_total
+            tile = scale*scale*mitchell + (1.0-scale*scale)*ewa
+        else:
+            signs_x = torch.where(x_fraction >= 0, 1, -1)
+            signs_y = torch.where(y_fraction >= 0, 1, -1)
+            oriented = torch.empty((*patch.shape[:-2],5,5), device=image.device, dtype=patch.dtype)
+            center = support
+            patch_flat = patch.flatten(-2)
+            for row in range(5):
+                for column in range(5):
+                    source_row = center + (row-2) * signs_y[:, None]
+                    source_column = center + (column-2) * signs_x[None, :]
+                    source_index = source_row * kernel_size + source_column
+                    gather_index = source_index[None,None].expand(batch, channels, -1, -1).unsqueeze(-1)
+                    oriented[..., row, column] = torch.gather(patch_flat, -1, gather_index).squeeze(-1)
+            subdivision = _nohalo_subdivision(oriented)
+            local_x = 2.0*x_fraction.abs()
+            local_y = 2.0*y_fraction.abs()
+            lbb = _lbb(subdivision, local_x[None,None,None,:], local_y[None,None,:,None])
+            ewa_weights = (1.0-torch.sqrt((scale*scale*(dx*dx+dy*dy)).clamp_min(0.0))).clamp_min(0.0)
+            ewa = (patch * ewa_weights).sum((-1,-2)) / ewa_weights.sum((-1,-2)).clamp_min(1e-8)
+            tile = scale*scale*lbb + (1.0-scale*scale)*ewa
+        output[:,:,y_start:y_stop] = tile
+    return output.movedim(1,-1).to(original_dtype)
+
+
 VIDEO_FRAME_SAMPLING_STRATEGIES = (
     "codec keyframes",
     "uniform PTS",

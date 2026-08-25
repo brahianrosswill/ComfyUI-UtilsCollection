@@ -21,6 +21,7 @@ from .image_helpers import (
     VIDEO_FRAME_SAMPLING_STRATEGIES,
     VIDEO_FRAME_TIMESTAMP_FORMATS,
     VIDEO_FRAME_TIMELINE_STYLES,
+    downscale_nohalo_lohalo,
     images_to_video_timeline,
     sample_video_frames_as_images,
 )
@@ -1744,6 +1745,27 @@ class UC_ImagePad(io.ComfyNode):
                 out_masks[m, pad_top:pad_top+H, pad_left:pad_left+W] = 0.0
 
         return io.NodeOutput(out_image, out_masks)
+
+
+class UC_NoHaloLoHaloDownscale(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_NoHaloLoHaloDownscale",
+            display_name="NoHalo / LoHalo Downscale",
+            category="advanced/image",
+            inputs=[
+                io.Image.Input("image"),
+                io.Combo.Input("method", options=["lohalo", "nohalo"], default="lohalo"),
+                io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0, step=0.01),
+                io.Int.Input("multiple", default=16, min=4, max=128, step=4),
+            ],
+            outputs=[io.Image.Output(display_name="image")],
+        )
+
+    @classmethod
+    def execute(cls, image, method: str, megapixels: float, multiple: int) -> io.NodeOutput:
+        return io.NodeOutput(downscale_nohalo_lohalo(image, method, megapixels, multiple))
 
 
 class UC_HighResolutionTileSplit(io.ComfyNode):

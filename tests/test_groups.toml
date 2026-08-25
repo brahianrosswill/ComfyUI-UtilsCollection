@@ -84,6 +84,7 @@ python_tests = [
   "tests/test_bounding_box.py",
   "tests/test_load_image_alpha.py",
   "tests/test_prevalent_colors.py",
+  "tests/test_image_resampling.py",
   "tests/test_video_frame_sampler.py",
 ]
 frontend_tests = []

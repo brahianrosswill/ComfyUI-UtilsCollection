@@ -18,6 +18,7 @@ DESCRIPTIONS = {
     "UC_ModifyMask": "Expands, contracts, blurs, or otherwise adjusts a mask.",
     "UC_ImageBlendByMask": "Blends two images using a mask and configurable blend behavior.",
     "UC_ImagePad": "Pads an image and produces the corresponding placement mask.",
+    "UC_NoHaloLoHaloDownscale": "Downscales an image to a multiple-aligned megapixel target with NoHalo or LoHalo interpolation.",
     "UC_CropByMask": "Crops an image and mask to padded, dimension-aligned nonzero mask bounds.",
     "UC_ImageCropMerge": "Merges a processed crop back into its original image region.",
     "UC_ImageAndMaskResize": "Resizes an image and mask together to explicit or reference dimensions.",
