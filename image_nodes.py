@@ -21,9 +21,14 @@ from .image_helpers import (
     VIDEO_FRAME_SAMPLING_STRATEGIES,
     VIDEO_FRAME_TIMESTAMP_FORMATS,
     VIDEO_FRAME_TIMELINE_STYLES,
+    VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
+    VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
+    VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE,
+    VIDEO_TIMELINE_TEXT_STRUCTURE,
     downscale_nohalo_lohalo,
     images_to_video_timeline,
     sample_video_frames_as_images,
+    video_timeline_text,
 )
 
 
@@ -674,9 +679,26 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                     "timeline_style",
                     options=list(VIDEO_FRAME_TIMELINE_STYLES),
                     default="H3 alignment prefix",
+                    tooltip="Built-in timeline syntax, or custom to use the timeline text structure.",
+                ),
+                io.String.Input(
+                    "timeline_text_structure",
+                    multiline=True,
+                    dynamic_prompts=False,
+                    default=VIDEO_TIMELINE_TEXT_STRUCTURE,
                     tooltip=(
-                        "Scalar timeline text: full H3 alignment prefix, compact "
-                        "H3 <Picture N>, zero-based indexed, or timestamps only."
+                        "One structure repeated for every selected frame. Use "
+                        "<<time>>, <<picture>>, and <<shot>>."
+                    ),
+                ),
+                io.String.Input(
+                    "structured_timeline_text_structure",
+                    multiline=True,
+                    dynamic_prompts=False,
+                    default=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
+                    tooltip=(
+                        "One whole-timeline structure. Use <<duration>>, "
+                        "<<segments>>, and <<references>>."
                     ),
                 ),
                 io.Int.Input(
@@ -695,18 +717,6 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                     "image_batch",
                     display_name="image batch",
                     tooltip="Selected frames as one chronological IMAGE batch.",
-                ),
-                io.Image.Output(
-                    "images",
-                    display_name="images",
-                    is_output_list=True,
-                    tooltip="Selected frames as aligned single-image list entries.",
-                ),
-                io.String.Output(
-                    "timestamps",
-                    display_name="timestamps",
-                    is_output_list=True,
-                    tooltip="Formatted timestamps aligned with the image list.",
                 ),
                 io.String.Output(
                     "timestamps_text",
@@ -749,6 +759,8 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
         keyframe_stride: int,
         timestamp_format: str,
         timeline_style: str,
+        timeline_text_structure: str,
+        structured_timeline_text_structure: str,
         index_offset: int,
     ) -> io.NodeOutput:
         sampled = sample_video_frames_as_images(
@@ -760,6 +772,8 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
             keyframe_stride,
             timestamp_format,
             timeline_style,
+            timeline_text_structure,
+            structured_timeline_text_structure,
             index_offset,
             focus_areas,
             focus_one,
@@ -768,8 +782,6 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
         )
         return io.NodeOutput(
             sampled.image_batch,
-            sampled.image_list,
-            sampled.timestamps,
             sampled.timestamps_text,
             sampled.timeline_text,
             sampled.video_runtime,
@@ -805,14 +817,14 @@ class UC_ImagesToVideoTimeline(io.ComfyNode):
                     tooltip="Make all images the same size as the first image. Turn off to keep their original sizes. Image batch becomes black.",
                 ),
                 io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="00.000s", tooltip="How timestamps look in text outputs."),
-                io.Combo.Input("timeline_style", options=list(VIDEO_FRAME_TIMELINE_STYLES), default="H3 alignment prefix", tooltip="How timeline text is written."),
+                io.Combo.Input("timeline_style", options=list(VIDEO_FRAME_TIMELINE_STYLES), default="H3 alignment prefix", tooltip="Built-in timeline syntax, or custom to use the timeline text structure."),
+                io.String.Input("timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TIMELINE_TEXT_STRUCTURE, tooltip="One structure repeated for every image when timeline style is custom. Use <<time>>, <<picture>>, and <<shot>>."),
+                io.String.Input("structured_timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE, tooltip="One whole-timeline structure. Use <<duration>>, <<segments>>, and <<references>>."),
                 io.Int.Input("index_offset", default=0, min=0, step=1, tooltip="Skip this many Picture numbers before the first image."),
                 io.Autogrow.Input("image_inputs", template=image_template, tooltip="Add images in order. Each image in a batch gets its own timestamp."),
             ],
             outputs=[
                 io.Image.Output("image_batch", display_name="image batch", tooltip="All images in one batch. Black when Resize Images is off."),
-                io.Image.Output("images", display_name="images", is_output_list=True, tooltip="Images in order, one output each."),
-                io.String.Output("timestamps", display_name="timestamps", is_output_list=True, tooltip="One timestamp for each image."),
                 io.String.Output("timestamps_text", display_name="timestamps text", tooltip="All timestamps in one line."),
                 io.String.Output("timeline_text", display_name="timeline text", tooltip="Timeline text ready for a prompt."),
                 io.Float.Output("video_runtime", display_name="video runtime", tooltip="Length of the video in seconds."),
@@ -821,17 +833,47 @@ class UC_ImagesToVideoTimeline(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, last_image_is_final: bool, resize_images: bool, timestamp_format: str, timeline_style: str, index_offset: int, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
-        sampled = images_to_video_timeline(image_inputs, duration, focus_areas, focus_one, focus_two, focus_three, last_image_is_final, resize_images, timestamp_format, timeline_style, index_offset)
+    def execute(cls, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, last_image_is_final: bool, resize_images: bool, timestamp_format: str, timeline_style: str, timeline_text_structure: str, structured_timeline_text_structure: str, index_offset: int, image_inputs: io.Autogrow.Type) -> io.NodeOutput:
+        sampled = images_to_video_timeline(image_inputs, duration, focus_areas, focus_one, focus_two, focus_three, last_image_is_final, resize_images, timestamp_format, timeline_style, timeline_text_structure, structured_timeline_text_structure, index_offset)
         return io.NodeOutput(
             sampled.image_batch,
-            sampled.image_list,
-            sampled.timestamps,
             sampled.timestamps_text,
             sampled.timeline_text,
             sampled.video_runtime,
             sampled.structured_timeline_text,
         )
+
+
+class UC_VideoTimelineText(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_VideoTimelineText",
+            display_name="Video Timeline (Text)",
+            category="image/video",
+            description="Builds text-only video timeline guidance without image or video inputs.",
+            inputs=[
+                io.Float.Input("duration", default=5.0, min=0.01, step=0.01, tooltip="Length of the video in seconds."),
+                io.Int.Input("segment_count", default=5, min=1, step=1, tooltip="Number of timestamped timeline entries."),
+                io.Int.Input("focus_areas", default=0, min=0, max=3, step=1, tooltip="How many parts to split the timeline into. 0 spaces entries evenly."),
+                io.Float.Input("focus_one", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Where entries group in the first part. 0 is early, 0.5 is balanced, 1 is late."),
+                io.Float.Input("focus_two", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Where entries group in the second part. 0 is early, 0.5 is balanced, 1 is late."),
+                io.Float.Input("focus_three", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Where entries group in the third part. 0 is early, 0.5 is balanced, 1 is late."),
+                io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="00.000s", tooltip="Formatting reused verbatim by every text output."),
+                io.String.Input("timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE, tooltip="One structure repeated for every timeline entry. Use <<shot>> and <<timestamp>>."),
+                io.String.Input("structured_timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE, tooltip="One whole-timeline structure. <<duration>> and <<segments>> are scalars; <<timestamps>> is comma-and-space-separated; one <<shot>> … <<timestamp>> section repeats comma-and-space-separated for every timeline entry."),
+            ],
+            outputs=[
+                io.String.Output("timestamps_text", display_name="timestamps text", tooltip="All formatted timestamps in one line."),
+                io.String.Output("timeline_text", display_name="timeline text", tooltip="Timeline text ready for a prompt."),
+                io.Float.Output("video_runtime", display_name="video runtime", tooltip="Length of the video in seconds."),
+                io.String.Output("structured_timeline_text", display_name="structured timeline text", tooltip="Text with video length and Picture timestamps."),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, duration: float, segment_count: int, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, timestamp_format: str, timeline_text_structure: str, structured_timeline_text_structure: str) -> io.NodeOutput:
+        return io.NodeOutput(*video_timeline_text(duration, segment_count, focus_areas, focus_one, focus_two, focus_three, timestamp_format, timeline_text_structure, structured_timeline_text_structure))
 
 
 class UC_ImageMatchPropertiesNode(io.ComfyNode):

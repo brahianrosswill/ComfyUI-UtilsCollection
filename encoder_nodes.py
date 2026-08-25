@@ -3318,7 +3318,7 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
             category="advanced/conditioning", is_input_list=True, is_experimental=True,
             description="Anchors existing MiniMax H3 Picture slots at formatted timestamps and can add optional native audio conditioning.",
             inputs=[
-                io.AnyType.Input("timestamps", tooltip="Sequential timestamps for existing Picture slots. Accepts lists or comma, semicolon, or newline-delimited seconds and HH:MM:SS formats."),
+                io.AnyType.Input("timestamps", optional=True, tooltip="Optional sequential timestamps for existing Picture slots. When disconnected, anchors one visual at 0 seconds."),
                 io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="0.0s", tooltip="Formatting used when <<time>> is expanded."),
                 io.String.Input("structure", multiline=True, dynamic_prompts=False, default=MINIMAX_H3_MEDIA_STRUCTURE, tooltip="Per-shot structure using <<time>>, <<picture>>, <<visual>>, and <<shot>>."),
                 io.Audio.Input("audio", optional=True, tooltip="Optional native H3 reference audio. Qwen receives only an Audio label; hard synchronization with Video timestamps is not guaranteed."),
@@ -3328,7 +3328,7 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, timestamps, timestamp_format, structure, audio=None, audio_vae=None):
+    def execute(cls, timestamps=None, timestamp_format="0.0s", structure=MINIMAX_H3_MEDIA_STRUCTURE, audio=None, audio_vae=None):
         return io.NodeOutput(build_minimax_h3_media_config(
             timestamps, timestamp_format, structure, audio, audio_vae
         ))

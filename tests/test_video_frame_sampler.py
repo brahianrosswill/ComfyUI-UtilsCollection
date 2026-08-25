@@ -17,6 +17,10 @@ sys.modules.setdefault(PACKAGE_NAME, package)
 
 from utils_collection_video_frame_sampler_test import image_helpers
 from utils_collection_video_frame_sampler_test.image_helpers import (
+    VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
+    VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
+    VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE,
+    VIDEO_TIMELINE_TEXT_STRUCTURE,
     VideoFrameRecord,
     build_structured_video_timeline_text,
     build_video_timeline_text,
@@ -27,6 +31,7 @@ from utils_collection_video_frame_sampler_test.image_helpers import (
     sample_video_frames_as_images,
     scan_video_frame_records,
     select_video_frame_records,
+    video_timeline_text,
     focused_timeline_timestamps,
 )
 
@@ -58,6 +63,7 @@ def test_parse_video_timestamps_rejects_decreasing_order():
 from utils_collection_video_frame_sampler_test.image_nodes import (
     UC_ImagesToVideoTimeline,
     UC_SampleVideoFramesAsImages,
+    UC_VideoTimelineText,
 )
 
 
@@ -88,6 +94,8 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
         "keyframe_stride",
         "timestamp_format",
         "timeline_style",
+        "timeline_text_structure",
+        "structured_timeline_text_structure",
         "index_offset",
     ]
     assert schema.inputs[1].default == "codec keyframes"
@@ -103,12 +111,12 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
     assert "0.00s" in schema.inputs[10].options
     assert "00.00s" not in schema.inputs[10].options
     assert schema.inputs[11].default == "H3 alignment prefix"
-    assert schema.inputs[12].default == 0
-    assert schema.inputs[12].min == 0
+    assert schema.inputs[12].default == VIDEO_TIMELINE_TEXT_STRUCTURE
+    assert schema.inputs[13].default == VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE
+    assert schema.inputs[14].default == 0
+    assert schema.inputs[14].min == 0
     assert [output.id for output in schema.outputs] == [
         "image_batch",
-        "images",
-        "timestamps",
         "timestamps_text",
         "timeline_text",
         "video_runtime",
@@ -116,8 +124,6 @@ def test_schema_exposes_batch_list_and_aligned_metadata_outputs():
     ]
     assert [output.is_output_list for output in schema.outputs] == [
         False,
-        True,
-        True,
         False,
         False,
         False,
@@ -140,6 +146,8 @@ def test_images_to_video_timeline_schema_exposes_manual_focus_controls():
         "resize_images",
         "timestamp_format",
         "timeline_style",
+        "timeline_text_structure",
+        "structured_timeline_text_structure",
         "index_offset",
         "image_inputs",
     ]
@@ -151,13 +159,60 @@ def test_images_to_video_timeline_schema_exposes_manual_focus_controls():
     assert schema.inputs[6].default is True
     assert [output.id for output in schema.outputs] == [
         "image_batch",
-        "images",
-        "timestamps",
         "timestamps_text",
         "timeline_text",
         "video_runtime",
         "structured_timeline_text",
     ]
+
+
+def test_text_only_video_timeline_schema_and_outputs():
+    schema = UC_VideoTimelineText.define_schema()
+
+    assert schema.node_id == "UC_VideoTimelineText"
+    assert [value.id for value in schema.inputs] == [
+        "duration",
+        "segment_count",
+        "focus_areas",
+        "focus_one",
+        "focus_two",
+        "focus_three",
+        "timestamp_format",
+        "timeline_text_structure",
+        "structured_timeline_text_structure",
+    ]
+    assert [output.id for output in schema.outputs] == [
+        "timestamps_text",
+        "timeline_text",
+        "video_runtime",
+        "structured_timeline_text",
+    ]
+    assert video_timeline_text(
+        10.0,
+        5,
+        0,
+        0.5,
+        0.5,
+        0.5,
+        "0.0s",
+        "<<shot>> at <<timestamp>>",
+        "Target video duration is <<duration>> seconds divided into <<segments>> segments at <<timestamps>>",
+    ) == (
+        "0.0s, 2.5s, 5.0s, 7.5s, 10.0s",
+        "Shot 1 at 0.0s\nShot 2 at 2.5s\nShot 3 at 5.0s\n"
+        "Shot 4 at 7.5s\nShot 5 at 10.0s",
+        10.0,
+        "Target video duration is 10 seconds divided into 5 segments at "
+        "0.0s, 2.5s, 5.0s, 7.5s, 10.0s",
+    )
+    assert video_timeline_text(
+        3.0, 3, 0, 0.5, 0.5, 0.5, "0.0s",
+        VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE,
+        VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
+    )[3] == (
+        "Target video duration is 3 seconds divided into 3 segments. "
+        "Shot 1 at 0.0s, Shot 2 at 1.5s, Shot 3 at 3.0s."
+    )
 
 
 def test_timeline_image_timestamps_anchor_ends_and_apply_local_focuses():
@@ -190,15 +245,15 @@ def test_images_to_video_timeline_normalizes_or_returns_black_batch():
 
     resized = images_to_video_timeline(
         inputs, 4.0, 0, 0.5, 0.5, 0.5, True, True,
-        "00.000s", "timestamps only",
+        "00.000s", "custom", "<<time>>", VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
     )
     unresized = images_to_video_timeline(
         inputs, 4.0, 0, 0.5, 0.5, 0.5, True, False,
-        "00.000s", "timestamps only",
+        "00.000s", "custom", "<<time>>", VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
     )
     final_image_not_anchored = images_to_video_timeline(
         inputs, 4.0, 0, 0.5, 0.5, 0.5, False, True,
-        "00.000s", "timestamps only",
+        "00.000s", "custom", "<<time>>", VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
     )
 
     assert resized.image_batch.shape == (3, 2, 4, 4)
@@ -240,15 +295,17 @@ def test_structured_timeline_text_describes_duration_segments_and_references():
 def test_index_offset_shifts_all_picture_references():
     timestamps = ["00.00s", "01.21s"]
 
-    assert build_structured_video_timeline_text(12.3, timestamps, 1) == (
+    assert build_structured_video_timeline_text(
+        12.3, timestamps, VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE, 1
+    ) == (
         "Target video duration is 12.3 seconds divided into 2 segments. "
         "Reference each image with <Picture 2> at 00.00s and "
         "<Picture 3> at 01.21s."
     )
-    assert build_video_timeline_text(timestamps, "H3 pictures", 1) == (
+    assert build_video_timeline_text(timestamps, "custom", "<<picture>> at <<time>>", 1) == (
         "<Picture 2> at 00.00s\n<Picture 3> at 01.21s"
     )
-    assert build_video_timeline_text(timestamps, "H3 alignment prefix", 1) == (
+    assert build_video_timeline_text(timestamps, "H3 alignment prefix", VIDEO_TIMELINE_TEXT_STRUCTURE, 1) == (
         "For the target video, at 00.00s into the target video, "
         "<Picture 2> (from [Shot 1]) is fully referenced.\n"
         "For the target video, at 01.21s into the target video, "
@@ -345,16 +402,16 @@ def test_timestamp_rounding_carries_into_the_next_minute():
 def test_timeline_reuses_formatted_timestamp_literals_without_unit_rewriting():
     timestamps = ["00.000s", "2.50s"]
 
-    assert build_video_timeline_text(timestamps, "timestamps only") == (
+    assert build_video_timeline_text(timestamps, "custom", "<<time>>") == (
         "00.000s\n2.50s"
     )
-    assert build_video_timeline_text(timestamps, "indexed") == (
+    assert build_video_timeline_text(timestamps, "indexed", "unused") == (
         "0: 00.000s\n1: 2.50s"
     )
-    assert build_video_timeline_text(timestamps, "H3 pictures") == (
+    assert build_video_timeline_text(timestamps, "H3 pictures", "unused") == (
         "<Picture 1> at 00.000s\n<Picture 2> at 2.50s"
     )
-    assert build_video_timeline_text(timestamps, "H3 alignment prefix") == (
+    assert build_video_timeline_text(timestamps, "H3 alignment prefix", "unused") == (
         "For the target video, at 00.000s into the target video, "
         "<Picture 1> (from [Shot 1]) is fully referenced.\n"
         "For the target video, at 2.50s into the target video, "
@@ -467,7 +524,9 @@ def test_sampler_outputs_aligned_batch_list_and_metadata(monkeypatch):
         minimum_spacing_seconds=0.25,
         keyframe_stride=1,
         timestamp_format="00.000s",
-        timeline_style="H3 pictures",
+        timeline_style="custom",
+        timeline_text_structure="<<picture>> at <<time>>",
+        structured_timeline_text_structure=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
     )
 
     assert sampled.image_batch.shape == (3, 2, 3, 3)
@@ -512,7 +571,9 @@ def test_single_decimal_timestamps_stay_aligned_with_selected_images(monkeypatch
         minimum_spacing_seconds=0,
         keyframe_stride=1,
         timestamp_format="0.0s",
-        timeline_style="timestamps only",
+        timeline_style="custom",
+        timeline_text_structure="<<time>>",
+        structured_timeline_text_structure=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
     )
 
     assert sampled.timestamps == ["0.0s", "0.3s", "1.0s"]
@@ -543,7 +604,9 @@ def test_uniform_pts_selects_frames_after_rounding_targets(monkeypatch):
         minimum_spacing_seconds=0,
         keyframe_stride=1,
         timestamp_format="0.0s",
-        timeline_style="timestamps only",
+        timeline_style="custom",
+        timeline_text_structure="<<time>>",
+        structured_timeline_text_structure=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
     )
 
     assert sampled.timestamps == ["0.0s", "0.4s", "0.7s"]
@@ -575,7 +638,9 @@ def test_sampler_rejects_timestamp_shift_between_selection_and_decode(monkeypatc
             minimum_spacing_seconds=0,
             keyframe_stride=1,
             timestamp_format="0.0s",
-            timeline_style="timestamps only",
+            timeline_style="custom",
+            timeline_text_structure="<<time>>",
+            structured_timeline_text_structure=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
         )
 
 

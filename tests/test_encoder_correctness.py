@@ -460,6 +460,7 @@ def test_minimax_h3_media_config_schema_and_payload():
     schema = UC_MiniMaxH3MediaConfig.define_schema()
     inputs = {value.id: value for value in schema.inputs}
     assert schema.is_input_list is True
+    assert inputs["timestamps"].optional is True
     assert inputs["timestamp_format"].default == "0.0s"
     assert inputs["structure"].default == encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE
     assert "video_images" not in inputs
@@ -468,6 +469,22 @@ def test_minimax_h3_media_config_schema_and_payload():
     assert payload["timestamps_seconds"] == (Fraction(0), Fraction(6, 5))
     assert payload["timestamp_format"] == "0.0s"
     assert payload["structure"] == encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE
+    default_payload = encoder_helpers.build_minimax_h3_media_config(None)
+    assert default_payload["timestamps_seconds"] == (Fraction(0),)
+    assert default_payload["default_single_visual"] is True
+
+
+def test_minimax_h3_default_media_config_requires_one_visual():
+    with pytest.raises(ValueError, match="requires exactly one visual source"):
+        encoder_helpers.tokenize_minimax_h3_media_prompt(
+            None,
+            "prompt",
+            [object(), object()],
+            [Fraction(0)],
+            "0.0s",
+            encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
+            default_single_visual=True,
+        )
 
 
 def test_minimax_h3_media_config_rejects_timestamp_beyond_output_duration():

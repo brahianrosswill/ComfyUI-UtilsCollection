@@ -208,6 +208,7 @@ the base-resolution conditioning fusion.
 - `UC_LoadImageWithAlpha`
 - `UC_SampleVideoFramesAsImages`
 - `UC_ImagesToVideoTimeline`
+- `UC_VideoTimelineText`
 - `UC_LoraLoaderCLIPOnly`
 - `UC_TextGenerate`
 - `UC_TextGenerateQwen35SystemPrompt`

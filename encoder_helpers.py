@@ -325,7 +325,12 @@ def _validate_minimax_h3_media_structure(structure):
 
 def tokenize_minimax_h3_media_prompt(
     clip, text, pictures, timestamps, timestamp_format, structure, audio=False,
+    default_single_visual=False,
 ):
+    if default_single_visual and len(pictures) != 1:
+        raise ValueError(
+            "MiniMax H3 default media config requires exactly one visual source."
+        )
     if len(timestamps) > len(pictures):
         raise ValueError(
             f"MiniMax H3 media config received {len(timestamps)} timestamps "
@@ -364,7 +369,8 @@ def build_minimax_h3_media_config(
         timestamp_format = timestamp_format[0] if timestamp_format else "0.0s"
     if isinstance(structure, list):
         structure = structure[0] if structure else MINIMAX_H3_MEDIA_STRUCTURE
-    timestamps = parse_video_timestamps(timestamps)
+    default_single_visual = timestamps is None or timestamps == []
+    timestamps = [Fraction(0)] if default_single_visual else parse_video_timestamps(timestamps)
     if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
         raise ValueError(f"Unsupported video timestamp format: {timestamp_format}")
     structure = _validate_minimax_h3_media_structure(structure)
@@ -377,6 +383,7 @@ def build_minimax_h3_media_config(
         "structure": structure,
         "audio": audio,
         "audio_vae": audio_vae,
+        "default_single_visual": default_single_visual,
     }
 
 
@@ -395,7 +402,7 @@ def _validate_minimax_h3_media_config(media_config, frame_count):
     if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
         raise ValueError("MiniMax H3 media config has an unsupported timestamp format.")
     structure = _validate_minimax_h3_media_structure(media_config.get("structure"))
-    return timestamps, timestamp_format, structure
+    return timestamps, timestamp_format, structure, bool(media_config.get("default_single_visual", False))
 
 
 def _encode_minimax_h3_audio_reference(media_config):
@@ -3097,11 +3104,13 @@ def _execute_advanced_minimax_h3_image_to_video(
     timeline_timestamp_format = None
     timeline_structure = None
     audio_reference = None
+    default_single_visual = False
     if media_config is not None:
         (
             timeline_timestamps,
             timeline_timestamp_format,
             timeline_structure,
+            default_single_visual,
         ) = _validate_minimax_h3_media_config(media_config, frame_count)
         audio_reference = _encode_minimax_h3_audio_reference(media_config)
     prepared_first = (
@@ -3133,6 +3142,16 @@ def _execute_advanced_minimax_h3_image_to_video(
     base_vlm_images.extend(
         prepare_vlm_image(image, vlm_resolution) for image in flat_references
     )
+    default_media_image = None
+    if default_single_visual:
+        if first_frame is not None:
+            default_media_image = base_vlm_images[0]
+        elif flat_references:
+            default_media_image = base_vlm_images[int(last_frame is not None)]
+        else:
+            raise ValueError(
+                "MiniMax H3 default media config requires a first frame or reference image 1."
+            )
     config = dict(visual_fusion_config or {})
     visual_method = config.get("visual_fusion_method", "off")
     fusion_vlm_images = [
@@ -3144,10 +3163,12 @@ def _execute_advanced_minimax_h3_image_to_video(
     visual_encoder_path = config.get("visual_encoder_path", "grid-deepstack")
     def tokenize_presentation(text, images):
         if media_config is not None:
+            presentation_images = [default_media_image] if default_single_visual else images
             return tokenize_minimax_h3_media_prompt(
-                clip, text, images, timeline_timestamps, timeline_timestamp_format,
+                clip, text, presentation_images, timeline_timestamps, timeline_timestamp_format,
                 timeline_structure,
                 audio=audio_reference is not None,
+                default_single_visual=default_single_visual,
             )
         if native_reference_mode:
             return clip.tokenize(

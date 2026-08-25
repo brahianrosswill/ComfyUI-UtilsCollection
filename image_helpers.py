@@ -238,6 +238,30 @@ VIDEO_FRAME_TIMELINE_STYLES = (
     "H3 pictures",
     "indexed",
     "timestamps only",
+    "custom",
+)
+
+VIDEO_TIMELINE_TEXT_STRUCTURE = (
+    "For the target video, at <<time>> into the target video, "
+    "<<picture>> (from <<shot>>) is fully referenced."
+)
+VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE = (
+    "Target video duration is <<duration>> seconds divided into "
+    "<<segments>> segments. Reference each image with <<references>>."
+)
+VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE = "Shot <<shot>> at <<timestamp>>."
+VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE = (
+    "Target video duration is <<duration>> seconds divided into "
+    "<<segments>> segments. <<shot>> at <<timestamp>>."
+)
+
+_VIDEO_TIMELINE_TEXT_MARKERS = frozenset({"time", "picture", "shot"})
+_VIDEO_STRUCTURED_TIMELINE_TEXT_MARKERS = frozenset(
+    {"duration", "segments", "references"}
+)
+_VIDEO_TEXT_TIMELINE_TEXT_MARKERS = frozenset({"shot", "timestamp"})
+_VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_MARKERS = frozenset(
+    {"duration", "segments", "timestamps", "shot", "timestamp"}
 )
 
 _VIDEO_TIMESTAMP_COLON_PATTERN = re.compile(
@@ -845,51 +869,120 @@ def format_video_timestamp(timestamp: Fraction | float, timestamp_format: str) -
 def build_video_timeline_text(
     timestamps: Sequence[str],
     timeline_style: str,
+    timeline_text_structure: str,
     index_offset: int = 0,
 ) -> str:
     if timeline_style not in VIDEO_FRAME_TIMELINE_STYLES:
         raise ValueError(f"Unsupported video timeline style: {timeline_style}")
     if timeline_style == "timestamps only":
-        lines = list(timestamps)
-    elif timeline_style == "indexed":
-        lines = [f"{index}: {timestamp}" for index, timestamp in enumerate(timestamps)]
-    elif timeline_style == "H3 pictures":
-        lines = [
+        return "\n".join(timestamps)
+    if timeline_style == "indexed":
+        return "\n".join(
+            f"{index}: {timestamp}"
+            for index, timestamp in enumerate(timestamps)
+        )
+    if timeline_style == "H3 pictures":
+        return "\n".join(
             f"<Picture {index + index_offset}> at {timestamp}"
             for index, timestamp in enumerate(timestamps, start=1)
-        ]
-    else:
-        lines = [
-            (
-                f"For the target video, at {timestamp} into the target video, "
-                f"<Picture {index + index_offset}> (from [Shot {index}]) is fully referenced."
-            )
-            for index, timestamp in enumerate(timestamps, start=1)
-        ]
-    return "\n".join(lines)
+        )
+    if timeline_style == "H3 alignment prefix":
+        timeline_text_structure = VIDEO_TIMELINE_TEXT_STRUCTURE
+    _validate_video_timeline_structure(
+        timeline_text_structure,
+        _VIDEO_TIMELINE_TEXT_MARKERS,
+        "timeline text structure",
+    )
+    return "\n".join(
+        timeline_text_structure.replace("<<time>>", timestamp)
+        .replace("<<picture>>", f"<Picture {index + index_offset}>")
+        .replace("<<shot>>", f"[Shot {index}]")
+        for index, timestamp in enumerate(timestamps, start=1)
+    )
 
 
 def build_structured_video_timeline_text(
     video_runtime: float,
     timestamps: Sequence[str],
+    structured_timeline_text_structure: str = VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
     index_offset: int = 0,
 ) -> str:
-    segment_count = len(timestamps)
-    introduction = (
-        f"Target video duration is {video_runtime:g} seconds divided into "
-        f"{segment_count} segments."
+    _validate_video_timeline_structure(
+        structured_timeline_text_structure,
+        _VIDEO_STRUCTURED_TIMELINE_TEXT_MARKERS,
+        "structured timeline text structure",
     )
     references = [
         f"<Picture {index + index_offset}> at {timestamp}"
         for index, timestamp in enumerate(timestamps, start=1)
     ]
-    if not references:
-        return introduction
-    if len(references) == 1:
-        reference_text = references[0]
-    else:
-        reference_text = f"{', '.join(references[:-1])} and {references[-1]}"
-    return f"{introduction} Reference each image with {reference_text}."
+    reference_text = (
+        references[0]
+        if len(references) == 1
+        else f"{', '.join(references[:-1])} and {references[-1]}"
+        if references
+        else ""
+    )
+    return (
+        structured_timeline_text_structure.replace(
+            "<<duration>>", f"{video_runtime:g}"
+        )
+        .replace("<<segments>>", str(len(timestamps)))
+        .replace("<<references>>", reference_text)
+    )
+
+
+def build_text_video_timeline_text(timestamps: Sequence[str], structure: str) -> str:
+    _validate_video_timeline_structure(
+        structure, _VIDEO_TEXT_TIMELINE_TEXT_MARKERS, "text timeline structure"
+    )
+    return "\n".join(
+        structure.replace("<<shot>>", f"Shot {index}").replace(
+            "<<timestamp>>", timestamp
+        )
+        for index, timestamp in enumerate(timestamps, start=1)
+    )
+
+
+def build_text_structured_video_timeline_text(
+    video_runtime: float, timestamps: Sequence[str], structure: str
+) -> str:
+    _validate_video_timeline_structure(
+        structure,
+        _VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_MARKERS,
+        "text structured timeline structure",
+    )
+    shot_count = structure.count("<<shot>>")
+    timestamp_count = structure.count("<<timestamp>>")
+    if shot_count != timestamp_count:
+        raise ValueError(
+            "Text structured timeline structure must use <<shot>> and <<timestamp>> together."
+        )
+    if shot_count > 1:
+        raise ValueError(
+            "Text structured timeline structure may contain one <<shot>> and <<timestamp>> pair."
+        )
+    if shot_count:
+        before, repeated = structure.split("<<shot>>")
+        between, after = repeated.split("<<timestamp>>")
+        structure = before + ", ".join(
+            f"Shot {index}{between}{timestamp}"
+            for index, timestamp in enumerate(timestamps, start=1)
+        ) + after
+    return (
+        structure.replace("<<duration>>", f"{video_runtime:g}")
+        .replace("<<segments>>", str(len(timestamps)))
+        .replace("<<timestamps>>", ", ".join(timestamps))
+    )
+
+
+def _validate_video_timeline_structure(structure, markers, label):
+    if not isinstance(structure, str) or not structure.strip():
+        raise ValueError(f"Video {label} must not be empty.")
+    unknown = sorted(set(re.findall(r"<<([^<>]+)>>", structure)) - markers)
+    if unknown:
+        raise ValueError(f"Unknown video {label} marker: <<{unknown[0]}>>.")
+    return structure
 
 
 def _timeline_input_images(image_inputs) -> list[torch.Tensor]:
@@ -983,7 +1076,7 @@ def focused_timeline_timestamps(count: int, duration: float, focus_areas: int, f
     return timestamps
 
 
-def images_to_video_timeline(image_inputs, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, last_image_is_final: bool, resize_images: bool, timestamp_format: str, timeline_style: str, index_offset: int = 0) -> SampledVideoFrames:
+def images_to_video_timeline(image_inputs, duration: float, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, last_image_is_final: bool, resize_images: bool, timestamp_format: str, timeline_style: str, timeline_text_structure: str, structured_timeline_text_structure: str, index_offset: int = 0) -> SampledVideoFrames:
     """Normalize supplied images and assign their manual video timeline timestamps."""
     image_batch, image_list = _timeline_image_outputs(image_inputs, resize_images)
     raw_timestamps = focused_timeline_timestamps(len(image_list), duration, focus_areas, focus_one, focus_two, focus_three, anchor_end=last_image_is_final)
@@ -993,9 +1086,9 @@ def images_to_video_timeline(image_inputs, duration: float, focus_areas: int, fo
         image_list=image_list,
         timestamps=timestamps,
         timestamps_text=", ".join(timestamps),
-        timeline_text=build_video_timeline_text(timestamps, timeline_style, index_offset),
+        timeline_text=build_video_timeline_text(timestamps, timeline_style, timeline_text_structure, index_offset),
         video_runtime=duration,
-        structured_timeline_text=build_structured_video_timeline_text(duration, timestamps, index_offset),
+        structured_timeline_text=build_structured_video_timeline_text(duration, timestamps, structured_timeline_text_structure, index_offset),
     )
 
 
@@ -1008,6 +1101,8 @@ def sample_video_frames_as_images(
     keyframe_stride: int,
     timestamp_format: str,
     timeline_style: str,
+    timeline_text_structure: str,
+    structured_timeline_text_structure: str,
     index_offset: int = 0,
     focus_areas: int = 0,
     focus_one: float = 0.5,
@@ -1044,10 +1139,38 @@ def sample_video_frames_as_images(
         timestamps=timestamps,
         timestamps_text=", ".join(timestamps),
         timeline_text=build_video_timeline_text(
-            timestamps, timeline_style, index_offset
+            timestamps, timeline_style, timeline_text_structure, index_offset
         ),
         video_runtime=video_runtime,
         structured_timeline_text=build_structured_video_timeline_text(
-            video_runtime, timestamps, index_offset
+            video_runtime, timestamps, structured_timeline_text_structure, index_offset
+        ),
+    )
+
+
+def video_timeline_text(
+    duration: float,
+    segment_count: int,
+    focus_areas: int,
+    focus_one: float,
+    focus_two: float,
+    focus_three: float,
+    timestamp_format: str,
+    timeline_text_structure: str,
+    structured_timeline_text_structure: str,
+) -> tuple[str, str, float, str]:
+    raw_timestamps = focused_timeline_timestamps(
+        segment_count, duration, focus_areas, focus_one, focus_two, focus_three
+    )
+    timestamps = [
+        format_video_timestamp(timestamp, timestamp_format)
+        for timestamp in raw_timestamps
+    ]
+    return (
+        ", ".join(timestamps),
+        build_text_video_timeline_text(timestamps, timeline_text_structure),
+        duration,
+        build_text_structured_video_timeline_text(
+            duration, timestamps, structured_timeline_text_structure
         ),
     )
