@@ -429,10 +429,10 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
     assert "system_prompt" not in inputs
     assert "keyframe_mode" not in inputs
     assert inputs["reference_images"].template.names == [
-        f"reference_image_{index}" for index in range(1, 17)
+        f"reference_image_{index}" for index in range(1, 33)
     ]
     assert inputs["fusion_images"].template.names == [
-        f"fusion_image_{index}" for index in range(1, 17)
+        f"fusion_image_{index}" for index in range(1, 33)
     ]
     assert inputs["reference_images"].template.min == 0
     assert inputs["fusion_images"].template.min == 0
@@ -618,7 +618,7 @@ def test_advanced_combined_minimax_h3_schema_is_additive():
     ]
     assert inputs["ref_image_size"].default == "match"
     assert inputs["reference_images"].template.names == [
-        f"reference_image_{index}" for index in range(1, 17)
+        f"reference_image_{index}" for index in range(1, 33)
     ]
     assert [output.display_name for output in schema.outputs] == [
         "model",

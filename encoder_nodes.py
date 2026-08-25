@@ -3342,7 +3342,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 "reference_image",
                 tooltip="Ordered native H3 image reference and separately numbered Qwen picture.",
             ),
-            names=[f"reference_image_{index}" for index in range(1, 17)],
+            names=[f"reference_image_{index}" for index in range(1, 33)],
             min=0,
         )
         fusion_template = io.Autogrow.TemplateNames(
@@ -3350,7 +3350,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 "fusion_image",
                 tooltip="Ordered Qwen-only visual source. Active fusion combines only this group.",
             ),
-            names=[f"fusion_image_{index}" for index in range(1, 17)],
+            names=[f"fusion_image_{index}" for index in range(1, 33)],
             min=0,
         )
         return io.Schema(
