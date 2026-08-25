@@ -424,6 +424,7 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
         "fusion_images",
         "media_config",
     ]
+    assert inputs["vae"].optional is True
     assert inputs["first_frame"].optional is True
     assert inputs["last_frame"].optional is True
     assert "system_prompt" not in inputs

@@ -3369,6 +3369,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 ),
                 io.Vae.Input(
                     "vae",
+                    optional=True,
                     tooltip="MiniMax H3 video VAE used for connected frame anchors and native image references.",
                 ),
                 io.Image.Input(
@@ -3475,11 +3476,11 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
     def execute(
         cls,
         clip,
-        vae,
-        prompt,
-        width,
-        height,
-        length,
+        vae=None,
+        prompt=None,
+        width=None,
+        height=None,
+        length=None,
         first_frame=None,
         last_frame=None,
         reference_images: io.Autogrow.Type = None,
@@ -3563,11 +3564,11 @@ class UC_AdvancedMiniMaxH3ImageToVideoCombined(
         cls,
         model,
         clip,
-        vae,
-        prompt,
-        width,
-        height,
-        length,
+        vae=None,
+        prompt=None,
+        width=None,
+        height=None,
+        length=None,
         first_frame=None,
         last_frame=None,
         reference_images: io.Autogrow.Type = None,
@@ -4124,7 +4125,7 @@ class UC_AdvMiniMaxH3ImageToVideoTokenFusion(UC_AdvancedMiniMaxH3ImageToVideo):
 
     @classmethod
     def execute(
-        cls, clip, vae, prompt, width, height, length, first_frame=None,
+        cls, clip, vae=None, prompt=None, width=None, height=None, length=None, first_frame=None,
         last_frame=None, reference_images=None, fusion_images=None,
         visual_fusion_config=None, multiplier=1.0, ref_image_size="match",
         vlm_resolution=384, media_config=None,
@@ -4152,7 +4153,7 @@ class UC_AdvMiniMaxH3ImageToVideoCombinedTokenFusion(
 
     @classmethod
     def execute(
-        cls, model, clip, vae, prompt, width, height, length,
+        cls, model, clip, vae=None, prompt=None, width=None, height=None, length=None,
         first_frame=None, last_frame=None, reference_images=None,
         fusion_images=None, visual_fusion_config=None, multiplier=1.0,
         ref_image_size="match", vlm_resolution=384, media_config=None,
