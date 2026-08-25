@@ -36,6 +36,10 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
 - Do not invent workflow topology, data flow, precedence, model behavior, or
   user intent. Inspect the relevant artifact or ask for the specific missing
   evidence when it cannot be discovered locally.
+- Do not generalize a model or prompt protocol from a shared tokenizer, helper,
+  socket type, or similarly named node. Verify the target model, node contract,
+  template assembly, and consuming path. A node-specific prefix or label does
+  not establish generic encoder behavior.
 - When correcting an unsupported claim, identify exactly which parts were
   verified and which parts were assumed. Do not replace one unsupported
   explanation with another.

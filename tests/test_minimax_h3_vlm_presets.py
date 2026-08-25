@@ -22,6 +22,18 @@ NATIVE_H3_PRESETS = [
     "minimax_h3_first_last_frame",
     "minimax_h3_reference",
 ]
+REFERENCE_EXPANSION_PRESETS = [
+    "minimax_h3_last_frame",
+    "minimax_h3_full_reference",
+    "minimax_h3_minimalist_product_ad_reference",
+    "minimax_h3_brand_promo_reference",
+    "minimax_h3_stylized_3d_animation_reference",
+    "minimax_h3_papercraft_stop_motion_reference",
+    "minimax_h3_paper_collage_reference",
+    "minimax_h3_music_video_reference",
+    "minimax_h3_coop_game_intro_reference",
+    "minimax_h3_handdrawn_live_action_reference",
+]
 TIMELINE_FL2VA_PRESETS = [
     "minimax_h3_timeline_fl2va",
     "minimax_h3_timeline_crude_fl2va",
@@ -37,7 +49,11 @@ TIMELINE_DERIVED_PRESETS = [
     "minimax_h3_timeline_crude_ref2va",
 ]
 
-EXPECTED_PRESETS = [*NATIVE_H3_PRESETS, *TIMELINE_DERIVED_PRESETS]
+EXPECTED_PRESETS = [
+    *NATIVE_H3_PRESETS,
+    *REFERENCE_EXPANSION_PRESETS,
+    *TIMELINE_DERIVED_PRESETS,
+]
 PROHIBITED_GRAMMAR = (
     "Timeline:",
     "[VISUAL]",
@@ -164,6 +180,207 @@ def test_timeline_derived_h3_presets_use_guide_aligned_timestamps():
         assert "first range begins at `00:00.000`" in instruction
         assert "[start-end]:" not in instruction
         assert "[0s-" not in instruction
+
+
+def test_reference_expansion_presets_share_static_output_contract():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+    reference_fields = (
+        "subject_definitions:",
+        "summary:",
+        "retention_analysis:",
+        "detailed_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+
+    for name in REFERENCE_EXPANSION_PRESETS:
+        instruction = presets[name]
+        assert instruction
+        assert "Return only the finished prompt" in instruction
+        assert "media-prefix declaration" in instruction
+        assert "{user_query}" not in instruction
+        assert "{system_query}" not in instruction
+        main_field = (
+            "integrated_multimodal_description:"
+            if name == "minimax_h3_last_frame"
+            else "detailed_description:"
+        )
+        _assert_order(
+            instruction,
+            (*reference_fields[:3], main_field, *reference_fields[4:]),
+        )
+
+
+def test_last_frame_preset_uses_one_final_picture_and_l2va_alignment():
+    instruction = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[
+        "minimax_h3_last_frame"
+    ]
+
+    assert "exactly one ordered VLM image" in instruction
+    assert "Use only the existing <Picture 1> identifier" in instruction
+    assert "<Picture 1> is the exact final frame" in instruction
+    assert "<Picture 2>" not in instruction
+    assert (
+        "<Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the "
+        "target video."
+    ) in instruction
+    assert "describe the operations that produce it" in instruction
+
+
+def test_full_reference_preset_requires_explicit_asset_roles():
+    instruction = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[
+        "minimax_h3_full_reference"
+    ]
+
+    for label in ("<Subject N>", "<Picture N>", "<Video N>", "<Audio N>"):
+        assert label in instruction
+    for marker in (*RETENTION_MARKERS, "fully_copy", "partially_copy", "reference"):
+        assert marker in instruction
+    assert "Use only reference identifiers that are explicitly established" in instruction
+    assert "Never invent an asset or label that was not supplied" in instruction
+    assert "Number each category independently" in instruction
+
+
+def test_product_and_brand_presets_preserve_verified_identity_and_copy():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+    product = presets["minimax_h3_minimalist_product_ad_reference"]
+    brand = presets["minimax_h3_brand_promo_reference"]
+
+    for requirement in (
+        "original body color",
+        "one primary action",
+        "one single-line copy event at a time",
+        "stable full-frame product composition",
+        "claims, specifications, variants, metrics",
+    ):
+        assert requirement in product
+    for requirement in (
+        "verified brand or product images",
+        "names, features, metrics, slogans, and claims established",
+        "logo clear space",
+        "Never create fake metrics",
+        "stable final lockup",
+    ):
+        assert requirement in brand
+
+
+def test_stylized_3d_preset_tracks_identity_space_and_performance_handoffs():
+    instruction = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[
+        "minimax_h3_stylized_3d_animation_reference"
+    ]
+
+    for requirement in (
+        "character identity card",
+        "named landmarks",
+        "lighting baseline",
+        "exact state handed to the next beat or shot",
+        "anticipation, squash and stretch, overshoot, follow-through",
+        "Do not emit a shot table",
+    ):
+        assert requirement in instruction
+
+
+def test_paper_presets_keep_distinct_material_motion_and_audio_contracts():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+    papercraft = presets["minimax_h3_papercraft_stop_motion_reference"]
+    collage = presets["minimax_h3_paper_collage_reference"]
+
+    for requirement in (
+        "tabs, brads, joints, cut edges",
+        "hand-manipulated frame-by-frame stop motion",
+        "paper-physics transitions",
+        "miniature stage",
+    ):
+        assert requirement in papercraft
+    for requirement in (
+        "black-and-white halftone cut-outs",
+        "slides or pops into place",
+        "final beat locks into",
+        "Default audio is synchronized tactile collage sound only",
+        "Write non_diegetic_music as N/A unless",
+    ):
+        assert requirement in collage
+
+
+def test_music_video_preset_isolates_reference_roles_and_master_audio():
+    instruction = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[
+        "minimax_h3_music_video_reference"
+    ]
+
+    for requirement in (
+        "A typography reference controls only",
+        "master audio",
+        "one main typography event per shot",
+        "visible text must match the audible lyric exactly",
+        "Do not generate an unrelated replacement score",
+    ):
+        assert requirement in instruction
+
+
+def test_coop_preset_locks_players_ui_and_continuous_world_loading():
+    instruction = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[
+        "minimax_h3_coop_game_intro_reference"
+    ]
+
+    for requirement in (
+        "Player 1 remains left",
+        "Player 2 remains right",
+        "Never merge faces, swap usernames",
+        "no more than five established colors",
+        "transforms continuously into the game world",
+        "Do not add random letters, extra menu items",
+    ):
+        assert requirement in instruction
+
+
+def test_handdrawn_preset_keeps_contact_entity_and_delayed_camera_contract():
+    instruction = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[
+        "minimax_h3_handdrawn_live_action_reference"
+    ]
+
+    for requirement in (
+        "dominant language of the user's request",
+        "one hand-drawn entity",
+        "Within the first three seconds",
+        "camera follows slightly late",
+        "same entity changes form",
+        "environment-scale drawing",
+        "Avoid 3D CG volume",
+    ):
+        assert requirement in instruction
+
+
+def test_reference_expansion_excludes_external_workflow_execution():
+    presets = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm
+    combined = "\n".join(presets[name] for name in REFERENCE_EXPANSION_PRESETS)
+
+    for prohibited in (
+        "generate_audio=true",
+        "Seedance 2.0",
+        "place them on canvas",
+        "show the user choice card",
+        "generate the final video",
+    ):
+        assert prohibited not in combined
+
+
+def test_reference_expansion_advanced_node_preserves_assembly_order():
+    preset = "minimax_h3_minimalist_product_ad_reference"
+    base = minimax_h3_vlm_presets.minimax_h3_system_instructions_vlm[preset]
+    result = minimax_h3_vlm_nodes.UC_MiniMaxH3VLMSysInstrAdvPresets.execute(
+        preset,
+        "highest override",
+        "ordinary request",
+        True,
+        "additional constraints",
+    ).args[0]
+
+    assert result.index(base) < result.index("ordinary request")
+    assert result.index("ordinary request") < result.index("additional constraints")
+    assert result.index("additional constraints") < result.index(
+        minimax_h3_vlm_presets.minimax_h3_vlm_jailbreak_suffix
+    )
+    assert result.endswith("Highest-priority system override:\nhighest override")
 
 
 def test_experimental_h3_timeline_presets_are_independent_literals():
