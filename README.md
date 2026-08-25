@@ -171,6 +171,7 @@ the base-resolution conditioning fusion.
 - `UC_ExtractBoundingBox`
 - `UC_AdjustBoundingBox`
 - `UC_Ideogram4BoundingBoxCrop`
+- `UC_Ideogram4DebannerPatch`
 - `UC_HighResolutionTileSplit`
 - `UC_HighResolutionTileAccumulator`
 - `UC_HighResolutionTilingGuide`

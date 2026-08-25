@@ -9,6 +9,7 @@ from .patcher_helpers import (
     SpectrumH3Config,
     effective_bootstrap_first_forecast,
     list_minimax_h3_projections,
+    patch_ideogram4_debanner,
     patch_minimax_h3_clip_projection,
     patch_unified_attention_model,
     patch_minimax_h3_cache_model,
@@ -121,6 +122,29 @@ class UC_UnifiedAttentionPatcher(io.ComfyNode):
     @classmethod
     def execute(cls, model, attention_mode) -> io.NodeOutput:
         return io.NodeOutput(patch_unified_attention_model(model, attention_mode))
+
+
+class UC_Ideogram4DebannerPatch(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_Ideogram4DebannerPatch",
+            display_name="Ideogram 4 Debanner Patch",
+            category="advanced/model/patches",
+            description="Applies correction on every invocation of this patched model. Use it only for the first split-sigma segment, then continue with the original conditional model.",
+            inputs=[
+                io.Model.Input("model"),
+                io.Float.Input("strength", default=0.6, min=0.0, max=2.0, step=0.01),
+            ],
+            outputs=[io.Model.Output("model", display_name="model")],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(cls, model, strength) -> io.NodeOutput:
+        if strength == 0.0:
+            return io.NodeOutput(model)
+        return io.NodeOutput(patch_ideogram4_debanner(model, strength))
 
 
 class UC_MiniMaxH3Cache(io.ComfyNode):

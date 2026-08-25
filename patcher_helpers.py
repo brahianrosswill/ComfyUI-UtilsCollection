@@ -10,11 +10,13 @@ import time
 import types
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 import torch
 
 import comfy.ldm.common_dit
+from comfy.ldm.ideogram4 import model as ideogram4_model
 import comfy.ldm.modules.attention
 import comfy.model_management
 import comfy.model_patcher
@@ -38,6 +40,9 @@ MINIMAX_H3_SOURCE_KEYS = {"qwen3vl_4b", "qwen3vl_8b"}
 MINIMAX_H3_PAD_TOKEN = 151643
 MINIMAX_H3_VISION_START = 151652
 MINIMAX_H3_VISION_END = 151653
+IDEOGRAM4_DEBANNER_WRAPPER_KEY = "utilscollection_ideogram4_debanner"
+IDEOGRAM4_DEBANNER_STATE_KEY = "utilscollection_ideogram4_debanner_state"
+IDEOGRAM4_DEBANNER_BUNDLE = Path(__file__).resolve().parent / "models" / "ideogram4_correction_v1.safetensors"
 
 
 def _register_minimax_h3_projection_folder() -> None:
@@ -4623,3 +4628,82 @@ def patch_unified_attention_model(model: Any, attention_mode: dict[str, Any]) ->
                 patched_forward = types.MethodType(_h3_sage_forward, block.attn)
                 patched.add_object_patch(f"diffusion_model.blocks.{index}.attn.forward", patched_forward)
     return patched
+
+
+def load_ideogram4_debanner_directions() -> dict[int, torch.Tensor]:
+    if not IDEOGRAM4_DEBANNER_BUNDLE.is_file():
+        raise FileNotFoundError(f"Ideogram 4 debanner bundle is missing: {IDEOGRAM4_DEBANNER_BUNDLE}")
+    with safe_open(str(IDEOGRAM4_DEBANNER_BUNDLE), framework="pt", device="cpu") as handle:
+        return {index: handle.get_tensor(f"direction.block_{index:02d}") for index in range(25, 29)}
+
+
+def _validate_ideogram4_debanner_directions(directions: dict[int, torch.Tensor]) -> None:
+    for index in range(25, 29):
+        direction = directions.get(index)
+        if not torch.is_tensor(direction) or tuple(direction.shape) != (1, 8, 8, 4608):
+            raise ValueError(f"Ideogram 4 debanner direction for block {index} must have shape [1, 8, 8, 4608].")
+
+
+def _make_ideogram4_debanner_wrapper(strength: float):
+    def wrapper(executor, x, timesteps, context=None, attention_mask=None, transformer_options=None, **kwargs):
+        _, _, grid_height, grid_width = x.shape
+        options = {} if transformer_options is None else dict(transformer_options)
+        options[IDEOGRAM4_DEBANNER_STATE_KEY] = {
+            "grid_height": grid_height,
+            "grid_width": grid_width,
+            "image_token_count": grid_height * grid_width,
+            "strength": strength,
+            "is_conditional": context is not None,
+        }
+        return executor(x, timesteps, context, attention_mask, options, **kwargs)
+
+    return wrapper
+
+
+def _make_ideogram4_debanner_forward(original: Callable[..., torch.Tensor], direction: torch.Tensor):
+    def forward(self, x, attn_mask, freqs_cis, adaln_input, transformer_options={}):
+        output = original(x, attn_mask, freqs_cis, adaln_input, transformer_options=transformer_options)
+        state = transformer_options.get(IDEOGRAM4_DEBANNER_STATE_KEY)
+        if state is None or not state["is_conditional"]:
+            return output
+
+        grid_height = state["grid_height"]
+        grid_width = state["grid_width"]
+        image_token_count = state["image_token_count"]
+        image_offset = output.shape[1] - image_token_count
+        spatial_direction = torch.nn.functional.interpolate(
+            direction.permute(0, 3, 1, 2), size=(grid_height, grid_width), mode="nearest"
+        ).permute(0, 2, 3, 1).reshape(1, image_token_count, -1).to(device=output.device, dtype=output.dtype)
+        image_tokens = output[:, image_offset:]
+        original_norm = torch.linalg.vector_norm(image_tokens, dim=-1, keepdim=True)
+        corrected = torch.nn.functional.normalize(image_tokens - state["strength"] * spatial_direction, p=2, dim=-1) * original_norm
+        return torch.cat((output[:, :image_offset], corrected), dim=1)
+
+    return forward
+
+
+def patch_ideogram4_debanner_model(model: Any, directions: dict[int, torch.Tensor], strength: float) -> Any:
+    strength = float(strength)
+    if strength < 0.0:
+        raise ValueError("Ideogram 4 debanner strength must be nonnegative.")
+    _validate_ideogram4_debanner_directions(directions)
+
+    diffusion_model = model.get_model_object("diffusion_model")
+    if not isinstance(diffusion_model, ideogram4_model.Ideogram4Transformer2DModel):
+        raise ValueError("Ideogram 4 Debanner requires an Ideogram4Transformer2DModel diffusion model.")
+
+    patched = model.clone()
+    patched.add_wrapper_with_key(
+        comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
+        IDEOGRAM4_DEBANNER_WRAPPER_KEY,
+        _make_ideogram4_debanner_wrapper(strength),
+    )
+    for index in range(25, 29):
+        block = diffusion_model.layers[index]
+        patched_forward = types.MethodType(_make_ideogram4_debanner_forward(block.forward, directions[index]), block)
+        patched.add_object_patch(f"diffusion_model.layers.{index}.forward", patched_forward)
+    return patched
+
+
+def patch_ideogram4_debanner(model: Any, strength: float) -> Any:
+    return patch_ideogram4_debanner_model(model, load_ideogram4_debanner_directions(), strength)

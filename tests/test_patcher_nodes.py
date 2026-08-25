@@ -891,3 +891,103 @@ def test_minimax_h3_projected_clip_is_clone_scoped_and_returns_tags(monkeypatch)
     assert cloned.layer_idx == 7
     assert output["cond"].shape == (1, 3, 3)
     assert torch.equal(output["minimax_token_tags"], torch.tensor([0, 0, 0]))
+
+
+def _ideogram4_directions():
+    return {index: torch.full((1, 8, 8, 4608), 0.25) for index in range(25, 29)}
+
+
+def _ideogram4_patcher(monkeypatch):
+    class Block:
+        def forward(self, x, attn_mask, freqs_cis, adaln_input, transformer_options={}):
+            return x
+
+    class FakeIdeogram4:
+        def __init__(self):
+            self.layers = [Block() for _ in range(29)]
+
+    class FakePatcher:
+        def __init__(self, diffusion_model):
+            self.diffusion_model = diffusion_model
+            self.object_patches = {}
+            self.wrappers = {}
+
+        def clone(self):
+            return FakePatcher(self.diffusion_model)
+
+        def get_model_object(self, name):
+            assert name == "diffusion_model"
+            return self.diffusion_model
+
+        def add_object_patch(self, path, value):
+            self.object_patches[path] = value
+
+        def add_wrapper_with_key(self, wrapper_type, key, wrapper):
+            self.wrappers[wrapper_type] = {key: wrapper}
+
+    monkeypatch.setattr(patcher_helpers.ideogram4_model, "Ideogram4Transformer2DModel", FakeIdeogram4)
+    return FakePatcher(FakeIdeogram4())
+
+
+def test_ideogram4_debanner_schema_and_zero_strength_noop(monkeypatch):
+    schema = patcher_nodes.UC_Ideogram4DebannerPatch.define_schema()
+    inputs = {value.id: value for value in schema.inputs}
+    model = object()
+
+    assert schema.node_id == "UC_Ideogram4DebannerPatch"
+    assert inputs["strength"].default == 0.6
+    assert inputs["strength"].min == 0.0
+    assert inputs["strength"].max == 2.0
+    monkeypatch.setattr(patcher_nodes, "patch_ideogram4_debanner", lambda *_args: pytest.fail("zero strength must not patch"))
+    assert patcher_nodes.UC_Ideogram4DebannerPatch.execute(model, 0.0).result == (model,)
+    monkeypatch.setattr(patcher_nodes, "patch_ideogram4_debanner", lambda patched_model, strength: (patched_model, strength))
+    assert patcher_nodes.UC_Ideogram4DebannerPatch.execute(model, 0.6).result == ((model, 0.6),)
+
+
+def test_ideogram4_debanner_clone_wrapper_and_validation(monkeypatch):
+    original = _ideogram4_patcher(monkeypatch)
+    patched = patcher_helpers.patch_ideogram4_debanner_model(original, _ideogram4_directions(), 0.6)
+
+    assert original.object_patches == {}
+    assert original.wrappers == {}
+    assert sorted(patched.object_patches) == [f"diffusion_model.layers.{index}.forward" for index in range(25, 29)]
+    wrappers = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL]
+    assert set(wrappers) == {patcher_helpers.IDEOGRAM4_DEBANNER_WRAPPER_KEY}
+
+    with pytest.raises(ValueError, match="block 25"):
+        patcher_helpers.patch_ideogram4_debanner_model(original, {26: _ideogram4_directions()[26]}, 0.6)
+    with pytest.raises(ValueError, match="nonnegative"):
+        patcher_helpers.patch_ideogram4_debanner_model(original, _ideogram4_directions(), -0.1)
+
+
+def test_ideogram4_debanner_wrapper_and_block_forward_preserve_text_and_norm(monkeypatch):
+    original = _ideogram4_patcher(monkeypatch)
+    patched = patcher_helpers.patch_ideogram4_debanner_model(original, _ideogram4_directions(), 0.5)
+    wrapper = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL][patcher_helpers.IDEOGRAM4_DEBANNER_WRAPPER_KEY]
+    options = {"unchanged": True}
+
+    class Executor:
+        class_obj = original.diffusion_model
+
+        def __call__(self, x, timesteps, context, attention_mask, transformer_options, **_kwargs):
+            return transformer_options
+
+    state_options = wrapper(Executor(), torch.zeros(1, 128, 2, 2), torch.tensor([1.0]), torch.ones(1, 2, 3), None, options)
+    assert options == {"unchanged": True}
+    state = state_options[patcher_helpers.IDEOGRAM4_DEBANNER_STATE_KEY]
+    assert state["grid_height"] == state["grid_width"] == 2
+    assert state["image_token_count"] == 4
+    assert state["is_conditional"] is True
+
+    output = torch.ones(1, 6, 4608)
+    corrected = patched.object_patches["diffusion_model.layers.25.forward"](output, None, None, None, state_options)
+    assert torch.equal(corrected[:, :2], output[:, :2])
+    assert torch.allclose(
+        torch.linalg.vector_norm(corrected[:, 2:], dim=-1),
+        torch.linalg.vector_norm(output[:, 2:], dim=-1),
+    )
+    assert not torch.equal(corrected[:, 2:], output[:, 2:])
+
+    unconditional_options = wrapper(Executor(), torch.zeros(1, 128, 3, 1), torch.tensor([1.0]), None, None, {})
+    unchanged = patched.object_patches["diffusion_model.layers.25.forward"](output, None, None, None, unconditional_options)
+    assert unchanged is output
