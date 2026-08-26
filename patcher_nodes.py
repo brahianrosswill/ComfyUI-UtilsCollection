@@ -114,7 +114,13 @@ class UC_UnifiedAttentionPatcher(io.ComfyNode):
             category="advanced/model/patches",
             description="Applies a selected attention backend to a cloned model.",
             inputs=[
-                io.Model.Input("model"),
+                io.Model.Input(
+                    "model",
+                    tooltip=(
+                        "MiniMax H3 model to accelerate. Match an FL2VA model with "
+                        "an FL2VA PDD file, or a Ref2VA model with a Ref2VA PDD file."
+                    ),
+                ),
                 io.DynamicCombo.Input("attention_mode", options=modes, display_name="Attention Mode", tooltip="Choose an attention backend. It needs its matching installed package."),
             ],
             outputs=[io.Model.Output("model", display_name="model")],
@@ -165,18 +171,29 @@ class UC_MiniMaxH3PDDAcc(io.ComfyNode):
                 io.Combo.Input(
                     "pdd_lora",
                     options=folder_paths.get_filename_list("loras"),
-                    tooltip="PDD Acc file from the existing ComfyUI loras folder.",
+                    tooltip=(
+                        "Choose the PDD Acc file matching your MiniMax H3 model: "
+                        "FL2VA for first/last-frame generation or Ref2VA for "
+                        "reference-image generation."
+                    ),
                 ),
                 io.Combo.Input(
                     "nfe",
                     options=["8", "6", "4"],
                     default="8",
-                    tooltip="Trained PDD model evaluations. Partition overrides this value.",
+                    tooltip=(
+                        "Sampling steps: 8 gives the intended quality, 6 trades some "
+                        "quality for speed, and 4 is fastest. Use this node's sigmas output."
+                    ),
                 ),
                 io.String.Input(
                     "partition",
                     default="",
-                    tooltip="Optional comma-separated 4/8-step blocks summing to 32.",
+                    tooltip=(
+                        "Advanced custom sampling schedule. Leave empty for the selected "
+                        "step count; otherwise enter comma-separated groups of 4 or 8 "
+                        "that total 32."
+                    ),
                 ),
                 io.Float.Input(
                     "lora_strength",
@@ -184,7 +201,11 @@ class UC_MiniMaxH3PDDAcc(io.ComfyNode):
                     min=-2.0,
                     max=2.0,
                     step=0.01,
-                    tooltip="Trunk LoRA strength; trained value is 1.0.",
+                    tooltip=(
+                        "Strength of the PDD changes inside the model. Keep 1.0 for the "
+                        "intended result; lower values weaken acceleration tuning and "
+                        "higher values may distort output."
+                    ),
                 ),
                 io.Float.Input(
                     "head_strength",
@@ -192,13 +213,19 @@ class UC_MiniMaxH3PDDAcc(io.ComfyNode):
                     min=0.0,
                     max=2.0,
                     step=0.01,
-                    tooltip="PDD output-head strength; trained value is 1.0.",
+                    tooltip=(
+                        "Strength of the PDD output correction. Keep 1.0 for the intended "
+                        "result; lower values blend toward the original model output."
+                    ),
                 ),
                 io.Combo.Input(
                     "on_off_grid",
                     options=["error", "clamp"],
                     default="error",
-                    tooltip="Reject untrained sigmas or clamp to the nearest trained block.",
+                    tooltip=(
+                        "Error stops sampling when the sampler uses unsupported steps. "
+                        "Clamp forces the nearest supported step but can reduce quality."
+                    ),
                 ),
             ],
             outputs=[
