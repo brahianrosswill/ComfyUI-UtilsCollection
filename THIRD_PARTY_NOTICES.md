@@ -9,6 +9,10 @@ Parts of the logic, math, and scheduler implementations were migrated from:
 The Power Shift scheduler was inspired by InverserSquaredScheduler from
 ComfyUI-ClybsChromaNodes by Clybius.
 
+The eager Big LaMa FFC architecture is adapted from advimman/lama commit
+786f5936b27fb3dacd2b1ad799e4de968ea697e7, copyright Samsung Research,
+licensed under the Apache License 2.0.
+
 ## MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

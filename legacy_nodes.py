@@ -8,6 +8,9 @@ from .vlm_nodes import *
 from .parameter_nodes import *
 from .utils_nodes import *
 from .textgen_nodes import *
+from .lama_helpers import image_mask_to_luma, load_lama_model, run_lama_inpaint
+
+import folder_paths
 
 
 class AdjustedResolutionParameters(UC_AdjustedResolutionParameters):
@@ -178,6 +181,76 @@ class ModifyMask(UC_ModifyMask):
         schema.node_id = "ModifyMask"
         schema.display_name = f"{schema.display_name or 'ModifyMask'} (Legacy)"
         return schema
+
+
+class LamaRemover(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="LamaRemover",
+            display_name="LamaRemover (Legacy)",
+            category="LamaRemover",
+            is_deprecated=True,
+            inputs=[
+                io.Image.Input("images"),
+                io.Mask.Input("masks"),
+                io.Int.Input("mask_threshold", default=250, min=0, max=255, step=1),
+                io.Int.Input("gaussblur_radius", default=8, min=0, max=20, step=1),
+                io.Boolean.Input("invert_mask", default=False),
+            ],
+            outputs=[io.Image.Output("images")],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        images,
+        masks,
+        mask_threshold=250,
+        gaussblur_radius=8,
+        invert_mask=False,
+    ) -> io.NodeOutput:
+        model_path = folder_paths.get_full_path_or_raise("lama", "big-lama.safetensors")
+        patcher = load_lama_model(model_path, "default")
+        return io.NodeOutput(
+            run_lama_inpaint(
+                patcher,
+                images,
+                masks,
+                mask_threshold,
+                gaussblur_radius,
+                invert_mask,
+            )
+        )
+
+
+class LamaRemoverIMG(LamaRemover):
+    @classmethod
+    @override
+    def define_schema(cls) -> io.Schema:
+        schema = super().define_schema()
+        schema.node_id = "LamaRemoverIMG"
+        schema.display_name = "LamaRemoverIMG (Legacy)"
+        schema.inputs[1] = io.Image.Input("masks")
+        return schema
+
+    @classmethod
+    @override
+    def execute(
+        cls,
+        images,
+        masks,
+        mask_threshold=250,
+        gaussblur_radius=8,
+        invert_mask=False,
+    ) -> io.NodeOutput:
+        return super().execute(
+            images,
+            image_mask_to_luma(masks),
+            mask_threshold,
+            gaussblur_radius,
+            invert_mask,
+        )
 
 
 class ImageBlendByMask(UC_ImageBlendByMask):

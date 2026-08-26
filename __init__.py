@@ -16,6 +16,7 @@ from .textgen_nodes import *
 from .composite_nodes import *
 from .logic_math_nodes import *
 from .patcher_nodes import *
+from .lama_nodes import *
 
 from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
@@ -159,6 +160,8 @@ class SamplingUtils(ComfyExtension):
             UC_MarkdownPreview,
             UC_LoraLoaderCLIPOnly,
             UC_LoadImageWithAlpha,
+            UC_LoadLaMaModel,
+            UC_LaMaInpaint,
             UC_BoldFrakturTextStyle,
             UC_UnBoldFrakturTextStyle,
             UC_WordJoiner,
@@ -221,6 +224,8 @@ class SamplingUtils(ComfyExtension):
             RandInt,
             StaticInt,
             RandIntRange,
+            LamaRemover,
+            LamaRemoverIMG,
             TextGenerateQwen35SystemPrompt,
             ColorConvertNode,
             *LOGIC_MATH_NODES,

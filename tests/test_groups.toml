@@ -149,6 +149,7 @@ paths = [
   "model_assets.py",
   "node_metadata.py",
   "node_replacements.py",
+  "lama_nodes.py",
 ]
 python_tests = [
   "tests/test_node_metadata.py",
@@ -205,4 +206,9 @@ frontend_tests = []
 [groups.test_selector]
 paths = ["tests/run_tests.py", "tests/test_groups.toml"]
 python_tests = ["tests/test_test_runner.py"]
+frontend_tests = []
+
+[groups.lama]
+paths = ["models/__init__.py", "models/lama.py", "lama_helpers.py", "lama_nodes.py"]
+python_tests = ["tests/test_lama.py", "tests/test_lama_conversion.py"]
 frontend_tests = []
