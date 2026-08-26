@@ -13,6 +13,11 @@ The eager Big LaMa FFC architecture is adapted from advimman/lama commit
 786f5936b27fb3dacd2b1ad799e4de968ea697e7, copyright Samsung Research,
 licensed under the Apache License 2.0.
 
+MiniMax H3 PDD Acc conversion, grid, and head-fusion logic is adapted from
+Jalen-Brunson/ComfyUI-MiniMax-H3-PDD-Acc commit 195a98d, with acceleration
+weights originating from alibaba-pai/MiniMax-H3-Acc-LoRAs, licensed under the
+Apache License 2.0.
+
 ## MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

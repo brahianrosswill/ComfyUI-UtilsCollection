@@ -140,6 +140,7 @@ class SamplingUtils(ComfyExtension):
             UC_UnifiedAttentionPatcher,
             UC_Ideogram4DebannerPatch,
             UC_MiniMaxH3ClipProjectionPatcher,
+            UC_MiniMaxH3PDDAcc,
             UC_MiniMaxH3Cache,
             UC_MiniMaxH3Spectrum,
             UC_ConditioningConsensusBlend,

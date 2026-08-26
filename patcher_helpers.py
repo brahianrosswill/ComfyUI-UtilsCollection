@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import bisect
+import contextvars
+import hashlib
 import logging
 import math
 import os
+import re
 import time
 import types
 from collections.abc import Callable, Sequence
@@ -14,7 +17,9 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 
+import comfy.lora
 import comfy.ldm.common_dit
 from comfy.ldm.ideogram4 import model as ideogram4_model
 import comfy.ldm.modules.attention
@@ -22,6 +27,7 @@ import comfy.model_management
 import comfy.model_patcher
 import comfy.model_prefetch
 import comfy.patcher_extension
+import comfy.utils
 import folder_paths
 from comfy.text_encoders.minimax import process_video_block, token_tags_from_embeds_info
 from comfy.ldm.minimax import model as minimax_model
@@ -30,6 +36,7 @@ from safetensors import safe_open
 
 MINIMAX_H3_CACHE_OWNER_KEY = "utilscollection_minimax_h3_cache"
 MINIMAX_H3_SPECTRUM_OWNER_KEY = "utilscollection_minimax_h3_spectrum"
+MINIMAX_H3_PDD_OWNER_KEY = "utilscollection_minimax_h3_pdd_acc"
 UNIFIED_ATTENTION_OWNER_KEY = "utilscollection_unified_attention"
 MINIMAX_H3_RADIAL_WRAPPER_KEY = "utilscollection_minimax_h3_radial"
 MINIMAX_H3_RADIAL_STATE_KEY = "utilscollection_minimax_h3_radial_state"
@@ -449,6 +456,339 @@ class MiniMaxH3ProjectedCLIP:
 
 def patch_minimax_h3_clip_projection(clip: Any, projection_name: str) -> MiniMaxH3ProjectedCLIP:
     return MiniMaxH3ProjectedCLIP(clip.clone(), projection_name)
+
+
+PDD_VIDEO_SHIFT = 12.0
+PDD_AUDIO_SHIFT = 3.0
+PDD_KNOT_TOLERANCE = 1e-4
+PDD_DEFAULT_PARTITIONS = {6: (8, 8, 4, 4, 4, 4)}
+PDD_HEAD_KEYS = ("proj_out.weight", "proj_out.bias", "audio_proj_out.weight", "audio_proj_out.bias")
+PDD_WRAPPER_KEY = "utilscollection_minimax_h3_pdd_acc"
+PDD_ADDITIONAL_MODEL_KEY = "utilscollection_minimax_h3_pdd_heads"
+PDD_FINAL_FORWARD_PATH = "diffusion_model.final_layer.forward"
+PDD_BASIS_DIR = Path(__file__).resolve().parent / "assets" / "minimax_h3_pdd"
+
+
+def shifted_pdd_sigma(shift: float, t):
+    return shift * t / (1.0 + (shift - 1.0) * t)
+
+
+def pdd_fine_sigmas(shift: float, num_steps: int) -> tuple[float, ...]:
+    times = torch.linspace(1.0, 0.0, num_steps + 1, dtype=torch.float64)
+    values = shifted_pdd_sigma(shift, times)
+    values[0] = 1.0
+    values[-1] = 0.0
+    return tuple(float(value) for value in values)
+
+
+def resolve_pdd_partition(num_steps: int, nfe: int, partition_text: str = "", trained_block: int = 4) -> tuple[int, ...]:
+    text = (partition_text or "").strip()
+    if text:
+        try:
+            sizes = tuple(int(part) for part in text.replace(" ", "").split(",") if part)
+        except ValueError as exc:
+            raise ValueError(f"partition '{partition_text}' is not a comma-separated integer list") from exc
+        if any(size < 1 for size in sizes) or sum(sizes) != num_steps:
+            raise ValueError(f"partition {sizes} must contain positive block sizes summing to {num_steps}; received {sum(sizes)}")
+    elif num_steps % nfe == 0:
+        sizes = (num_steps // nfe,) * nfe
+    elif nfe in PDD_DEFAULT_PARTITIONS and sum(PDD_DEFAULT_PARTITIONS[nfe]) == num_steps:
+        sizes = PDD_DEFAULT_PARTITIONS[nfe]
+    else:
+        raise ValueError(f"nfe {nfe} does not divide the {num_steps}-step PDD grid and has no default partition")
+    allowed = (trained_block, 2 * trained_block)
+    invalid = sorted({size for size in sizes if size not in allowed})
+    if invalid:
+        raise ValueError(f"partition {sizes} contains block sizes {invalid} outside the trained envelope {allowed}")
+    return sizes
+
+
+def pdd_partition_starts(sizes: tuple[int, ...]) -> tuple[int, ...]:
+    starts = []
+    offset = 0
+    for size in sizes:
+        starts.append(offset)
+        offset += size
+    return tuple(starts)
+
+
+def pdd_block_boundaries(num_steps: int, sizes: tuple[int, ...]) -> tuple[float, ...]:
+    fine = pdd_fine_sigmas(PDD_VIDEO_SHIFT, num_steps)
+    return tuple(fine[start] for start in pdd_partition_starts(sizes)) + (0.0,)
+
+
+def fuse_pdd_heads(bank_weight: torch.Tensor, bank_bias: torch.Tensor, fine: tuple[float, ...], sizes: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor]:
+    intervals = [fine[index] - fine[index + 1] for index in range(bank_weight.shape[0])]
+    weights = bank_weight.to(torch.float64)
+    biases = bank_bias.to(torch.float64)
+    fused_weights = []
+    fused_biases = []
+    for start, size in zip(pdd_partition_starts(sizes), sizes):
+        indices = range(start, start + size)
+        span = sum(intervals[index] for index in indices)
+        fused_weights.append(sum((intervals[index] / span) * weights[index] for index in indices).to(torch.float32))
+        fused_biases.append(sum((intervals[index] / span) * biases[index] for index in indices).to(torch.float32))
+    return torch.stack(fused_weights).contiguous(), torch.stack(fused_biases).contiguous()
+
+
+def select_pdd_block(sigma: float, bounds: tuple[float, ...], on_off_grid: str) -> int:
+    count = len(bounds) - 1
+    for index in range(count):
+        if abs(sigma - bounds[index]) <= PDD_KNOT_TOLERANCE:
+            return index
+    if abs(sigma - bounds[-1]) <= PDD_KNOT_TOLERANCE:
+        return count - 1
+    if on_off_grid == "error":
+        expected = ", ".join(f"{value:.6f}" for value in bounds)
+        raise ValueError(f"MiniMax H3 PDD evaluated at sigma {sigma:.6f}, outside trained boundaries [{expected}]. Use this node's SIGMAS output with a sampler that evaluates only those boundaries.")
+    if sigma >= bounds[0]:
+        return 0
+    for index in range(count):
+        if sigma > bounds[index + 1]:
+            return index
+    return count - 1
+
+
+def convert_pdd_lora(state_dict: dict[str, torch.Tensor], alpha: float) -> tuple[dict[str, torch.Tensor], set[str]]:
+    converted = {}
+    consumed = set()
+
+    def take(key):
+        consumed.add(key)
+        return state_dict[key]
+
+    def emit(destination, down, up, alpha_value):
+        converted[f"{destination}.lora_A.weight"] = down.contiguous()
+        converted[f"{destination}.lora_B.weight"] = up.contiguous()
+        converted[f"{destination}.alpha"] = torch.tensor(float(alpha_value))
+
+    def convert_qkv(source, destination):
+        parts = [(take(f"{source}.attn.to_{name}.lora_down"), take(f"{source}.attn.to_{name}.lora_up")) for name in ("q", "k", "v")]
+        rank = parts[0][0].shape[0]
+        output = parts[0][1].shape[0]
+        down = torch.cat([part[0] for part in parts], dim=0)
+        up = torch.zeros(output * 3, rank * 3, dtype=parts[0][1].dtype)
+        for index, (_, value) in enumerate(parts):
+            up[index * output:(index + 1) * output, index * rank:(index + 1) * rank] = value
+        emit(f"{destination}.attn.qkv_proj", down, up, alpha * 3.0)
+
+    def convert_linear(source, destination, half_swap=False):
+        down = take(f"{source}.lora_down")
+        up = take(f"{source}.lora_up")
+        if half_swap:
+            midpoint = up.shape[0] // 2
+            up = torch.cat((up[midpoint:], up[:midpoint]), dim=0)
+        emit(destination, down, up, alpha)
+
+    trunk_blocks = sorted({int(match.group(1)) for key in state_dict if (match := re.match(r"transformer_blocks\.(\d+)\.", key))})
+    refiner_blocks = sorted({int(match.group(1)) for key in state_dict if (match := re.match(r"token_refiner\.refiner_blocks\.(\d+)\.", key))})
+    for index in trunk_blocks:
+        source = f"transformer_blocks.{index}"
+        destination = f"diffusion_model.blocks.{index}"
+        convert_qkv(source, destination)
+        convert_linear(f"{source}.attn.to_out.0", f"{destination}.attn.out_proj")
+        convert_linear(f"{source}.ff.net.0.proj", f"{destination}.mlp.fc1", True)
+        convert_linear(f"{source}.ff.net.2", f"{destination}.mlp.fc2")
+        if f"{source}.adaln_proj.linear.lora_down" in state_dict:
+            convert_linear(f"{source}.adaln_proj.linear", f"{destination}.adaln_proj.linear")
+    for index in refiner_blocks:
+        source = f"token_refiner.refiner_blocks.{index}"
+        destination = f"diffusion_model.token_refiner.blocks.{index}"
+        convert_qkv(source, destination)
+        convert_linear(f"{source}.attn.to_out.0", f"{destination}.attn.out_proj")
+        convert_linear(f"{source}.ff.net.0.proj", f"{destination}.mlp.fc1", True)
+        convert_linear(f"{source}.ff.net.2", f"{destination}.mlp.fc2")
+    return converted, set(state_dict) - consumed
+
+
+def split_pdd_state_dict(state_dict: dict[str, torch.Tensor], metadata: dict[str, str] | None, filename: str):
+    metadata = metadata or {}
+    config = {"num_steps": int(metadata.get("pdd_num_steps", 32)), "block_size": int(metadata.get("pdd_block_size", 4)), "alpha": float(metadata.get("lora_alpha", 64.0))}
+    missing = [key for key in PDD_HEAD_KEYS if key not in state_dict]
+    if missing:
+        raise ValueError(f"{filename} is missing PDD head tensors: {missing}")
+    heads = tuple(state_dict.pop(key) for key in PDD_HEAD_KEYS)
+    video_weight, video_bias, audio_weight, audio_bias = heads
+    steps = config["num_steps"]
+    valid = video_weight.ndim == 3 and video_bias.shape == video_weight.shape[:2] and audio_weight.ndim == 3 and audio_bias.shape == audio_weight.shape[:2] and video_weight.shape[0] == steps and audio_weight.shape[0] == steps
+    if not valid:
+        raise ValueError(f"{filename} has invalid PDD head shapes: video {list(video_weight.shape)}, video bias {list(video_bias.shape)}, audio {list(audio_weight.shape)}, audio bias {list(audio_bias.shape)}")
+    if any(key.startswith("diffusion_model.") for key in state_dict):
+        invalid = [key for key in state_dict if not (key.startswith("diffusion_model.") and key.endswith((".lora_A.weight", ".lora_B.weight", ".alpha")))]
+        if invalid:
+            raise ValueError(f"{filename} contains unexpected converted keys: {invalid[:4]}")
+        config["source_format"] = "converted"
+        lora_state = dict(state_dict)
+    else:
+        config["source_format"] = "original"
+        lora_state, leftovers = convert_pdd_lora(state_dict, config["alpha"])
+        if leftovers:
+            raise ValueError(f"{filename} contains unrecognized keys: {sorted(leftovers)[:4]}")
+    return lora_state, heads, config
+
+
+def pdd_table_sha(table: torch.Tensor) -> str:
+    value = table.detach().to(torch.float32).contiguous().cpu()
+    return hashlib.sha256(value.numpy().tobytes()).hexdigest()[:16]
+
+
+def rebase_pdd_adaln(lora_state: dict[str, torch.Tensor], center: torch.Tensor, basis: torch.Tensor) -> tuple[dict[str, torch.Tensor], int]:
+    rebased = dict(lora_state)
+    center64 = center.to(torch.float64)
+    basis64 = basis.to(torch.float64)
+    count = 0
+    for key in list(rebased):
+        if not key.endswith(".adaln_proj.linear.lora_A.weight"):
+            continue
+        module = key[:-len(".lora_A.weight")]
+        down = rebased.pop(f"{module}.lora_A.weight").to(torch.float64)
+        up = rebased.pop(f"{module}.lora_B.weight").to(torch.float64)
+        alpha = rebased.pop(f"{module}.alpha", None)
+        scale = float(alpha) / down.shape[0] if alpha is not None else 1.0
+        rebased[f"{module}.diff"] = (scale * (up @ (down @ basis64))).to(torch.float32).contiguous()
+        rebased[f"{module}.diff_b"] = (scale * (up @ (down @ center64))).to(torch.float32).contiguous()
+        count += 1
+    return rebased, count
+
+
+def rebase_pdd_for_pruned_model(model: Any, lora_state: dict[str, torch.Tensor], filename: str) -> tuple[dict[str, torch.Tensor], str]:
+    diffusion_model = model.get_model_object("diffusion_model")
+    if not diffusion_model.use_adaln_curves:
+        return lora_state, ""
+    if not any(key.endswith(".adaln_proj.linear.lora_A.weight") for key in lora_state):
+        return lora_state, "pruned model without dense AdalN LoRA modules"
+    table = diffusion_model.adaln_t_table.detach().to(torch.float32).cpu()
+    candidates = []
+    for path in sorted(PDD_BASIS_DIR.glob("basis_*.safetensors")):
+        data = comfy.utils.load_torch_file(str(path), safe_load=True)
+        candidates.append(path.name)
+        basis_table = data["adaln_t_table"]
+        if basis_table.shape == table.shape and torch.allclose(basis_table, table, atol=1e-6):
+            trunk = path.stem.removeprefix("basis_")
+            rebased, count = rebase_pdd_adaln(lora_state, data["c"], data["V"])
+            if trunk not in filename.lower():
+                raise ValueError(
+                    f"MiniMax H3 PDD model uses the {trunk} AdalN basis but selected "
+                    f"file is {filename}; pair FL2VA with FL2VA and Ref2VA with Ref2VA."
+                )
+            return rebased, f"rebased {count} AdalN modules onto {trunk} curve basis"
+    raise ValueError(f"MiniMax H3 PDD cannot match this pruned model's AdalN table ({list(table.shape)}, sha {pdd_table_sha(table)}) against {candidates}")
+
+
+class MiniMaxH3PDDHeadBank(torch.nn.Module):
+    def __init__(self, video_weight: torch.Tensor, video_bias: torch.Tensor, audio_weight: torch.Tensor, audio_bias: torch.Tensor) -> None:
+        super().__init__()
+        self.register_buffer("video_weight", video_weight)
+        self.register_buffer("video_bias", video_bias)
+        self.register_buffer("audio_weight", audio_weight)
+        self.register_buffer("audio_bias", audio_bias)
+
+    def project(self, video: torch.Tensor, audio: torch.Tensor, block: int) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.video_weight.device != video.device or self.audio_weight.device != audio.device:
+            raise RuntimeError("MiniMax H3 PDD head bank was not loaded beside the diffusion model by Core.")
+        return F.linear(video, self.video_weight[block], self.video_bias[block]), F.linear(audio, self.audio_weight[block], self.audio_bias[block])
+
+
+class MiniMaxH3PDDExecutionState:
+    def __init__(self) -> None:
+        self.sigma = contextvars.ContextVar("utilscollection_minimax_h3_pdd_sigma", default=None)
+
+
+def make_pdd_diffusion_wrapper(state: MiniMaxH3PDDExecutionState):
+    def pdd_diffusion_wrapper(executor, x, timestep, context, transformer_options=None, **kwargs):
+        options = transformer_options or {}
+        diffusion_model = executor.class_obj
+        video_shift = float(options.get("minimax_h3_sigma_shift_video", getattr(diffusion_model, "sigma_shift_video", PDD_VIDEO_SHIFT)))
+        audio_shift = float(options.get("minimax_h3_sigma_shift_audio", getattr(diffusion_model, "sigma_shift_audio", PDD_AUDIO_SHIFT)))
+        if not (math.isclose(video_shift, PDD_VIDEO_SHIFT, abs_tol=1e-6) and math.isclose(audio_shift, PDD_AUDIO_SHIFT, abs_tol=1e-6)):
+            raise ValueError(f"MiniMax H3 PDD requires SigmaShift 12.0/3.0; received {video_shift}/{audio_shift}.")
+        payload = kwargs.get("minimax_payload") or {}
+        audio_scale = float(payload.get("audio_scale", PDD_VIDEO_SHIFT / PDD_AUDIO_SHIFT))
+        if not math.isclose(audio_scale, PDD_VIDEO_SHIFT / PDD_AUDIO_SHIFT, abs_tol=1e-6):
+            raise ValueError(f"MiniMax H3 PDD requires audio_scale {PDD_VIDEO_SHIFT / PDD_AUDIO_SHIFT}; received {audio_scale}.")
+        token = state.sigma.set(float(timestep.flatten()[0]) / 1000.0)
+        try:
+            return executor(x, timestep, context, options, **kwargs)
+        finally:
+            state.sigma.reset(token)
+    return pdd_diffusion_wrapper
+
+
+def make_pdd_final_forward(final_layer: Any, head_bank: MiniMaxH3PDDHeadBank, state: MiniMaxH3PDDExecutionState, bounds: tuple[float, ...], on_off_grid: str, strength: float):
+    def pdd_final_forward(self, x, t_emb, video_seg, audio_seg):
+        sigma = state.sigma.get()
+        if sigma is None:
+            raise RuntimeError("MiniMax H3 PDD final layer ran outside its Core diffusion wrapper.")
+        block = select_pdd_block(sigma, bounds, on_off_grid)
+        shift, scale = self.adaln_proj(t_emb)
+
+        def modulate(segment):
+            start, stop, row = segment
+            return (self.norm(x[start:stop]) * (1.0 + minimax_model._mod_row(scale, row, scale.dtype)) + minimax_model._mod_row(shift, row, shift.dtype)).to(torch.float32)
+
+        video_hidden = modulate(video_seg)
+        audio_hidden = modulate(audio_seg)
+        video, audio = head_bank.project(video_hidden, audio_hidden, block)
+        if strength != 1.0:
+            native_video = self.video_out(video_hidden)
+            native_audio = self.audio_out(audio_hidden)
+            video = native_video + (video - native_video) * strength
+            audio = native_audio + (audio - native_audio) * strength
+        return video, audio
+    return types.MethodType(pdd_final_forward, final_layer)
+
+
+def patch_minimax_h3_pdd_model(model: Any, pdd_lora: str, nfe: int, partition: str, lora_strength: float, head_strength: float, on_off_grid: str) -> tuple[Any, torch.Tensor]:
+    diffusion_model = model.get_model_object("diffusion_model")
+    if not isinstance(diffusion_model, minimax_model.MiniMaxH3Model):
+        raise ValueError("MiniMax H3 PDD requires a MiniMax H3 diffusion model.")
+    model_options = getattr(model, "model_options", {})
+    if model_options.get(MINIMAX_H3_PDD_OWNER_KEY):
+        raise ValueError("MiniMax H3 PDD is already applied to this model.")
+    if model_options.get(MINIMAX_H3_CACHE_OWNER_KEY):
+        raise ValueError("MiniMax H3 PDD cannot be combined with MiniMax H3 Cache.")
+    if model_options.get(MINIMAX_H3_SPECTRUM_OWNER_KEY):
+        raise ValueError("MiniMax H3 PDD cannot be combined with MiniMax H3 Spectrum.")
+    if PDD_FINAL_FORWARD_PATH in getattr(model, "object_patches", {}):
+        raise ValueError("MiniMax H3 PDD will not replace an existing final-layer object patch.")
+
+    path = folder_paths.get_full_path_or_raise("loras", pdd_lora)
+    state_dict, metadata = comfy.utils.load_torch_file(path, safe_load=True, return_metadata=True)
+    lora_state, heads, config = split_pdd_state_dict(state_dict, metadata, pdd_lora)
+    sizes = resolve_pdd_partition(config["num_steps"], int(nfe), partition, config["block_size"])
+    lora_state, curve_note = rebase_pdd_for_pruned_model(model, lora_state, pdd_lora)
+    expected_keys = sum(key.endswith((".lora_A.weight", ".diff", ".diff_b")) for key in lora_state)
+    loaded = comfy.lora.load_lora(lora_state, comfy.lora.model_lora_keys_unet(model.model, {}), log_missing=False)
+
+    patched = model.clone()
+    applied = patched.add_patches(loaded, lora_strength)
+    if len(applied) != expected_keys:
+        raise ValueError(f"MiniMax H3 PDD matched {len(applied)}/{expected_keys} patch keys; verify that PDD and diffusion-model trunks match.")
+    final_layer = patched.get_model_object("diffusion_model.final_layer")
+    video_weight, video_bias, audio_weight, audio_bias = heads
+    if tuple(final_layer.video_out.weight.shape) != tuple(video_weight.shape[1:]):
+        raise ValueError("PDD video head shape does not match this MiniMax H3 model.")
+    if tuple(final_layer.audio_out.weight.shape) != tuple(audio_weight.shape[1:]):
+        raise ValueError("PDD audio head shape does not match this MiniMax H3 model.")
+
+    video_fine = pdd_fine_sigmas(PDD_VIDEO_SHIFT, config["num_steps"])
+    audio_fine = pdd_fine_sigmas(PDD_AUDIO_SHIFT, config["num_steps"])
+    fused_video_weight, fused_video_bias = fuse_pdd_heads(video_weight, video_bias, video_fine, sizes)
+    fused_audio_weight, fused_audio_bias = fuse_pdd_heads(audio_weight, audio_bias, audio_fine, sizes)
+    head_bank = MiniMaxH3PDDHeadBank(fused_video_weight, fused_video_bias, fused_audio_weight, fused_audio_bias)
+    head_patcher = comfy.model_patcher.ModelPatcher(head_bank, load_device=patched.load_device, offload_device=patched.offload_device)
+    patched.set_additional_models(PDD_ADDITIONAL_MODEL_KEY, [head_patcher])
+
+    bounds = pdd_block_boundaries(config["num_steps"], sizes)
+    execution_state = MiniMaxH3PDDExecutionState()
+    patched.add_object_patch(PDD_FINAL_FORWARD_PATH, make_pdd_final_forward(final_layer, head_bank, execution_state, bounds, on_off_grid, head_strength))
+    wrapper_type = comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL
+    patched.remove_wrappers_with_key(wrapper_type, PDD_WRAPPER_KEY)
+    patched.add_wrapper_with_key(wrapper_type, PDD_WRAPPER_KEY, make_pdd_diffusion_wrapper(execution_state))
+    patched.model_options[MINIMAX_H3_PDD_OWNER_KEY] = True
+    if curve_note:
+        LOG.info("MiniMax H3 PDD: %s", curve_note)
+    return patched, torch.tensor(bounds, dtype=torch.float32)
 
 
 # Cache heuristic adapted from ComfyUI-MiniMaxH3-Cache by lihaoyun6:
@@ -970,6 +1310,8 @@ def patch_minimax_h3_cache_model(
 
     if getattr(model, "model_options", {}).get(MINIMAX_H3_SPECTRUM_OWNER_KEY):
         raise ValueError("MiniMax H3 Cache cannot be combined with MiniMax H3 Spectrum.")
+    if getattr(model, "model_options", {}).get(MINIMAX_H3_PDD_OWNER_KEY):
+        raise ValueError("MiniMax H3 Cache cannot be combined with MiniMax H3 PDD.")
 
     patched_model = model.clone()
     diffusion_model = patched_model.model.diffusion_model
@@ -4233,6 +4575,8 @@ def patch_minimax_h3_spectrum_model(model: Any, config: SpectrumH3Config) -> Any
         raise ValueError("This Spectrum node does not include feedback or rollback research modes.")
     if getattr(model, "model_options", {}).get(MINIMAX_H3_CACHE_OWNER_KEY):
         raise ValueError("MiniMax H3 Spectrum cannot be combined with MiniMax H3 Cache.")
+    if getattr(model, "model_options", {}).get(MINIMAX_H3_PDD_OWNER_KEY):
+        raise ValueError("MiniMax H3 Spectrum cannot be combined with MiniMax H3 PDD.")
     patched = model.clone()
     diffusion_model = patched.model.diffusion_model
     if not isinstance(diffusion_model, minimax_model.MiniMaxH3Model):

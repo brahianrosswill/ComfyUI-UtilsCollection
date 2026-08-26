@@ -681,6 +681,18 @@ def test_cache_and_spectrum_reject_both_stacking_orders():
             spectrum_model, _spectrum_config(degree=1, warmup_steps=1)
         )
 
+    pdd_model = types.SimpleNamespace(
+        model_options={patcher_helpers.MINIMAX_H3_PDD_OWNER_KEY: True}
+    )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        patcher_helpers.patch_minimax_h3_cache_model(
+            pdd_model, 0.1, 0.1, 0.9, 2, "auto", False
+        )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        patcher_helpers.patch_minimax_h3_spectrum_model(
+            pdd_model, _spectrum_config(degree=1, warmup_steps=1)
+        )
+
 
 def test_model_helper_rejects_invalid_inputs(monkeypatch):
     class FakeH3:
@@ -991,3 +1003,81 @@ def test_ideogram4_debanner_wrapper_and_block_forward_preserve_text_and_norm(mon
     unconditional_options = wrapper(Executor(), torch.zeros(1, 128, 3, 1), torch.tensor([1.0]), None, None, {})
     unchanged = patched.object_patches["diffusion_model.layers.25.forward"](output, None, None, None, unconditional_options)
     assert unchanged is output
+
+
+def test_minimax_h3_pdd_schema_uses_existing_lora_category(monkeypatch):
+    monkeypatch.setattr(
+        patcher_nodes.folder_paths,
+        "get_filename_list",
+        lambda category: ["minimax_h3_pdd.safetensors"] if category == "loras" else [],
+    )
+
+    schema = patcher_nodes.UC_MiniMaxH3PDDAcc.define_schema()
+
+    assert schema.node_id == "UC_MiniMaxH3PDDAcc"
+    assert schema.is_experimental
+    assert [value.id for value in schema.inputs] == [
+        "model",
+        "pdd_lora",
+        "nfe",
+        "partition",
+        "lora_strength",
+        "head_strength",
+        "on_off_grid",
+    ]
+    assert schema.inputs[1].options == ["minimax_h3_pdd.safetensors"]
+    assert [value.id for value in schema.outputs] == ["model", "sigmas"]
+
+
+def test_minimax_h3_pdd_partition_and_sigmas_stay_on_trained_grid():
+    assert patcher_helpers.resolve_pdd_partition(32, 8) == (4,) * 8
+    assert patcher_helpers.resolve_pdd_partition(32, 6) == (8, 8, 4, 4, 4, 4)
+    assert patcher_helpers.resolve_pdd_partition(32, 4) == (8,) * 4
+    bounds = patcher_helpers.pdd_block_boundaries(32, (8,) * 4)
+    assert bounds[0] == 1.0
+    assert bounds[-1] == 0.0
+    assert len(bounds) == 5
+    assert patcher_helpers.select_pdd_block(0.999992, bounds, "error") == 0
+    with pytest.raises(ValueError, match="trained envelope"):
+        patcher_helpers.resolve_pdd_partition(32, 32)
+
+
+def test_minimax_h3_pdd_wrapper_resets_context_after_failure():
+    state = patcher_helpers.MiniMaxH3PDDExecutionState()
+    wrapper = patcher_helpers.make_pdd_diffusion_wrapper(state)
+
+    class Executor:
+        class_obj = types.SimpleNamespace(sigma_shift_video=12.0, sigma_shift_audio=3.0)
+
+        def __call__(self, *_args, **_kwargs):
+            assert state.sigma.get() == pytest.approx(0.5)
+            raise RuntimeError("failed")
+
+    with pytest.raises(RuntimeError, match="failed"):
+        wrapper(Executor(), None, torch.tensor([500.0]), None, {})
+    assert state.sigma.get() is None
+
+
+def test_minimax_h3_pdd_head_bank_is_core_modelpatcher_managed():
+    bank = patcher_helpers.MiniMaxH3PDDHeadBank(
+        torch.ones(2, 3, 4),
+        torch.zeros(2, 3),
+        torch.ones(2, 2, 4),
+        torch.zeros(2, 2),
+    )
+    patcher = comfy.model_patcher.ModelPatcher(
+        bank,
+        load_device=torch.device("cpu"),
+        offload_device=torch.device("cpu"),
+    )
+    video, audio = bank.project(torch.ones(1, 4), torch.ones(1, 4), 1)
+
+    assert set(bank.state_dict()) == {
+        "video_weight",
+        "video_bias",
+        "audio_weight",
+        "audio_bias",
+    }
+    assert patcher.model_size() == sum(tensor.nbytes for tensor in bank.state_dict().values())
+    assert video.shape == (1, 3)
+    assert audio.shape == (1, 2)

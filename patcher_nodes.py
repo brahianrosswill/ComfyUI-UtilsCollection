@@ -1,5 +1,6 @@
 """ComfyUI nodes for model-scoped diffusion-model patches."""
 
+import folder_paths
 from comfy_api.latest import io
 
 from .patcher_helpers import (
@@ -11,6 +12,7 @@ from .patcher_helpers import (
     list_minimax_h3_projections,
     patch_ideogram4_debanner,
     patch_minimax_h3_clip_projection,
+    patch_minimax_h3_pdd_model,
     patch_unified_attention_model,
     patch_minimax_h3_cache_model,
     patch_minimax_h3_spectrum_model,
@@ -145,6 +147,88 @@ class UC_Ideogram4DebannerPatch(io.ComfyNode):
         if strength == 0.0:
             return io.NodeOutput(model)
         return io.NodeOutput(patch_ideogram4_debanner(model, strength))
+
+
+class UC_MiniMaxH3PDDAcc(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_MiniMaxH3PDDAcc",
+            display_name="MiniMax H3 PDD Acc (Experimental)",
+            category="advanced/model/patches",
+            description=(
+                "Applies a MiniMax H3 PDD Acc trunk LoRA and Core-managed "
+                "step-conditioned output heads. Use the SIGMAS output with Euler."
+            ),
+            inputs=[
+                io.Model.Input("model"),
+                io.Combo.Input(
+                    "pdd_lora",
+                    options=folder_paths.get_filename_list("loras"),
+                    tooltip="PDD Acc file from the existing ComfyUI loras folder.",
+                ),
+                io.Combo.Input(
+                    "nfe",
+                    options=["8", "6", "4"],
+                    default="8",
+                    tooltip="Trained PDD model evaluations. Partition overrides this value.",
+                ),
+                io.String.Input(
+                    "partition",
+                    default="",
+                    tooltip="Optional comma-separated 4/8-step blocks summing to 32.",
+                ),
+                io.Float.Input(
+                    "lora_strength",
+                    default=1.0,
+                    min=-2.0,
+                    max=2.0,
+                    step=0.01,
+                    tooltip="Trunk LoRA strength; trained value is 1.0.",
+                ),
+                io.Float.Input(
+                    "head_strength",
+                    default=1.0,
+                    min=0.0,
+                    max=2.0,
+                    step=0.01,
+                    tooltip="PDD output-head strength; trained value is 1.0.",
+                ),
+                io.Combo.Input(
+                    "on_off_grid",
+                    options=["error", "clamp"],
+                    default="error",
+                    tooltip="Reject untrained sigmas or clamp to the nearest trained block.",
+                ),
+            ],
+            outputs=[
+                io.Model.Output("model", display_name="model"),
+                io.Sigmas.Output("sigmas", display_name="sigmas"),
+            ],
+            is_experimental=True,
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model,
+        pdd_lora: str,
+        nfe: str,
+        partition: str,
+        lora_strength: float,
+        head_strength: float,
+        on_off_grid: str,
+    ) -> io.NodeOutput:
+        patched, sigmas = patch_minimax_h3_pdd_model(
+            model,
+            pdd_lora,
+            int(nfe),
+            partition,
+            lora_strength,
+            head_strength,
+            on_off_grid,
+        )
+        return io.NodeOutput(patched, sigmas)
 
 
 class UC_MiniMaxH3Cache(io.ComfyNode):

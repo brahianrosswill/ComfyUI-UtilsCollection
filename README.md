@@ -225,6 +225,7 @@ the base-resolution conditioning fusion.
 - `UC_GetJsonValue`
 - `UC_MiniMaxH3Cache`
 - `UC_MiniMaxH3Spectrum`
+- `UC_MiniMaxH3PDDAcc`
 - `UC_UnifiedAttentionPatcher`
 - `UC_MarkdownPreview`
 - `UC_BoldFrakturTextStyle`
