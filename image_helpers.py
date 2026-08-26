@@ -15,6 +15,38 @@ import torch
 from .helper_functions import resize_nchw
 
 
+def mask_to_bounding_box(
+    mask: torch.Tensor,
+    invert: bool = False,
+    image: torch.Tensor | None = None,
+) -> tuple[dict[str, int], torch.Tensor | None]:
+    """Return one Core bounding box covering all nonzero mask pixels."""
+    if mask.ndim < 2:
+        raise ValueError("Mask to Bounding Box requires a mask with at least two dimensions.")
+
+    active_mask = 1.0 - mask if invert else mask
+    nonzero = torch.nonzero(active_mask)
+    if nonzero.numel() == 0:
+        raise ValueError("Mask to Bounding Box requires at least one nonzero pixel.")
+
+    y_min = int(nonzero[:, -2].min().item())
+    y_max = int(nonzero[:, -2].max().item())
+    x_min = int(nonzero[:, -1].min().item())
+    x_max = int(nonzero[:, -1].max().item())
+    bounding_box = {
+        "x": x_min,
+        "y": y_min,
+        "width": x_max - x_min + 1,
+        "height": y_max - y_min + 1,
+    }
+    cropped_image = (
+        image[:, y_min:y_max + 1, x_min:x_max + 1, :]
+        if image is not None
+        else None
+    )
+    return bounding_box, cropped_image
+
+
 _HALO_CONTEXT_RADIUS = 13
 _HALO_WORKSPACE_BYTES = 128 * 1024 * 1024
 _LOHALO_CONTRAST = 3.38589

@@ -19,6 +19,41 @@ from utils_collection_bbox_test.utils_nodes import (
     UC_ExtractMask,
     UC_Ideogram4BoundingBoxCrop,
 )
+from utils_collection_bbox_test.image_helpers import mask_to_bounding_box
+from utils_collection_bbox_test.image_nodes import UC_MaskToBoundingBox
+
+
+def test_mask_to_bounding_box_uses_core_dictionary_shape():
+    mask = torch.ones((1, 512, 560), dtype=torch.float32)
+
+    bounding_box, cropped_image = mask_to_bounding_box(mask)
+
+    assert bounding_box == {"x": 0, "y": 0, "width": 560, "height": 512}
+    assert cropped_image is None
+
+
+def test_mask_to_bounding_box_converts_inclusive_corners_to_extents_and_crops():
+    mask = torch.zeros((1, 200, 240), dtype=torch.float32)
+    mask[:, 98:142, 68:172] = 1.0
+    image = torch.rand((1, 200, 240, 3))
+
+    output = UC_MaskToBoundingBox.execute(mask, False, image).args
+
+    assert output[0] == {"x": 68, "y": 98, "width": 104, "height": 44}
+    torch.testing.assert_close(output[1], image[:, 98:142, 68:172, :])
+
+
+def test_mask_to_bounding_box_rejects_empty_mask():
+    with pytest.raises(ValueError, match="at least one nonzero pixel"):
+        mask_to_bounding_box(torch.zeros((1, 16, 16)))
+
+
+def test_mask_to_bounding_box_schema_uses_core_bounding_box_output():
+    schema = UC_MaskToBoundingBox.define_schema()
+
+    assert schema.node_id == "UC_MaskToBoundingBox"
+    assert [input_.id for input_ in schema.inputs] == ["mask", "invert", "image"]
+    assert schema.outputs[0].io_type == "BOUNDING_BOX"
 
 
 def _result(data, index=0, expansion=0, axis="both", multiple="0"):

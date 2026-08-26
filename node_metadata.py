@@ -16,6 +16,8 @@ DESCRIPTIONS = {
     "UC_ImageIterativeStretchFill": "Fills image borders by iteratively stretching nearby pixels.",
     "UC_TextOverlayNode": "Draws configurable text over an image.",
     "UC_ModifyMask": "Expands, contracts, blurs, or otherwise adjusts a mask.",
+    "UC_SAM31CheckpointLoader": "Loads SAM 3.1 with automatic or deterministic FP32 precision.",
+    "UC_MaskToBoundingBox": "Returns the smallest Core-compatible bounding box containing the mask.",
     "UC_ImageBlendByMask": "Blends two images using a mask and configurable blend behavior.",
     "UC_ImagePad": "Pads an image and produces the corresponding placement mask.",
     "UC_NoHaloLoHaloDownscale": "Downscales an image to a multiple-aligned megapixel target with NoHalo or LoHalo interpolation.",

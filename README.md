@@ -114,6 +114,8 @@ the base-resolution conditioning fusion.
 - `UC_Image_Color_Noise`
 - `UC_ExtractPrevalentColors`
 - `UC_ModifyMask`
+- `UC_SAM31CheckpointLoader`
+- `UC_MaskToBoundingBox`
 - `UC_ImageBlendByMask`
 - `UC_ImagePad`
 - `UC_NoHaloLoHaloDownscale`

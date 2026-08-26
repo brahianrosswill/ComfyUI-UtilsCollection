@@ -27,6 +27,7 @@ from .image_helpers import (
     VIDEO_TIMELINE_TEXT_STRUCTURE,
     downscale_nohalo_lohalo,
     images_to_video_timeline,
+    mask_to_bounding_box,
     sample_video_frames_as_images,
     video_timeline_text,
 )
@@ -1460,6 +1461,35 @@ class UC_ModifyMask(io.ComfyNode):
                 mask = torch.min(mask, torch.tensor(upper_clamp / 100.0, device=mask.device))
             mask_inverted = 1.0 - mask
             return io.NodeOutput(mask, mask_inverted)
+
+
+class UC_MaskToBoundingBox(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_MaskToBoundingBox",
+            display_name="Mask to Bounding Box",
+            category="utils/mask",
+            description="Finds the smallest bounding box containing all nonzero mask pixels.",
+            inputs=[
+                io.Mask.Input("mask"),
+                io.Boolean.Input("invert", default=False),
+                io.Image.Input(
+                    "image",
+                    optional=True,
+                    tooltip="Optional image cropped to the detected bounding box.",
+                ),
+            ],
+            outputs=[
+                io.BoundingBox.Output("bounding_box", display_name="bounding box"),
+                io.Image.Output("image", display_name="cropped image"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, mask, invert, image=None) -> io.NodeOutput:
+        bounding_box, cropped_image = mask_to_bounding_box(mask, invert, image)
+        return io.NodeOutput(bounding_box, cropped_image)
 
 
 def _blend_luminosity(value):

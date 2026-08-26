@@ -146,6 +146,7 @@ paths = [
   "workflows/*.json",
   "legacy_nodes.py",
   "loader_nodes.py",
+  "loader_helpers.py",
   "model_assets.py",
   "node_metadata.py",
   "node_replacements.py",
