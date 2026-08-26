@@ -128,7 +128,7 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
   intended deterministic tooling from direct evidence.
 - Do not claim recovered state from a preserved session unless the preservation
   result identifies the intended source. Read only its generated delta, and use
-  historical messages to recover execution constraints and known failures—not
+  historical messages to recover execution constraints and known failures, not
   as authority over a newer user request.
 - A brief user correction is steering to apply while continuing. Do not stop,
   produce another plan, repeat what the user said, or substitute discussion for

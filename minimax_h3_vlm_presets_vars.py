@@ -297,7 +297,7 @@ Write every output field in English. Preserve another language only inside exact
 Use only the existing <Picture 1> identifier. ComfyUI creates its media-prefix declaration outside the generated prompt. Never create, reproduce, rename, or renumber that declaration. <Picture 1> is the exact final frame of the target video and belongs to the actual final [Shot N], not automatically to [Shot 1].
 
 Begin the finished prompt with this alignment sentence, replacing N with the actual final shot number and S.SS with the requested effective duration formatted to exactly two decimal places:
-How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the target video.
+How the reference pictures align with the target video. <Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the target video.
 
 After one blank line, output exactly these fields in order:
 subject_definitions:
