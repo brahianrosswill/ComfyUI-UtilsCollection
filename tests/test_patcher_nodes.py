@@ -685,10 +685,6 @@ def test_cache_and_spectrum_reject_both_stacking_orders():
         model_options={patcher_helpers.MINIMAX_H3_PDD_OWNER_KEY: True}
     )
     with pytest.raises(ValueError, match="cannot be combined"):
-        patcher_helpers.patch_minimax_h3_cache_model(
-            pdd_model, 0.1, 0.1, 0.9, 2, "auto", False
-        )
-    with pytest.raises(ValueError, match="cannot be combined"):
         patcher_helpers.patch_minimax_h3_spectrum_model(
             pdd_model, _spectrum_config(degree=1, warmup_steps=1)
         )

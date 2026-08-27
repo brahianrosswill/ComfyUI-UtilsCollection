@@ -740,8 +740,6 @@ def patch_minimax_h3_pdd_model(model: Any, pdd_lora: str, nfe: int, partition: s
     model_options = getattr(model, "model_options", {})
     if model_options.get(MINIMAX_H3_PDD_OWNER_KEY):
         raise ValueError("MiniMax H3 PDD is already applied to this model.")
-    if model_options.get(MINIMAX_H3_CACHE_OWNER_KEY):
-        raise ValueError("MiniMax H3 PDD cannot be combined with MiniMax H3 Cache.")
     if model_options.get(MINIMAX_H3_SPECTRUM_OWNER_KEY):
         raise ValueError("MiniMax H3 PDD cannot be combined with MiniMax H3 Spectrum.")
     if PDD_FINAL_FORWARD_PATH in getattr(model, "object_patches", {}):
@@ -1305,9 +1303,6 @@ def patch_minimax_h3_cache_model(
 
     if getattr(model, "model_options", {}).get(MINIMAX_H3_SPECTRUM_OWNER_KEY):
         raise ValueError("MiniMax H3 Cache cannot be combined with MiniMax H3 Spectrum.")
-    if getattr(model, "model_options", {}).get(MINIMAX_H3_PDD_OWNER_KEY):
-        raise ValueError("MiniMax H3 Cache cannot be combined with MiniMax H3 PDD.")
-
     patched_model = model.clone()
     diffusion_model = patched_model.model.diffusion_model
     if not isinstance(diffusion_model, minimax_model.MiniMaxH3Model):
