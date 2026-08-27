@@ -500,15 +500,105 @@ def test_h3_mixed_system_instruction_preserves_media_partition_contract():
     )
     for required in (
         "Existing Mixed Media",
-        "regular user request",
-        "leading ordered images",
-        "<Video 1>",
+        "user request",
+        "one continuous ordered `<Picture N>` sequence",
+        "declared segment count",
+        "ordered `Shot N at timestamp` entries",
+        "leading Pictures as chronological timeline images",
+        "every later Picture as a reference image",
+        "no outside reference or replacement exists",
         "<Picture N>",
-        "Never write `<Video N>` inside a timestamp block",
+        "never from a numeric pairing with timeline content",
+        "Never compress Picture identifiers",
+        "Do not create or emit `<Video N>` identifiers",
         "subject_definitions:",
         "retention_analysis:",
     ):
         assert required in instruction
+    assert "<Video 1>" not in instruction
+    assert "Picture-reference subset" not in instruction
+
+
+def test_h3_reference_presets_enforce_structured_timeline_and_conditional_edits():
+    instructions = tuple(
+        vlm_presets.system_instructions_vlm[name]
+        for name in (
+            "video_timeline_minimax_h3_reference_system_instruction",
+            "video_timeline_minimax_h3_reference_alt_system_instruction",
+            "video_timeline_minimax_h3_mixed_system_instruction",
+        )
+    )
+
+    required = (
+        "declared segment count",
+        "ordered `Shot N at timestamp` entries",
+        "leading Pictures as chronological timeline images",
+        "every later Picture as a reference image",
+        "no outside reference or replacement exists",
+        "never from a numeric pairing with timeline content",
+        "Do not assume that every later Picture requests replacement",
+        "When the user request explicitly maps a reference to content",
+        "people, characters, objects, environments",
+        "Never compress Picture identifiers",
+        "does not require citing every timeline Picture",
+        "Apply replacement rules only when the user request specifies",
+        "omit the superseded timeline content entirely",
+        "cite every reference Picture defining that final content individually",
+        "Never name, identify, or visually describe superseded timeline content",
+        "use the final referenced content's literal <Subject N> alias",
+    )
+    forbidden = (
+        "use the literal alias only at the subject's first introduction",
+        "Otherwise use the subject's concise ordinary name",
+        "do not use repeated aliases as continuity reinforcement",
+        "timestamp-associated samples",
+        "regular user request",
+    )
+
+    for instruction in instructions:
+        for phrase in required:
+            assert phrase in instruction
+        for phrase in forbidden:
+            assert phrase not in instruction
+
+    mixed = instructions[2]
+    assert "one continuous ordered `<Picture N>` sequence" in mixed
+    assert "Do not create or emit `<Video N>` identifiers" in mixed
+    assert "<Video 1>" not in mixed
+
+
+def test_h3_ref2va_prefix_reinforces_structured_timeline_reference_contract():
+    prefix = vlm_presets.system_query_additional_vlm["h3_ref2va_prefix"]
+
+    for required in (
+        "declared segment count",
+        "ordered `Shot N at timestamp` entries",
+        "leading Pictures as chronological timeline images",
+        "Treat every later Picture as a reference image",
+        "Picture count equals the segment count",
+        "Later reference order never determines",
+        "Preserve any explicit mapping in the user request",
+        "never invent an edit or replacement",
+        "Never compress Picture identifiers",
+        "does not require citing every timeline Picture",
+        "Apply replacement rules only when the user request specifies",
+        "superseded timeline content",
+        "every applicable later reference Picture individually",
+        "In `retention_analysis:`, explicitly state",
+        "every timeline block where final replacement content performs an action",
+        "people, characters, objects, environments",
+        "For reference-guided changes that are not replacements",
+    ):
+        assert required in prefix
+
+    for forbidden in (
+        "<Picture N> at TIMESTAMP",
+        "<Video 1>",
+        "regular user request",
+        "use the literal alias only at the subject's first introduction",
+    ):
+        assert forbidden not in prefix
+    assert prefix.endswith("BEGIN VIDEO REQUEST:\r\n")
 
 
 def test_readable_h3_reference_sources_match_runtime_presets():
@@ -568,23 +658,26 @@ def test_h3_reference_alt_assembled_context_matches_structured_picture_request()
     assert assembled.count(request) == 1
     assert instruction.count("{user_query}") == 8
     assert instruction.count("{system_query}") == 1
-    assert "regular user request, not this marker, is authoritative" in instruction
-    assert "exactly those starts and no additional section boundaries" in instruction
-    assert "copy each start literally" in instruction
+    assert "The user request, not this marker, is authoritative" in instruction
+    assert "use exactly those starts and no additional section boundaries" in instruction
     assert "exact requested duration as the final end" in instruction
     assert "Preserve the request's timestamp precision" in instruction
-    assert "sample identity is analysis-only and receives no subject alias" in instruction
-    assert "final Picture-defined subject from the first frame through the last" in instruction
-    assert "without emitting `<Picture N>` or `<Video N>` identifiers" in instruction
+    assert "ordered `Shot N at timestamp` entries" in instruction
+    assert "leading Pictures as chronological timeline images" in instruction
+    assert "every later Picture as a reference image" in instruction
+    assert "no outside reference or replacement exists" in instruction
+    assert "never from a numeric pairing with timeline content" in instruction
+    assert "omit the superseded timeline content entirely" in instruction
+    assert "every reference Picture defining that final content individually" in instruction
+    assert "use the final referenced content's literal <Subject N> alias" in instruction
     assert "Do not replace supplied starts with equal-duration divisions" in suffix
     for competing in (
-        "replacement subject",
-        "displaced sample identity",
-        "on-screen swap",
-        "identity swap",
-        "transformation, or reversion",
+        "<Picture N> at TIMESTAMP",
+        "timestamp-associated samples",
+        "use the literal alias only at the subject's first introduction",
+        "Otherwise use the subject's concise ordinary name",
     ):
-        assert competing not in instruction + prefix + suffix
+        assert competing not in instruction
 
 
 def test_h3_ref2va_experimental_query_enforces_picture_provenance_contract():
@@ -1089,14 +1182,14 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "Never create or reproduce a media prefix declaration" in instruction
     assert "assign a media number" in instruction
     assert "renumber an existing media identifier" in instruction
-    assert "Create and number <Subject N> aliases only" in instruction
+    assert "Create and number <Subject N> aliases for reusable people" in instruction
     assert "Assign `<Picture N>`" not in instruction
     assert "Number each category independently" not in instruction
     assert "<Subject N>" in instruction
     assert "<Picture N>" in instruction
     assert "<Video N>" in instruction
     assert "<Audio N>" in instruction
-    assert "A label never replaces the full subject" in instruction
+    assert "A label never replaces the full scene, action, motion, or audio specification" in instruction
     assert "**Governing Reference Style:**" in instruction
     assert "explicit requested style takes priority only where it conflicts" in instruction
     assert "When no conflict exists, preserve and state the supported source rendering style" in instruction
@@ -1111,9 +1204,10 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "established reference relationships" in instruction
     assert "governing visual style, medium, era, and subject presentation" in instruction
     assert "write one concise paragraph using established <Subject N> aliases" in instruction
-    assert "final subjects' identity, appearance, motion, scene, style, and continuity" in instruction
-    assert "without emitting `<Picture N>` or `<Video N>` identifiers" in instruction
-    assert "source identity that is absent from the completed target" in instruction
+    assert "For every actual replacement, explicitly state which final alias replaces" in instruction
+    assert "cite every reference Picture defining that final content individually" in instruction
+    assert "Never name, identify, or visually describe superseded timeline content" in instruction
+    assert "For non-replacement references" in instruction
     assert "Do not include action choreography, event progression, transformation timing" in instruction
     assert "Do not repeat subject definitions, summary content, or exhaustive source description" in instruction
     assert "Do not invent production methods, construction details" in instruction
@@ -1121,16 +1215,18 @@ def test_minimax_h3_reference_timeline_field_and_label_contracts():
     assert "conditional source-style retention" in instruction
     assert "requested target-style precedence only where conflicts exist" in instruction
     assert "governing style in `summary:`" in instruction
-    assert "concise media roles and continuity constraints only in `retention_analysis:`" in instruction
+    assert "explicit replacement relationships plus concise media roles" in instruction
     assert "Keep action, transformation, event order, and timing exclusively inside" in instruction
     assert "no choreography, progression, timing, production methods" in instruction
     assert "correct use of downstream reference-image availability" in instruction
     assert "Do not invent task classifications or asset roles" in instruction
-    assert "use the literal alias only at the subject's first introduction" in instruction
-    assert "Otherwise use the subject's concise ordinary name" in instruction
-    assert "Never repeat one alias multiple times in a timestamp block" in instruction
+    assert "use the literal alias only at the subject's first introduction" not in instruction
+    assert "Otherwise use the subject's concise ordinary name" not in instruction
+    assert "use the final referenced content's literal <Subject N> alias" in instruction
+    assert "Never repeat one alias within a timestamp block" in instruction
     assert "neither visibly supported nor explicitly introduced" in instruction
-    assert "do not use repeated aliases as continuity reinforcement" in instruction
+    assert "do not use repeated aliases as continuity reinforcement" not in instruction
+    assert "repeat a replacement alias wherever an action or visible change requires" in instruction
     assert "Preserve each subject alias throughout the output" not in instruction
     assert "wherever its role materially affects the current interval" not in instruction
     assert "**Atomic Subject Labels:**" in instruction
