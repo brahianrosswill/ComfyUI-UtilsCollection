@@ -651,7 +651,7 @@ def rebase_pdd_adaln(lora_state: dict[str, torch.Tensor], center: torch.Tensor, 
     return rebased, count
 
 
-def rebase_pdd_for_pruned_model(model: Any, lora_state: dict[str, torch.Tensor], filename: str) -> tuple[dict[str, torch.Tensor], str]:
+def rebase_pdd_for_pruned_model(model: Any, lora_state: dict[str, torch.Tensor]) -> tuple[dict[str, torch.Tensor], str]:
     diffusion_model = model.get_model_object("diffusion_model")
     if not diffusion_model.use_adaln_curves:
         return lora_state, ""
@@ -666,11 +666,6 @@ def rebase_pdd_for_pruned_model(model: Any, lora_state: dict[str, torch.Tensor],
         if basis_table.shape == table.shape and torch.allclose(basis_table, table, atol=1e-6):
             trunk = path.stem.removeprefix("basis_")
             rebased, count = rebase_pdd_adaln(lora_state, data["c"], data["V"])
-            if trunk not in filename.lower():
-                raise ValueError(
-                    f"MiniMax H3 PDD model uses the {trunk} AdalN basis but selected "
-                    f"file is {filename}; pair FL2VA with FL2VA and Ref2VA with Ref2VA."
-                )
             return rebased, f"rebased {count} AdalN modules onto {trunk} curve basis"
     raise ValueError(f"MiniMax H3 PDD cannot match this pruned model's AdalN table ({list(table.shape)}, sha {pdd_table_sha(table)}) against {candidates}")
 
@@ -756,7 +751,7 @@ def patch_minimax_h3_pdd_model(model: Any, pdd_lora: str, nfe: int, partition: s
     state_dict, metadata = comfy.utils.load_torch_file(path, safe_load=True, return_metadata=True)
     lora_state, heads, config = split_pdd_state_dict(state_dict, metadata, pdd_lora)
     sizes = resolve_pdd_partition(config["num_steps"], int(nfe), partition, config["block_size"])
-    lora_state, curve_note = rebase_pdd_for_pruned_model(model, lora_state, pdd_lora)
+    lora_state, curve_note = rebase_pdd_for_pruned_model(model, lora_state)
     expected_keys = sum(key.endswith((".lora_A.weight", ".diff", ".diff_b")) for key in lora_state)
     loaded = comfy.lora.load_lora(lora_state, comfy.lora.model_lora_keys_unet(model.model, {}), log_missing=False)
 
