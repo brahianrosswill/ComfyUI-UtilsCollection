@@ -96,10 +96,10 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
   edits, run every relevant synchronizer without `--apply`, apply each validated
   synchronization, rerun each synchronizer without `--apply` until it reports
   no pending updates, and inspect the bounded generated diff. For the managed
-  H3 reference presets, use `local/sync_vlm_h3_reference_readable_preset.py`
-  for the three system instructions and
-  `scripts/sync_vlm_h3_ref2va_query_preset.py` for REF2VA prefix, suffix, and
-  raw values. Do not begin test edits or test execution before this sequence is
+  VLM presets, use tracked `scripts/manage_vlm_preset_authorities.py`; it owns
+  every configured readable/runtime authority pair. Preset-specific files under
+  `local/` and specialized `sync_vlm_*` scripts are not synchronization
+  authorities. Do not begin test edits or test execution before this sequence is
   complete.
 - When an existing synchronizer does not cover the requested preset, extend or
   add deterministic synchronization tooling before changing runtime data. Do

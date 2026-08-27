@@ -1,16 +1,12 @@
-import ast
 import json
 from pathlib import Path
 import runpy
-import subprocess
-import sys
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_PATH = ROOT / "scripts" / "manage_vlm_preset_authorities.py"
-H3_QUERY_TOOL_PATH = ROOT / "scripts" / "sync_vlm_h3_ref2va_query_preset.py"
 CONFIG = (
     (
         "vlm_presets.py",
@@ -76,47 +72,6 @@ def test_nonlegacy_vlm_authorities_match_runtime_and_use_crlf():
                 f"{authority_name}:{scalar_name}", authoritative_values[scalar_name]
             )
             assert_crlf_only(f"{runtime_name}:{scalar_name}", runtime[scalar_name])
-
-
-def test_h3_raw_query_authorities_are_derived_from_prefix_and_suffix():
-    source = (ROOT / "vlm_presets_vars.py").read_text(encoding="utf-8")
-    assignments = {
-        target.id: node.value
-        for node in ast.parse(source).body
-        if isinstance(node, ast.Assign)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
-    expected = {
-        "H3_REF2VA": ("H3_REF2VA_PREFIX", "H3_REF2VA_SUFFIX"),
-        "H3_REF2VA_ALT": ("H3_REF2VA_ALT_PREFIX", "H3_REF2VA_ALT_SUFFIX"),
-        "H3_MIXED_REF2VA": (
-            "H3_MIXED_REF2VA_PREFIX",
-            "H3_MIXED_REF2VA_SUFFIX",
-        ),
-    }
-
-    for name, arguments in expected.items():
-        value = assignments[name]
-        assert isinstance(value, ast.Call)
-        assert isinstance(value.func, ast.Name)
-        assert value.func.id == "_h3_raw"
-        assert tuple(arg.id for arg in value.args if isinstance(arg, ast.Name)) == arguments
-
-
-def test_tracked_h3_query_synchronizer_reports_synchronized_state():
-    result = subprocess.run(
-        [sys.executable, str(H3_QUERY_TOOL_PATH)],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == (
-        "Runtime H3 reference query presets are already synchronized."
-    )
 
 
 def test_authority_tool_dry_run_and_apply_changed_content(tmp_path, capsys):
