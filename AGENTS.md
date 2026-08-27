@@ -92,6 +92,15 @@ python_executable: C:\Users\ishim\Tools\ComfyUI\.venv\Scripts\python.exe
   relevant `local/sync_vlm_*.py` utility. Edit the readable variable first,
   run the synchronizer without `--apply`, then run it with `--apply` only after
   its validation succeeds.
+- Complete synchronization before modifying or running tests: after readable
+  edits, run every relevant synchronizer without `--apply`, apply each validated
+  synchronization, rerun each synchronizer without `--apply` until it reports
+  no pending updates, and inspect the bounded generated diff. For the managed
+  H3 reference presets, use `local/sync_vlm_h3_reference_readable_preset.py`
+  for the three system instructions and
+  `scripts/sync_vlm_h3_ref2va_query_preset.py` for REF2VA prefix, suffix, and
+  raw values. Do not begin test edits or test execution before this sequence is
+  complete.
 - When an existing synchronizer does not cover the requested preset, extend or
   add deterministic synchronization tooling before changing runtime data. Do
   not fall back to ambiguous dictionary-boundary patches or manual replacement
