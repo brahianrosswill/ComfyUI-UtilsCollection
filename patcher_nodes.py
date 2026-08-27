@@ -174,7 +174,8 @@ class UC_MiniMaxH3PDDAcc(io.ComfyNode):
                     tooltip=(
                         "Choose the PDD Acc file matching your MiniMax H3 model: "
                         "FL2VA for first/last-frame generation or Ref2VA for "
-                        "reference-image generation."
+                        "reference-image generation. Download links and installation "
+                        "instructions are in README.md under MiniMax H3 PDD Acc models."
                     ),
                 ),
                 io.Combo.Input(

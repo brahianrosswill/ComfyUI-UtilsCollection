@@ -238,6 +238,17 @@ the base-resolution conditioning fusion.
 - `UC_TextConcatenateListsAutogrow`
 - `UC_Newline`
 
+### MiniMax H3 PDD Acc models
+
+Download the PDD Acc file matching the MiniMax H3 diffusion model:
+
+- [MiniMax H3 FL2VA PDD Acc 8-step](https://huggingface.co/aptech0081/MiniMax-H3-Acc-LoRAs-ComfyUI/blob/main/minimax_h3_fl2va_pdd_acc_8step_comfyui.safetensors)
+- [MiniMax H3 Ref2VA PDD Acc 8-step](https://huggingface.co/aptech0081/MiniMax-H3-Acc-LoRAs-ComfyUI/blob/main/minimax_h3_ref2va_pdd_acc_8step_comfyui.safetensors)
+
+Place the downloaded `.safetensors` file in `ComfyUI/models/loras`, or in the
+configured external directory used by ComfyUI's `loras` model category. Restart
+ComfyUI or refresh model files, then select it in `UC_MiniMaxH3PDDAcc`.
+
 ### Scheduler presets
 
 - `Ideogram4SchedulerPreset`
