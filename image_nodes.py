@@ -10,7 +10,7 @@ import folder_paths
 from tqdm import tqdm
 from PIL import Image, ImageOps, ImageSequence, ImageDraw, ImageFont
 import kornia.morphology as morph
-from .helper_functions import pil2tensor, math_diag, pct_to_px, composite, fill_mask_from_edges, iterative_directional_stretch_fill, gaussian_blur_nchw, hex_to_rgb, string_to_color, match_image_properties, resize_nchw, FLOW_PRESETS
+from .helper_functions import pil2tensor, math_diag, pct_to_px, composite, fill_mask_from_edges, iterative_directional_stretch_fill, gaussian_blur_nchw, hex_to_rgb, string_to_color, resize_nchw, FLOW_PRESETS
 from .tile_helpers import (
     accumulate_tile_images,
     apply_tile_differential_diffusion,
@@ -28,6 +28,7 @@ from .image_helpers import (
     downscale_nohalo_lohalo,
     images_to_video_timeline,
     mask_to_bounding_box,
+    match_image_properties,
     sample_video_frames_as_images,
     video_timeline_text,
 )
@@ -893,6 +894,10 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
                 io.Float.Input("lighting_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Strength of reference luminance matching before the overall weight is applied."),
                 io.Float.Input("texture_preservation", default=0.5, min=0.0, max=1.0, step=0.001, tooltip="Preserves edges and textures from the generated image by matching only low-frequency properties."),
                 io.Mask.Input("mask", optional=True, tooltip="Optional mask to softly blend the color/lighting changes onto the generated image."),
+                io.Float.Input("saturation_weight", optional=True, default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the source image's overall saturation without matching pixel positions."),
+                io.Float.Input("contrast_weight", optional=True, default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the source image's overall contrast using its brightness range."),
+                io.Mask.Input("source_analysis_mask", optional=True, tooltip="Optional source mask. Only masked source pixels are used to measure color and lighting."),
+                io.Mask.Input("target_analysis_mask", optional=True, tooltip="Optional target mask. Only masked target pixels are used to measure its current color and lighting."),
             ],
             outputs=[
                 io.Image.Output(display_name="image"),
@@ -909,6 +914,10 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
         lighting_weight: float,
         texture_preservation: float,
         mask: torch.Tensor = None,
+        saturation_weight: float = 1.0,
+        contrast_weight: float = 1.0,
+        source_analysis_mask: torch.Tensor = None,
+        target_analysis_mask: torch.Tensor = None,
     ) -> io.NodeOutput:
         result = match_image_properties(
             original_image,
@@ -918,6 +927,10 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
             lighting_weight,
             texture_preservation,
             mask,
+            saturation_weight,
+            contrast_weight,
+            source_analysis_mask,
+            target_analysis_mask,
         )
         return io.NodeOutput(result)
 

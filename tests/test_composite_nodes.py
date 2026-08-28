@@ -1749,6 +1749,55 @@ def test_property_match_zero_weight_is_bit_exact():
     assert torch.equal(result, generated)
 
 
+def test_property_match_uses_global_statistics_without_spatial_correspondence():
+    source = torch.rand(1, 9, 7, 3)
+    target = torch.rand(1, 6, 8, 3)
+    permutation = torch.randperm(target.shape[1] * target.shape[2])
+    shuffled = target.reshape(1, -1, 3)[:, permutation].reshape_as(target)
+
+    matched = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, target, 1.0, 1.0, 1.0, 0.0
+    ).result[0]
+    shuffled_matched = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, shuffled, 1.0, 1.0, 1.0, 0.0
+    ).result[0]
+    inverse = torch.argsort(permutation)
+    restored = shuffled_matched.reshape(1, -1, 3)[:, inverse].reshape_as(target)
+
+    assert matched.shape == target.shape
+    assert torch.allclose(matched, restored, atol=2e-4, rtol=0.0)
+
+
+def test_property_match_transfers_global_lighting_between_different_sizes():
+    source = torch.full((1, 5, 9, 3), 0.8)
+    target = torch.full((1, 11, 6, 3), 0.2)
+
+    result = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, target, 1.0, 0.0, 1.0, 1.0,
+        saturation_weight=0.0, contrast_weight=0.0,
+    ).result[0]
+
+    assert result.shape == target.shape
+    assert result.mean() > 0.7
+
+
+def test_property_match_constant_analysis_masks_remain_finite():
+    source = torch.full((1, 4, 4, 3), 0.65)
+    target = torch.full((1, 7, 5, 3), 0.35)
+    source_mask = torch.zeros(1, 4, 4)
+    source_mask[:, 0, 0] = 1.0
+    target_mask = torch.zeros(1, 7, 5)
+    target_mask[:, 0, 0] = 1.0
+
+    result = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, target, 1.0, 1.0, 1.0, 0.5,
+        source_analysis_mask=source_mask,
+        target_analysis_mask=target_mask,
+    ).result[0]
+
+    assert torch.isfinite(result).all()
+
+
 def test_opencv_edits_preserve_unaffected_fp32_pixels():
     image = torch.rand(1, 20, 20, 3)
     mask = torch.zeros(1, 20, 20)

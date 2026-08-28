@@ -9,10 +9,132 @@ from fractions import Fraction
 from typing import Callable, Iterator, Sequence
 
 import av
+import cv2
 import numpy as np
 import torch
 
 from .helper_functions import resize_nchw
+
+
+def _masked_pixels(image: np.ndarray, mask: np.ndarray | None) -> np.ndarray:
+    pixels = image.reshape(-1, image.shape[-1])
+    if mask is None:
+        return pixels
+    selected = mask.reshape(-1) > 1e-4
+    return pixels[selected] if np.any(selected) else pixels
+
+
+def _robust_channel_stats(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    low, median, high = np.percentile(values, (10.0, 50.0, 90.0), axis=0)
+    return median.astype(np.float32), np.maximum(high - low, 1e-4).astype(np.float32)
+
+
+def _covariance_shape(values: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    clipped = np.clip(
+        values,
+        np.percentile(values, 1.0, axis=0),
+        np.percentile(values, 99.0, axis=0),
+    )
+    center = np.median(clipped, axis=0).astype(np.float32)
+    covariance = (
+        np.cov(clipped - center, rowvar=False).astype(np.float32)
+        if len(clipped) > 1
+        else np.zeros((2, 2), dtype=np.float32)
+    )
+    covariance += np.eye(2, dtype=np.float32) * 1e-5
+    spread = max(float(np.trace(covariance)), 1e-5)
+    return center, covariance / spread, spread
+
+
+def _symmetric_matrix_power(matrix: np.ndarray, power: float) -> np.ndarray:
+    values, vectors = np.linalg.eigh(matrix)
+    values = np.maximum(values, 1e-5) ** power
+    return (vectors * values) @ vectors.T
+
+
+def _prepare_analysis_mask(mask: torch.Tensor | None, index: int, height: int, width: int) -> np.ndarray | None:
+    if mask is None:
+        return None
+    selected = mask[min(index, mask.shape[0] - 1)].detach().float().cpu().numpy().squeeze()
+    if selected.shape != (height, width):
+        selected = cv2.resize(selected, (width, height), interpolation=cv2.INTER_LINEAR)
+    return np.clip(selected, 0.0, 1.0).astype(np.float32)
+
+
+def match_image_properties(
+    source: torch.Tensor,
+    target: torch.Tensor,
+    overall_weight: float,
+    color_weight: float,
+    lighting_weight: float,
+    texture_preservation: float,
+    mask: torch.Tensor | None = None,
+    saturation_weight: float = 1.0,
+    contrast_weight: float = 1.0,
+    source_analysis_mask: torch.Tensor | None = None,
+    target_analysis_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Transfer global color and lighting statistics without spatial correspondence."""
+    if overall_weight <= 0.0 or (color_weight <= 0.0 and lighting_weight <= 0.0 and saturation_weight <= 0.0 and contrast_weight <= 0.0):
+        return target.clone()
+
+    outputs = []
+    for index in range(target.shape[0]):
+        source_index = min(index, source.shape[0] - 1)
+        source_rgb = np.clip(source[source_index, ..., :3].detach().float().cpu().numpy(), 0.0, 1.0)
+        target_rgb = np.clip(target[index, ..., :3].detach().float().cpu().numpy(), 0.0, 1.0)
+        source_lab = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        target_lab = cv2.cvtColor(target_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+        source_mask = _prepare_analysis_mask(source_analysis_mask, source_index, *source_rgb.shape[:2])
+        target_mask = _prepare_analysis_mask(target_analysis_mask, index, *target_rgb.shape[:2])
+        source_pixels = _masked_pixels(source_lab, source_mask)
+        target_pixels = _masked_pixels(target_lab, target_mask)
+
+        source_l_center, source_l_range = _robust_channel_stats(source_pixels[:, :1])
+        target_l_center, target_l_range = _robust_channel_stats(target_pixels[:, :1])
+        contrast = float(np.clip(source_l_range[0] / target_l_range[0], 0.25, 4.0))
+        contrast = 1.0 + (contrast - 1.0) * contrast_weight * overall_weight
+        lighting = lighting_weight * overall_weight
+
+        target_l = target_lab[..., 0]
+        sigma = max(1.0, math.hypot(*target_l.shape) * 0.01)
+        base = cv2.GaussianBlur(target_l, (0, 0), sigmaX=sigma, sigmaY=sigma)
+        detail = target_l - base
+        full_transfer = (target_l - target_l_center[0]) * contrast + target_l_center[0]
+        detail_preserving = (base - target_l_center[0]) * contrast + target_l_center[0] + detail
+        transferred_l = full_transfer * (1.0 - texture_preservation) + detail_preserving * texture_preservation
+        transferred_l += (source_l_center[0] - target_l_center[0]) * lighting
+
+        source_center, source_shape, source_spread = _covariance_shape(source_pixels[:, 1:3])
+        target_center, target_shape, target_spread = _covariance_shape(target_pixels[:, 1:3])
+        shape_transform = _symmetric_matrix_power(source_shape, 0.5) @ _symmetric_matrix_power(target_shape, -0.5)
+        centered_chroma = target_lab[..., 1:3] - target_center
+        shaped_chroma = centered_chroma @ shape_transform.T
+        saturation = math.sqrt(source_spread / target_spread)
+        saturation = float(np.clip(saturation, 0.25, 4.0))
+        saturation = 1.0 + (saturation - 1.0) * saturation_weight * overall_weight
+        color = color_weight * overall_weight
+        color_matched = shaped_chroma + source_center
+        transferred_chroma = target_lab[..., 1:3] * (1.0 - color) + color_matched * color
+        transferred_chroma *= saturation
+
+        result_lab = target_lab.copy()
+        result_lab[..., 0] = transferred_l
+        result_lab[..., 1:3] = transferred_chroma
+        result_lab[..., 0] = np.clip(result_lab[..., 0], 0.0, 100.0)
+        result_lab[..., 1:3] = np.clip(result_lab[..., 1:3], -127.0, 127.0)
+        result_rgb = np.clip(cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB), 0.0, 1.0)
+
+        apply_mask = _prepare_analysis_mask(mask, index, *target_rgb.shape[:2])
+        if apply_mask is not None:
+            result_rgb = target_rgb * (1.0 - apply_mask[..., None]) + result_rgb * apply_mask[..., None]
+        if target.shape[-1] > 3:
+            extra = target[index, ..., 3:].detach().float().cpu().numpy()
+            result_rgb = np.concatenate((result_rgb, extra), axis=-1)
+        outputs.append(torch.from_numpy(result_rgb.astype(np.float32)))
+
+    return torch.stack(outputs).to(device=target.device, dtype=target.dtype)
 
 
 def mask_to_bounding_box(
