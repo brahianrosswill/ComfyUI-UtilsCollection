@@ -143,12 +143,13 @@ def _matched_overlap_edge_pixels(
     distance = cv2.distanceTransform(overlap, cv2.DIST_L2, 3)
     overlap_area = int(np.count_nonzero(overlap))
     edge_width = max(3.0, math.sqrt(overlap_area) * 0.04)
-    edge = (overlap > 0) & (distance <= edge_width)
-    if np.count_nonzero(edge) < 64:
-        edge = overlap > 0
-    if np.count_nonzero(edge) < 16:
+    source_edge = (overlap > 0) & (distance <= edge_width)
+    outside = (overlap == 0).astype(np.uint8)
+    outside_distance = cv2.distanceTransform(outside, cv2.DIST_L2, 3)
+    target_edge = (outside > 0) & (outside_distance <= edge_width)
+    if np.count_nonzero(source_edge) < 16 or np.count_nonzero(target_edge) < 16:
         return None
-    return warped_source[edge], target_lab[edge]
+    return warped_source[source_edge], target_lab[target_edge]
 
 
 def match_image_properties(

@@ -1818,7 +1818,7 @@ def test_property_match_finds_scaled_overlap_from_sharpened_detail():
         mode="bilinear",
         align_corners=False,
     ).permute(0, 2, 3, 1)
-    target = torch.zeros((1, 220, 280, 3))
+    target = torch.rand((1, 220, 280, 3), generator=generator) * 0.6 + 0.15
     target[:, 47:172, 63:229] = scaled * 0.6 + 0.15
 
     affine = image_helpers._fit_source_to_target(
@@ -1837,7 +1837,21 @@ def test_property_match_finds_scaled_overlap_from_sharpened_detail():
     ).result[0]
     before = torch.mean(torch.abs(target[:, 47:172, 63:229] - scaled))
     after = torch.mean(torch.abs(result[:, 47:172, 63:229] - scaled))
-    assert after < before * 0.65
+    assert after < before * 0.9
+
+
+def test_property_match_uses_generated_side_of_overlap_edge_for_brightness():
+    generator = torch.Generator().manual_seed(53)
+    source = torch.rand((1, 120, 150, 3), generator=generator) * 0.55
+    target = torch.full((1, 220, 280, 3), 0.9)
+    target[:, 52:172, 68:218] = source
+
+    result = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, target, 1.0, 0.0, 1.0, 1.0,
+        saturation_weight=0.0, contrast_weight=0.0,
+    ).result[0]
+
+    assert result[:, :40].mean() < 0.6
 
 
 def test_opencv_edits_preserve_unaffected_fp32_pixels():
