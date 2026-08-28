@@ -24,6 +24,7 @@ try:
         background_replace_helpers,
         composite_helpers,
         composite_nodes,
+        image_helpers,
         image_nodes,
         model_assets,
         staged_compositor_helpers,
@@ -1781,21 +1782,46 @@ def test_property_match_transfers_global_lighting_between_different_sizes():
     assert result.mean() > 0.7
 
 
-def test_property_match_constant_analysis_masks_remain_finite():
+def test_property_match_constant_images_remain_finite():
     source = torch.full((1, 4, 4, 3), 0.65)
     target = torch.full((1, 7, 5, 3), 0.35)
-    source_mask = torch.zeros(1, 4, 4)
-    source_mask[:, 0, 0] = 1.0
-    target_mask = torch.zeros(1, 7, 5)
-    target_mask[:, 0, 0] = 1.0
 
     result = image_nodes.UC_ImageMatchPropertiesNode.execute(
         source, target, 1.0, 1.0, 1.0, 0.5,
-        source_analysis_mask=source_mask,
-        target_analysis_mask=target_mask,
     ).result[0]
 
     assert torch.isfinite(result).all()
+
+
+def test_property_match_finds_scaled_overlap_from_sharpened_detail():
+    generator = torch.Generator().manual_seed(41)
+    source = torch.rand((1, 96, 128, 3), generator=generator)
+    scaled = torch.nn.functional.interpolate(
+        source.permute(0, 3, 1, 2),
+        size=(125, 166),
+        mode="bilinear",
+        align_corners=False,
+    ).permute(0, 2, 3, 1)
+    target = torch.zeros((1, 220, 280, 3))
+    target[:, 47:172, 63:229] = scaled * 0.6 + 0.15
+
+    affine = image_helpers._fit_source_to_target(
+        source[0].numpy(),
+        target[0].numpy(),
+    )
+
+    assert affine is not None
+    scale = float(np.hypot(affine[0, 0], affine[1, 0]))
+    assert scale == pytest.approx(1.3, abs=0.08)
+    assert affine[0, 2] == pytest.approx(63.0, abs=5.0)
+    assert affine[1, 2] == pytest.approx(47.0, abs=5.0)
+
+    result = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, target, 1.0, 1.0, 1.0, 0.5
+    ).result[0]
+    before = torch.mean(torch.abs(target[:, 47:172, 63:229] - scaled))
+    after = torch.mean(torch.abs(result[:, 47:172, 63:229] - scaled))
+    assert after < before * 0.65
 
 
 def test_opencv_edits_preserve_unaffected_fp32_pixels():

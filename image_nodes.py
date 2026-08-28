@@ -887,17 +887,15 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
             display_name="Image Match Properties",
             category="advanced/image",
             inputs=[
-                io.Image.Input("original_image", tooltip="Reference image whose color and lighting properties are matched."),
-                io.Image.Input("generated_image", tooltip="Image adjusted toward the reference while retaining its generated detail."),
-                io.Float.Input("overall_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Overall strength multiplying both color and lighting adjustments."),
-                io.Float.Input("color_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Strength of reference color matching before the overall weight is applied."),
-                io.Float.Input("lighting_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Strength of reference luminance matching before the overall weight is applied."),
-                io.Float.Input("texture_preservation", default=0.5, min=0.0, max=1.0, step=0.001, tooltip="Preserves edges and textures from the generated image by matching only low-frequency properties."),
-                io.Mask.Input("mask", optional=True, tooltip="Optional mask to softly blend the color/lighting changes onto the generated image."),
-                io.Float.Input("saturation_weight", optional=True, default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the source image's overall saturation without matching pixel positions."),
-                io.Float.Input("contrast_weight", optional=True, default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the source image's overall contrast using its brightness range."),
-                io.Mask.Input("source_analysis_mask", optional=True, tooltip="Optional source mask. Only masked source pixels are used to measure color and lighting."),
-                io.Mask.Input("target_analysis_mask", optional=True, tooltip="Optional target mask. Only masked target pixels are used to measure its current color and lighting."),
+                io.Image.Input("original_image", tooltip="Connect the original image. The node automatically finds where it appears inside the larger result, including when its size changed."),
+                io.Image.Input("generated_image", tooltip="Connect the outpainted image. Colors near the matched original-image edges are used to correct the whole result."),
+                io.Float.Input("overall_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Strength of the complete correction. 0 keeps the generated image unchanged; 1 applies the selected settings fully."),
+                io.Float.Input("color_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the original image's overall color cast and balance. It does not copy colors by pixel position."),
+                io.Float.Input("lighting_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the original image's overall brightness."),
+                io.Float.Input("texture_preservation", default=0.5, min=0.0, max=1.0, step=0.001, tooltip="Keeps fine detail from the generated image while correcting contrast. Increase it if textures become too harsh or too soft."),
+                io.Mask.Input("mask", optional=True, tooltip="Optional output mask. White areas receive the correction; black areas keep the generated image unchanged. Leave disconnected to correct the whole image."),
+                io.Float.Input("saturation_weight", optional=True, default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches how vivid or muted the original image is. Lower this if the result becomes too colorful."),
+                io.Float.Input("contrast_weight", optional=True, default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the difference between dark and bright areas in the original image. Lower this if shadows or highlights become too strong."),
             ],
             outputs=[
                 io.Image.Output(display_name="image"),
@@ -916,8 +914,6 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
         mask: torch.Tensor = None,
         saturation_weight: float = 1.0,
         contrast_weight: float = 1.0,
-        source_analysis_mask: torch.Tensor = None,
-        target_analysis_mask: torch.Tensor = None,
     ) -> io.NodeOutput:
         result = match_image_properties(
             original_image,
@@ -929,8 +925,6 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
             mask,
             saturation_weight,
             contrast_weight,
-            source_analysis_mask,
-            target_analysis_mask,
         )
         return io.NodeOutput(result)
 
