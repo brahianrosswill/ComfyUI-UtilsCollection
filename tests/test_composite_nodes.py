@@ -1809,6 +1809,20 @@ def test_property_match_constant_images_remain_finite():
     assert torch.isfinite(result).all()
 
 
+def test_property_match_ignores_removed_analysis_mask_inputs():
+    source = torch.rand(1, 6, 8, 3)
+    target = torch.rand(1, 9, 11, 3)
+    stale_mask = torch.ones(1, 4, 4)
+
+    result = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, target, 1.0, 1.0, 1.0, 0.5,
+        source_analysis_mask=stale_mask,
+        target_analysis_mask=stale_mask,
+    ).result[0]
+
+    assert result.shape == target.shape
+
+
 def test_property_match_finds_scaled_overlap_from_sharpened_detail():
     generator = torch.Generator().manual_seed(41)
     source = torch.rand((1, 96, 128, 3), generator=generator)
@@ -1845,13 +1859,19 @@ def test_property_match_uses_generated_side_of_overlap_edge_for_brightness():
     source = torch.rand((1, 120, 150, 3), generator=generator) * 0.55
     target = torch.full((1, 220, 280, 3), 0.9)
     target[:, 52:172, 68:218] = source
+    outpaint_mask = torch.ones((1, 220, 280))
+    outpaint_mask[:, 52:172, 68:218] = 0.0
 
     result = image_nodes.UC_ImageMatchPropertiesNode.execute(
         source, target, 1.0, 0.0, 1.0, 1.0,
+        mask=outpaint_mask,
         saturation_weight=0.0, contrast_weight=0.0,
     ).result[0]
 
     assert result[:, :40].mean() < 0.6
+    assert torch.equal(result[:, 52:172, 68:218], source)
+    transition = result[:, 51, 80:200].mean()
+    assert result[:, :40].mean() < transition < 0.9
 
 
 def test_opencv_edits_preserve_unaffected_fp32_pixels():

@@ -53,6 +53,18 @@ def _prepare_mask(mask: torch.Tensor | None, index: int, height: int, width: int
     return np.clip(selected, 0.0, 1.0).astype(np.float32)
 
 
+def _feather_outpaint_mask(mask: np.ndarray | None) -> np.ndarray | None:
+    if mask is None:
+        return None
+    binary = (mask > 0.5).astype(np.uint8)
+    if not np.any(binary) or np.all(binary):
+        return mask
+    feather_width = max(2.0, math.hypot(*mask.shape) * 0.005)
+    distance_inside = cv2.distanceTransform(binary, cv2.DIST_L2, 3)
+    inward_feather = np.clip(distance_inside / feather_width, 0.0, 1.0)
+    return mask * inward_feather
+
+
 def _alignment_detail_image(image_rgb: np.ndarray) -> tuple[np.ndarray, float]:
     gray = cv2.cvtColor((image_rgb * 255.0).astype(np.uint8), cv2.COLOR_RGB2GRAY)
     scale = min(1.0, 1024.0 / max(gray.shape))
@@ -120,6 +132,7 @@ def _matched_overlap_edge_pixels(
     target_rgb: np.ndarray,
     source_lab: np.ndarray,
     target_lab: np.ndarray,
+    outpaint_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     affine = _fit_source_to_target(source_rgb, target_rgb)
     if affine is None:
@@ -147,6 +160,12 @@ def _matched_overlap_edge_pixels(
     outside = (overlap == 0).astype(np.uint8)
     outside_distance = cv2.distanceTransform(outside, cv2.DIST_L2, 3)
     target_edge = (outside > 0) & (outside_distance <= edge_width)
+    if outpaint_mask is not None:
+        target_edge &= outpaint_mask > 1e-4
+        radius = max(1, int(math.ceil(edge_width)))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+        adjacent = cv2.dilate(target_edge.astype(np.uint8), kernel) > 0
+        source_edge &= adjacent
     if np.count_nonzero(source_edge) < 16 or np.count_nonzero(target_edge) < 16:
         return None
     return warped_source[source_edge], target_lab[target_edge]
@@ -174,12 +193,14 @@ def match_image_properties(
         target_rgb = np.clip(target[index, ..., :3].detach().float().cpu().numpy(), 0.0, 1.0)
         source_lab = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
         target_lab = cv2.cvtColor(target_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        apply_mask = _feather_outpaint_mask(_prepare_mask(mask, index, *target_rgb.shape[:2]))
 
         matched_pixels = _matched_overlap_edge_pixels(
             source_rgb,
             target_rgb,
             source_lab,
             target_lab,
+            apply_mask,
         )
         if matched_pixels is None:
             source_pixels = source_lab.reshape(-1, 3)
@@ -222,7 +243,6 @@ def match_image_properties(
         result_lab[..., 1:3] = np.clip(result_lab[..., 1:3], -127.0, 127.0)
         result_rgb = np.clip(cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB), 0.0, 1.0)
 
-        apply_mask = _prepare_mask(mask, index, *target_rgb.shape[:2])
         if apply_mask is not None:
             result_rgb = target_rgb * (1.0 - apply_mask[..., None]) + result_rgb * apply_mask[..., None]
         if target.shape[-1] > 3:

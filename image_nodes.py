@@ -893,7 +893,7 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
                 io.Float.Input("color_weight", default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Matches the original image's overall color cast and balance. Values above 1 push the result farther toward those colors. It does not copy colors by pixel position."),
                 io.Float.Input("lighting_weight", default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Matches the original image's overall brightness. Values above 1 make the brightness correction stronger."),
                 io.Float.Input("texture_preservation", default=0.5, min=0.0, max=1.0, step=0.001, tooltip="Keeps fine detail from the generated image while correcting contrast. Increase it if textures become too harsh or too soft."),
-                io.Mask.Input("mask", optional=True, tooltip="Optional output mask. White areas receive the correction; black areas keep the generated image unchanged. Leave disconnected to correct the whole image."),
+                io.Mask.Input("mask", optional=True, tooltip="Connect the outpaint mask when available. White generated areas are measured and corrected; black original areas stay unchanged. The correction feathers automatically inside the generated edge. Leave disconnected for automatic edge matching and whole-image correction."),
                 io.Float.Input("saturation_weight", optional=True, default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Matches how vivid or muted the original image is. Values above 1 strengthen the saturation correction; lower it if the result becomes too colorful."),
                 io.Float.Input("contrast_weight", optional=True, default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Matches the difference between dark and bright areas in the original image. Values above 1 strengthen the contrast correction; lower it if shadows or highlights become too strong."),
             ],
@@ -914,7 +914,11 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
         mask: torch.Tensor = None,
         saturation_weight: float = 1.0,
         contrast_weight: float = 1.0,
+        source_analysis_mask: torch.Tensor = None,
+        target_analysis_mask: torch.Tensor = None,
     ) -> io.NodeOutput:
+        if mask is None and target_analysis_mask is not None:
+            mask = target_analysis_mask
         result = match_image_properties(
             original_image,
             generated_image,
