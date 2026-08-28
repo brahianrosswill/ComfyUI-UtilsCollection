@@ -3243,6 +3243,7 @@ def _execute_advanced_minimax_h3_image_to_video(
     multiplier=1.0,
     ref_image_size="match",
     vlm_resolution=384,
+    vlm_video_resolution=384,
     media_config=None,
     video=None,
     audio=None,
@@ -3413,7 +3414,7 @@ def _execute_advanced_minimax_h3_image_to_video(
             )
             selected_frames = [
                 prepare_vlm_image(
-                    video_frames[index:index + 1], vlm_resolution
+                    video_frames[index:index + 1], vlm_video_resolution
                 )
                 for index in range(len(video_timestamps))
             ]
@@ -3422,7 +3423,7 @@ def _execute_advanced_minimax_h3_image_to_video(
             if video_frames is not None and not video_timestamps:
                 sample_indices = list(range(0, video_frames.shape[0], 12))
                 default_video_frames = prepare_minimax_h3_vlm_video_frames(
-                    video_frames[sample_indices], vlm_resolution
+                    video_frames[sample_indices], vlm_video_resolution
                 )
                 default_video_timestamps = [
                     Fraction(index, 24) for index in sample_indices
@@ -3451,7 +3452,7 @@ def _execute_advanced_minimax_h3_image_to_video(
                 reference_items.append({
                     "type": "video",
                     "data": prepare_minimax_h3_vlm_video_frames(
-                        video_frames[sample_indices], vlm_resolution
+                        video_frames[sample_indices], vlm_video_resolution
                     ),
                     "timestamps": [Fraction(index, 24) for index in sample_indices],
                 })
@@ -3702,6 +3703,7 @@ def execute_advanced_minimax_h3_image_to_video(
     multiplier=1.0,
     ref_image_size="match",
     vlm_resolution=384,
+    vlm_video_resolution=384,
     media_config=None,
     video=None,
     audio=None,
@@ -3724,6 +3726,7 @@ def execute_advanced_minimax_h3_image_to_video(
             multiplier=multiplier,
             ref_image_size=ref_image_size,
             vlm_resolution=vlm_resolution,
+            vlm_video_resolution=vlm_video_resolution,
             media_config=media_config,
             video=video,
             audio=audio,
@@ -3750,6 +3753,7 @@ def execute_advanced_minimax_h3_image_to_video_combined(
     multiplier=1.0,
     ref_image_size="match",
     vlm_resolution=384,
+    vlm_video_resolution=384,
     media_config=None,
     video=None,
     audio=None,
@@ -3776,6 +3780,7 @@ def execute_advanced_minimax_h3_image_to_video_combined(
             multiplier=multiplier,
             ref_image_size=ref_image_size,
             vlm_resolution=vlm_resolution,
+            vlm_video_resolution=vlm_video_resolution,
             media_config=media_config,
             video=video,
             audio=audio,

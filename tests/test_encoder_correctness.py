@@ -420,6 +420,7 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
         "multiplier",
         "ref_image_size",
         "vlm_resolution",
+        "vlm_video_resolution",
         "reference_images",
         "fusion_images",
         "media_config",
@@ -447,6 +448,8 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
     assert inputs["ref_image_size"].default == "match"
     assert inputs["vlm_resolution"].default == 384
     assert "independent" in inputs["vlm_resolution"].tooltip.lower()
+    assert inputs["vlm_video_resolution"].default == 384
+    assert "more visual tokens" in inputs["vlm_video_resolution"].tooltip
     fusion_tooltip = inputs["fusion_images"].tooltip
     assert "socket N targets Picture N" in fusion_tooltip
     assert "broadcasts to every reference Picture" in fusion_tooltip
@@ -693,7 +696,8 @@ def test_advanced_minimax_h3_video_qwen_frames_use_vlm_resolution(
         22,
         video=video,
         media_config=media_config,
-        vlm_resolution=512,
+        vlm_resolution=256,
+        vlm_video_resolution=512,
     )
     assert calls == [((1, 64, 96, 3), 512), ((1, 64, 96, 3), 512)]
 
@@ -922,6 +926,7 @@ def test_advanced_combined_minimax_h3_schema_is_additive():
         "multiplier",
         "ref_image_size",
         "vlm_resolution",
+        "vlm_video_resolution",
         "reference_images",
         "fusion_images",
         "media_config",

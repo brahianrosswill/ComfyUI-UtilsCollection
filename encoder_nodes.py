@@ -3446,6 +3446,17 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                         "the original image resolution. This is independent of VAE frame and reference sizing."
                     ),
                 ),
+                io.Int.Input(
+                    "vlm_video_resolution",
+                    default=384,
+                    min=0,
+                    max=4096,
+                    step=32,
+                    tooltip=(
+                        "Qwen3-VL resolution for Video frames. Higher values use more visual tokens. "
+                        "Values outside 256 to 3584 preserve the input resolution."
+                    ),
+                ),
                 io.Autogrow.Input(
                     "reference_images",
                     template=reference_template,
@@ -3500,6 +3511,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
         multiplier=1.0,
         ref_image_size="match",
         vlm_resolution=384,
+        vlm_video_resolution=384,
         media_config=None,
         video=None,
         audio=None,
@@ -3520,6 +3532,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             multiplier=multiplier,
             ref_image_size=ref_image_size,
             vlm_resolution=vlm_resolution,
+            vlm_video_resolution=vlm_video_resolution,
             media_config=media_config,
             video=video,
             audio=audio,
@@ -3594,6 +3607,7 @@ class UC_AdvancedMiniMaxH3ImageToVideoCombined(
         multiplier=1.0,
         ref_image_size="match",
         vlm_resolution=384,
+        vlm_video_resolution=384,
         media_config=None,
         video=None,
         audio=None,
@@ -3616,6 +3630,7 @@ class UC_AdvancedMiniMaxH3ImageToVideoCombined(
                 multiplier=multiplier,
                 ref_image_size=ref_image_size,
                 vlm_resolution=vlm_resolution,
+                vlm_video_resolution=vlm_video_resolution,
                 media_config=media_config,
                 video=video,
                 audio=audio,
@@ -4151,7 +4166,8 @@ class UC_AdvMiniMaxH3ImageToVideoTokenFusion(UC_AdvancedMiniMaxH3ImageToVideo):
         cls, clip, vae=None, prompt=None, width=None, height=None, length=None, first_frame=None,
         last_frame=None, reference_images=None, fusion_images=None,
         visual_fusion_config=None, multiplier=1.0, ref_image_size="match",
-        vlm_resolution=384, media_config=None, video=None, audio=None, audio_vae=None,
+        vlm_resolution=384, vlm_video_resolution=384, media_config=None,
+        video=None, audio=None, audio_vae=None,
     ):
         conditioning, latent = execute_advanced_minimax_h3_image_to_video(
             clip, vae, prompt, width, height, length,
@@ -4159,6 +4175,7 @@ class UC_AdvMiniMaxH3ImageToVideoTokenFusion(UC_AdvancedMiniMaxH3ImageToVideo):
             reference_images=reference_images, fusion_images=fusion_images,
             visual_fusion_config=visual_fusion_config, multiplier=multiplier,
             ref_image_size=ref_image_size, vlm_resolution=vlm_resolution,
+            vlm_video_resolution=vlm_video_resolution,
             media_config=media_config, video=video, audio=audio,
             audio_vae=audio_vae, token_fusion=True,
         )
@@ -4180,7 +4197,8 @@ class UC_AdvMiniMaxH3ImageToVideoCombinedTokenFusion(
         cls, model, clip, vae=None, prompt=None, width=None, height=None, length=None,
         first_frame=None, last_frame=None, reference_images=None,
         fusion_images=None, visual_fusion_config=None, multiplier=1.0,
-        ref_image_size="match", vlm_resolution=384, media_config=None,
+        ref_image_size="match", vlm_resolution=384, vlm_video_resolution=384,
+        media_config=None,
         video=None, audio=None, audio_vae=None,
     ):
         patched_model, conditioning, latent = (
@@ -4190,6 +4208,7 @@ class UC_AdvMiniMaxH3ImageToVideoCombinedTokenFusion(
                 reference_images=reference_images, fusion_images=fusion_images,
                 visual_fusion_config=visual_fusion_config, multiplier=multiplier,
                 ref_image_size=ref_image_size, vlm_resolution=vlm_resolution,
+                vlm_video_resolution=vlm_video_resolution,
                 media_config=media_config, video=video, audio=audio,
                 audio_vae=audio_vae, token_fusion=True,
             )
