@@ -1022,13 +1022,18 @@ def test_minimax_h3_pdd_schema_uses_existing_lora_category(monkeypatch):
         "on_off_grid",
     ]
     assert schema.inputs[1].options == ["minimax_h3_pdd.safetensors"]
+    assert schema.inputs[2].options == ["8", "7", "6", "5", "4"]
     assert [value.id for value in schema.outputs] == ["model", "sigmas"]
 
 
 def test_minimax_h3_pdd_partition_and_sigmas_stay_on_trained_grid():
     assert patcher_helpers.resolve_pdd_partition(32, 8) == (4,) * 8
+    assert patcher_helpers.resolve_pdd_partition(32, 7) == (8, 4, 4, 4, 4, 4, 4)
     assert patcher_helpers.resolve_pdd_partition(32, 6) == (8, 8, 4, 4, 4, 4)
+    assert patcher_helpers.resolve_pdd_partition(32, 5) == (8, 8, 8, 4, 4)
     assert patcher_helpers.resolve_pdd_partition(32, 4) == (8,) * 4
+    assert len(patcher_helpers.pdd_block_boundaries(32, patcher_helpers.resolve_pdd_partition(32, 7))) == 8
+    assert len(patcher_helpers.pdd_block_boundaries(32, patcher_helpers.resolve_pdd_partition(32, 5))) == 6
     bounds = patcher_helpers.pdd_block_boundaries(32, (8,) * 4)
     assert bounds[0] == 1.0
     assert bounds[-1] == 0.0

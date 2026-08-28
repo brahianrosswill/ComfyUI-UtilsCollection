@@ -461,7 +461,11 @@ def patch_minimax_h3_clip_projection(clip: Any, projection_name: str) -> MiniMax
 PDD_VIDEO_SHIFT = 12.0
 PDD_AUDIO_SHIFT = 3.0
 PDD_KNOT_TOLERANCE = 1e-4
-PDD_DEFAULT_PARTITIONS = {6: (8, 8, 4, 4, 4, 4)}
+PDD_DEFAULT_PARTITIONS = {
+    5: (8, 8, 8, 4, 4),
+    6: (8, 8, 4, 4, 4, 4),
+    7: (8, 4, 4, 4, 4, 4, 4),
+}
 PDD_HEAD_KEYS = ("proj_out.weight", "proj_out.bias", "audio_proj_out.weight", "audio_proj_out.bias")
 PDD_WRAPPER_KEY = "utilscollection_minimax_h3_pdd_acc"
 PDD_ADDITIONAL_MODEL_KEY = "utilscollection_minimax_h3_pdd_heads"
