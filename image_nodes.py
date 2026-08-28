@@ -689,7 +689,7 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                     default=VIDEO_TIMELINE_TEXT_STRUCTURE,
                     tooltip=(
                         "One structure repeated for every selected frame. Use "
-                        "<<time>>, <<picture>>, and <<shot>>."
+                        "<<time>> or <<timestamp>>, <<picture>>, and <<shot>>."
                     ),
                 ),
                 io.String.Input(
@@ -699,7 +699,8 @@ class UC_SampleVideoFramesAsImages(io.ComfyNode):
                     default=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
                     tooltip=(
                         "One whole-timeline structure. Use <<duration>>, "
-                        "<<segments>>, and <<references>>."
+                        "<<segments>>, <<timestamps>>, and <<references>>. One <<shot>> … "
+                        "<<timestamp>> section repeats for every selected frame."
                     ),
                 ),
                 io.Int.Input(
@@ -819,8 +820,8 @@ class UC_ImagesToVideoTimeline(io.ComfyNode):
                 ),
                 io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="00.000s", tooltip="How timestamps look in text outputs."),
                 io.Combo.Input("timeline_style", options=list(VIDEO_FRAME_TIMELINE_STYLES), default="H3 alignment prefix", tooltip="Built-in timeline syntax, or custom to use the timeline text structure."),
-                io.String.Input("timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TIMELINE_TEXT_STRUCTURE, tooltip="One structure repeated for every image when timeline style is custom. Use <<time>>, <<picture>>, and <<shot>>."),
-                io.String.Input("structured_timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE, tooltip="One whole-timeline structure. Use <<duration>>, <<segments>>, and <<references>>."),
+                io.String.Input("timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TIMELINE_TEXT_STRUCTURE, tooltip="One structure repeated for every image when timeline style is custom. Use <<time>> or <<timestamp>>, <<picture>>, and <<shot>>."),
+                io.String.Input("structured_timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_STRUCTURED_TIMELINE_TEXT_STRUCTURE, tooltip="One whole-timeline structure. Use <<duration>>, <<segments>>, <<timestamps>>, and <<references>>. One <<shot>> … <<timestamp>> section repeats for every image."),
                 io.Int.Input("index_offset", default=0, min=0, step=1, tooltip="Skip this many Picture numbers before the first image."),
                 io.Autogrow.Input("image_inputs", template=image_template, tooltip="Add images in order. Each image in a batch gets its own timestamp."),
             ],
@@ -861,7 +862,7 @@ class UC_VideoTimelineText(io.ComfyNode):
                 io.Float.Input("focus_two", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Where entries group in the second part. 0 is early, 0.5 is balanced, 1 is late."),
                 io.Float.Input("focus_three", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Where entries group in the third part. 0 is early, 0.5 is balanced, 1 is late."),
                 io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="00.000s", tooltip="Formatting reused verbatim by every text output."),
-                io.String.Input("timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE, tooltip="One structure repeated for every timeline entry. Use <<shot>> and <<timestamp>>."),
+                io.String.Input("timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE, tooltip="One structure repeated for every timeline entry. Use <<shot>> and <<time>> or <<timestamp>>."),
                 io.String.Input("structured_timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE, tooltip="One whole-timeline structure. <<duration>> and <<segments>> are scalars; <<timestamps>> is comma-and-space-separated; one <<shot>> … <<timestamp>> section repeats comma-and-space-separated for every timeline entry."),
             ],
             outputs=[

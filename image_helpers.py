@@ -287,11 +287,13 @@ VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE = (
     "<<segments>> segments. <<shot>> at <<timestamp>>."
 )
 
-_VIDEO_TIMELINE_TEXT_MARKERS = frozenset({"time", "picture", "shot"})
-_VIDEO_STRUCTURED_TIMELINE_TEXT_MARKERS = frozenset(
-    {"duration", "segments", "references"}
+_VIDEO_TIMELINE_TEXT_MARKERS = frozenset(
+    {"time", "timestamp", "picture", "shot"}
 )
-_VIDEO_TEXT_TIMELINE_TEXT_MARKERS = frozenset({"shot", "timestamp"})
+_VIDEO_STRUCTURED_TIMELINE_TEXT_MARKERS = frozenset(
+    {"duration", "segments", "timestamps", "references", "shot", "timestamp"}
+)
+_VIDEO_TEXT_TIMELINE_TEXT_MARKERS = frozenset({"shot", "time", "timestamp"})
 _VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_MARKERS = frozenset(
     {"duration", "segments", "timestamps", "shot", "timestamp"}
 )
@@ -927,10 +929,35 @@ def build_video_timeline_text(
     )
     return "\n".join(
         timeline_text_structure.replace("<<time>>", timestamp)
+        .replace("<<timestamp>>", timestamp)
         .replace("<<picture>>", f"<Picture {index + index_offset}>")
         .replace("<<shot>>", f"[Shot {index}]")
         for index, timestamp in enumerate(timestamps, start=1)
     )
+
+
+def _expand_structured_shot_timestamps(
+    structure: str, timestamps: Sequence[str], structure_name: str
+) -> str:
+    shot_count = structure.count("<<shot>>")
+    timestamp_count = structure.count("<<timestamp>>")
+    if shot_count != timestamp_count:
+        raise ValueError(
+            f"{structure_name} must use <<shot>> and <<timestamp>> together."
+        )
+    if shot_count > 1:
+        raise ValueError(
+            f"{structure_name} may contain one <<shot>> and <<timestamp>> pair."
+        )
+    if not shot_count:
+        return structure
+
+    before, repeated = structure.split("<<shot>>")
+    between, after = repeated.split("<<timestamp>>")
+    return before + ", ".join(
+        f"Shot {index}{between}{timestamp}"
+        for index, timestamp in enumerate(timestamps, start=1)
+    ) + after
 
 
 def build_structured_video_timeline_text(
@@ -955,11 +982,17 @@ def build_structured_video_timeline_text(
         if references
         else ""
     )
+    structured_timeline_text_structure = _expand_structured_shot_timestamps(
+        structured_timeline_text_structure,
+        timestamps,
+        "Structured timeline text structure",
+    )
     return (
         structured_timeline_text_structure.replace(
             "<<duration>>", f"{video_runtime:g}"
         )
         .replace("<<segments>>", str(len(timestamps)))
+        .replace("<<timestamps>>", ", ".join(timestamps))
         .replace("<<references>>", reference_text)
     )
 
@@ -971,7 +1004,7 @@ def build_text_video_timeline_text(timestamps: Sequence[str], structure: str) ->
     return "\n".join(
         structure.replace("<<shot>>", f"Shot {index}").replace(
             "<<timestamp>>", timestamp
-        )
+        ).replace("<<time>>", timestamp)
         for index, timestamp in enumerate(timestamps, start=1)
     )
 
@@ -984,23 +1017,9 @@ def build_text_structured_video_timeline_text(
         _VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_MARKERS,
         "text structured timeline structure",
     )
-    shot_count = structure.count("<<shot>>")
-    timestamp_count = structure.count("<<timestamp>>")
-    if shot_count != timestamp_count:
-        raise ValueError(
-            "Text structured timeline structure must use <<shot>> and <<timestamp>> together."
-        )
-    if shot_count > 1:
-        raise ValueError(
-            "Text structured timeline structure may contain one <<shot>> and <<timestamp>> pair."
-        )
-    if shot_count:
-        before, repeated = structure.split("<<shot>>")
-        between, after = repeated.split("<<timestamp>>")
-        structure = before + ", ".join(
-            f"Shot {index}{between}{timestamp}"
-            for index, timestamp in enumerate(timestamps, start=1)
-        ) + after
+    structure = _expand_structured_shot_timestamps(
+        structure, timestamps, "Text structured timeline structure"
+    )
     return (
         structure.replace("<<duration>>", f"{video_runtime:g}")
         .replace("<<segments>>", str(len(timestamps)))
