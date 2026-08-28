@@ -1782,6 +1782,22 @@ def test_property_match_transfers_global_lighting_between_different_sizes():
     assert result.mean() > 0.7
 
 
+def test_property_match_allows_lighting_strength_above_measured_match():
+    source = torch.full((1, 5, 9, 3), 0.7)
+    target = torch.full((1, 11, 6, 3), 0.3)
+
+    measured = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, target, 1.0, 0.0, 1.0, 1.0,
+        saturation_weight=0.0, contrast_weight=0.0,
+    ).result[0]
+    stronger = image_nodes.UC_ImageMatchPropertiesNode.execute(
+        source, target, 1.0, 0.0, 2.0, 1.0,
+        saturation_weight=0.0, contrast_weight=0.0,
+    ).result[0]
+
+    assert stronger.mean() > measured.mean()
+
+
 def test_property_match_constant_images_remain_finite():
     source = torch.full((1, 4, 4, 3), 0.65)
     target = torch.full((1, 7, 5, 3), 0.35)

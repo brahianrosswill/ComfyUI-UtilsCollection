@@ -889,13 +889,13 @@ class UC_ImageMatchPropertiesNode(io.ComfyNode):
             inputs=[
                 io.Image.Input("original_image", tooltip="Connect the original image. The node automatically finds where it appears inside the larger result, including when its size changed."),
                 io.Image.Input("generated_image", tooltip="Connect the outpainted image. Colors near the matched original-image edges are used to correct the whole result."),
-                io.Float.Input("overall_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Strength of the complete correction. 0 keeps the generated image unchanged; 1 applies the selected settings fully."),
-                io.Float.Input("color_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the original image's overall color cast and balance. It does not copy colors by pixel position."),
-                io.Float.Input("lighting_weight", default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the original image's overall brightness."),
+                io.Float.Input("overall_weight", default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Strength of the complete correction. 0 keeps the generated image unchanged, 1 applies the measured correction, and values above 1 make every correction stronger."),
+                io.Float.Input("color_weight", default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Matches the original image's overall color cast and balance. Values above 1 push the result farther toward those colors. It does not copy colors by pixel position."),
+                io.Float.Input("lighting_weight", default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Matches the original image's overall brightness. Values above 1 make the brightness correction stronger."),
                 io.Float.Input("texture_preservation", default=0.5, min=0.0, max=1.0, step=0.001, tooltip="Keeps fine detail from the generated image while correcting contrast. Increase it if textures become too harsh or too soft."),
                 io.Mask.Input("mask", optional=True, tooltip="Optional output mask. White areas receive the correction; black areas keep the generated image unchanged. Leave disconnected to correct the whole image."),
-                io.Float.Input("saturation_weight", optional=True, default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches how vivid or muted the original image is. Lower this if the result becomes too colorful."),
-                io.Float.Input("contrast_weight", optional=True, default=1.0, min=0.0, max=1.0, step=0.001, tooltip="Matches the difference between dark and bright areas in the original image. Lower this if shadows or highlights become too strong."),
+                io.Float.Input("saturation_weight", optional=True, default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Matches how vivid or muted the original image is. Values above 1 strengthen the saturation correction; lower it if the result becomes too colorful."),
+                io.Float.Input("contrast_weight", optional=True, default=1.0, min=0.0, max=3.0, step=0.001, tooltip="Matches the difference between dark and bright areas in the original image. Values above 1 strengthen the contrast correction; lower it if shadows or highlights become too strong."),
             ],
             outputs=[
                 io.Image.Output(display_name="image"),
