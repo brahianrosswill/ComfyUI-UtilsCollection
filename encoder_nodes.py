@@ -40,6 +40,7 @@ from .encoder_helpers import(
     prepare_vlm_image,
     prepare_vae_reference_image,
     qwen3vl_visual_encoder_path,
+    is_klein_vl_text_encoder,
     is_minimax_h3_text_encoder,
     tokenize_minimax_h3_prompt,
     format_minimax_h3_prompt,
@@ -2050,6 +2051,7 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
         minimax_h3 = is_minimax_h3_text_encoder(clip)
+        klein_vl = is_klein_vl_text_encoder(clip)
         if minimax_h3 and ref_latent_mode != "off":
             raise ValueError(
                 "MiniMax H3 reference latents require Core's MiniMax H3 reference conditioning node; set ref_latent_mode to off."
@@ -2058,6 +2060,8 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
         def format_krea_prompt(user_prompt):
             if minimax_h3:
                 return format_minimax_h3_prompt(user_prompt, system_prompt)
+            if klein_vl and not system_prompt:
+                return user_prompt
             if system_prompt or active_images:
                 return (
                     "<|im_start|>user\n<|im_end|>\n"
@@ -2127,6 +2131,8 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
             fusion_active=visual_method != "off",
             context="AdvancedVisualConditioning",
         )
+        if klein_vl:
+            prepared_prompt = prepared_prompt.replace(VISION_BLOCK, "")
 
         inline_mode = False
         if visual_method == "off" and inline_numbers:
@@ -2190,7 +2196,7 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
 
             # Ensure prompt has image pad tokens so tokenizer knows where to inject the image
             modified_prompt = prepared_prompt
-            if not any(tag in modified_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
+            if not klein_vl and not any(tag in modified_prompt for tag in ["<|image_pad|>", "<|image|>", "<|vision_start|>"]):
                 modified_prompt = VISION_BLOCK + modified_prompt
             picture_number = 1 if visual_method != "off" else idx + 1
             modified_prompt = add_semantic_anchors(
@@ -2200,7 +2206,9 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
 
             processed_img = prepare_vlm_image(source_image, vlm_resolution)
             tokenize_callback = None
-            encode_kwargs = {"images": [processed_img], "skip_template": True}
+            encode_kwargs = {"images": [processed_img]}
+            if not klein_vl:
+                encode_kwargs["skip_template"] = True
             if minimax_h3:
                 tokenize_callback = lambda text, image=processed_img: (
                     tokenize_minimax_h3_prompt(clip, text, [image])

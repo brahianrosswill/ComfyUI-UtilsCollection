@@ -2445,6 +2445,40 @@ def test_unknown_visual_expansion_is_rejected_when_length_has_no_solution():
         encoder_helpers.build_token_to_conditioning_map(tokens, conditioning)
 
 
+def test_klein_visual_range_ignores_core_tail_padding():
+    image = torch.zeros(1, 32, 32, 3)
+    tokens = {
+        "qwen3_4b": [[
+            (151652, 1.0),
+            ({"type": "image", "data": image}, 1.0),
+            (151653, 1.0),
+            (151652, 1.0),
+            (151655, 1.0),
+            (151653, 1.0),
+            (10, 1.0),
+        ]]
+    }
+    conditioning = torch.zeros(1, 512, 16)
+
+    assert encoder_helpers.find_visual_token_range(tokens, conditioning) == (1, 5)
+
+
+def test_klein_vl_detection_does_not_match_z_image_tokenizer():
+    klein_type = type(
+        "KleinVLTokenizer", (), {"__module__": "comfy.text_encoders.flux"}
+    )
+    z_image_type = type(
+        "ZImageTokenizer", (), {"__module__": "comfy.text_encoders.z_image"}
+    )
+
+    assert encoder_helpers.is_klein_vl_text_encoder(
+        types.SimpleNamespace(tokenizer=klein_type())
+    )
+    assert not encoder_helpers.is_klein_vl_text_encoder(
+        types.SimpleNamespace(tokenizer=z_image_type())
+    )
+
+
 def test_consensus_off_returns_reference_and_fractional_weights_stay_finite():
     first = torch.tensor([[[1.0, 0.0]]])
     second = torch.tensor([[[-1.0, 0.0]]])

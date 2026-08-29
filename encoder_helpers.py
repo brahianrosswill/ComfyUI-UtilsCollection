@@ -237,6 +237,14 @@ def visual_text_encoder_key(clip) -> str | None:
     return next(iter(tokens))
 
 
+def is_klein_vl_text_encoder(clip) -> bool:
+    tokenizer_type = type(getattr(clip, "tokenizer", None))
+    return (
+        tokenizer_type.__module__ == "comfy.text_encoders.flux"
+        and tokenizer_type.__name__ in {"KleinVLTokenizer", "KleinVLTokenizer8B"}
+    )
+
+
 def visual_embedding_key(clip, tokens: dict) -> str:
     """Return the source model key required to load saved visual embeddings."""
     source_key = getattr(getattr(clip, "cond_stage_model", None), "clip_name", None)
@@ -1048,9 +1056,18 @@ def _qwen3vl_image_span(token) -> int | None:
     return (resized_height // 16) * (resized_width // 16) // 4
 
 
-def _conditioning_token_span(token) -> int | None:
+def _conditioning_token_span(
+    token, allow_literal_image_token: bool = False
+) -> int | None:
     if is_image_token(token):
-        return _qwen3vl_image_span(token)
+        image_span = _qwen3vl_image_span(token)
+        if image_span is not None:
+            return image_span
+        if allow_literal_image_token and isinstance(
+            _token_value(token), numbers.Integral
+        ):
+            return 1
+        return None
     value = _token_value(token)
     if not torch.is_tensor(value):
         return 1
@@ -1079,15 +1096,31 @@ def visual_fusion_grid(image, visual_length: int, legacy_flat: bool = False) -> 
     return grid
 
 
-def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, int]]:
+def build_token_to_conditioning_map(
+    token_list, cond_tensor, embedding_key=None
+) -> list[tuple[int, int]]:
     """Map raw tokenizer entries to conditioning spans, validating all inferred lengths."""
     cond_len = cond_tensor.shape[1]
-    exact_spans = [_conditioning_token_span(token) for token in token_list]
+    payload_backed_klein = (
+        embedding_key in {"qwen3_4b", "qwen3_8b"}
+        and any(_qwen3vl_image_span(token) is not None for token in token_list)
+    )
+    exact_spans = [
+        _conditioning_token_span(
+            token, allow_literal_image_token=payload_backed_klein
+        )
+        for token in token_list
+    ]
     if not all(span is not None for span in exact_spans):
         raise ValueError("Cannot derive token positions because an image token has no usable Qwen3-VL tensor payload.")
 
     total_length = sum(exact_spans)
-    if total_length == cond_len:
+    klein_tail_padding = (
+        payload_backed_klein
+        and total_length < cond_len
+        and cond_len == 512
+    )
+    if total_length == cond_len or klein_tail_padding:
         prefix_len = 0
     else:
         try:
@@ -1103,7 +1136,7 @@ def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, 
 
     token_spans = exact_spans[prefix_len:]
     expected_length = sum(token_spans)
-    if expected_length != cond_len:
+    if expected_length != cond_len and not klein_tail_padding:
         image_details = [
             (index, exact_spans[index])
             for index, token in enumerate(token_list)
@@ -1129,7 +1162,7 @@ def build_token_to_conditioning_map(token_list, cond_tensor) -> list[tuple[int, 
         retained_index += 1
         mapping.append((current, current + size))
         current += size
-    if current != cond_len:
+    if current != cond_len and not klein_tail_padding:
         raise ValueError(f"Token mapping ended at {current}, expected conditioning length {cond_len}.")
     return mapping
 
@@ -2751,7 +2784,9 @@ def find_visual_token_range(
             raise ValueError("Legacy Krea2 spatial mapping does not cover the conditioning sequence.")
         return visual_start, visual_end
 
-    mapping = build_token_to_conditioning_map(token_list, cond_tensor)
+    mapping = build_token_to_conditioning_map(
+        token_list, cond_tensor, embedding_key=key_name
+    )
     for i, t in enumerate(token_list):
         if is_image_token(t):
             return mapping[i][0], mapping[i][1]
