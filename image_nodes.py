@@ -854,9 +854,9 @@ class UC_VideoTimelineText(io.ComfyNode):
             node_id="UC_VideoTimelineText",
             display_name="Video Timeline (Text)",
             category="image/video",
-            description="Builds text-only video timeline guidance without image or video inputs.",
+            description="Builds text-only video timeline guidance from a manual duration or connected video.",
             inputs=[
-                io.Float.Input("duration", default=5.0, min=0.01, step=0.01, tooltip="Length of the video in seconds."),
+                io.Float.Input("duration", default=5.0, min=0.01, step=0.01, optional=True, tooltip="Length of the video in seconds. Ignored when video is connected."),
                 io.Int.Input("segment_count", default=5, min=1, step=1, tooltip="Number of timestamped timeline entries."),
                 io.Int.Input("focus_areas", default=0, min=0, max=3, step=1, tooltip="How many parts to split the timeline into. 0 spaces entries evenly."),
                 io.Float.Input("focus_one", default=0.50, min=0.00, max=1.00, step=0.01, tooltip="Where entries group in the first part. 0 is early, 0.5 is balanced, 1 is late."),
@@ -865,6 +865,7 @@ class UC_VideoTimelineText(io.ComfyNode):
                 io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="00.000s", tooltip="Formatting reused verbatim by every text output."),
                 io.String.Input("timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE, tooltip="One structure repeated for every timeline entry. Use <<shot>> and <<time>> or <<timestamp>>."),
                 io.String.Input("structured_timeline_text_structure", multiline=True, dynamic_prompts=False, default=VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE, tooltip="One whole-timeline structure. <<duration>> and <<segments>> are scalars; <<timestamps>> is comma-and-space-separated; one <<shot>> … <<timestamp>> section repeats comma-and-space-separated for every timeline entry."),
+                io.Video.Input("video", optional=True, tooltip="Optional video whose native duration overrides the duration widget."),
             ],
             outputs=[
                 io.String.Output("timestamps_text", display_name="timestamps text", tooltip="All formatted timestamps in one line."),
@@ -875,8 +876,9 @@ class UC_VideoTimelineText(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, duration: float, segment_count: int, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, timestamp_format: str, timeline_text_structure: str, structured_timeline_text_structure: str) -> io.NodeOutput:
-        return io.NodeOutput(*video_timeline_text(duration, segment_count, focus_areas, focus_one, focus_two, focus_three, timestamp_format, timeline_text_structure, structured_timeline_text_structure))
+    def execute(cls, segment_count: int, focus_areas: int, focus_one: float, focus_two: float, focus_three: float, timestamp_format: str, timeline_text_structure: str, structured_timeline_text_structure: str, duration: float = 5.0, video: io.Video.Type | None = None) -> io.NodeOutput:
+        video_duration = video.get_duration() if video is not None else duration
+        return io.NodeOutput(*video_timeline_text(video_duration, segment_count, focus_areas, focus_one, focus_two, focus_three, timestamp_format, timeline_text_structure, structured_timeline_text_structure))
 
 
 class UC_ImageMatchPropertiesNode(io.ComfyNode):

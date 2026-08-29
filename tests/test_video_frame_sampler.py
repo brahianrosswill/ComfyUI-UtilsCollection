@@ -181,6 +181,7 @@ def test_text_only_video_timeline_schema_and_outputs():
         "timestamp_format",
         "timeline_text_structure",
         "structured_timeline_text_structure",
+        "video",
     ]
     assert [output.id for output in schema.outputs] == [
         "timestamps_text",
@@ -213,6 +214,30 @@ def test_text_only_video_timeline_schema_and_outputs():
     )[3] == (
         "Target video duration is 3 seconds divided into 3 segments. "
         "Shot 1 at 0.0s, Shot 2 at 1.5s, Shot 3 at 3.0s."
+    )
+
+    class FakeVideo:
+        @staticmethod
+        def get_duration():
+            return 8.0
+
+    output = UC_VideoTimelineText.execute(
+        segment_count=3,
+        focus_areas=0,
+        focus_one=0.5,
+        focus_two=0.5,
+        focus_three=0.5,
+        timestamp_format="0.0s",
+        timeline_text_structure=VIDEO_TEXT_TIMELINE_TEXT_STRUCTURE,
+        structured_timeline_text_structure=VIDEO_TEXT_STRUCTURED_TIMELINE_TEXT_STRUCTURE,
+        duration=99.0,
+        video=FakeVideo(),
+    )
+    assert output[0] == "0.0s, 4.0s, 8.0s"
+    assert output[2] == 8.0
+    assert output[3] == (
+        "Target video duration is 8 seconds divided into 3 segments. "
+        "Shot 1 at 0.0s, Shot 2 at 4.0s, Shot 3 at 8.0s."
     )
 
 
