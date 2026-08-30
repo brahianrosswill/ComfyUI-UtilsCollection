@@ -510,7 +510,7 @@ def test_h3_mixed_ref2va_uses_explicit_picture_timeline_associations():
         "Output exactly the declared segment count",
         "Copy each supplied start timestamp literally",
         "Retain every existing `<Picture N>` identifier",
-        "Never emit `<Video N>`",
+        "every supplied `<Video N>` identifier",
         "Depict the final subject continuously",
         "final subject's identity, appearance, motion, scene, style, and continuity",
         "without media bookkeeping",
@@ -601,7 +601,7 @@ def test_h3_reference_alt_assembled_context_matches_structured_picture_request()
     assert "supplied decimal precision" in instruction
     assert "visible source identity remains analysis-only" in instruction
     assert "continuously present from the first applicable frame through the last" in instruction
-    assert "Do not emit timestamp-sample Picture identifiers or Video identifiers" in instruction
+    assert "Emit an actually supplied Video identifier only in retention_analysis" in instruction
     assert "Do not replace supplied starts with equal-duration divisions" in suffix
     for competing in (
         "replacement subject",
@@ -1255,6 +1255,42 @@ def test_minimax_h3_full_reference_keeps_shot_terms_inside_timeline_context():
         )
 
 
+def test_minimax_h3_full_reference_assigns_video_motion_transfer_in_retention():
+    for runtime_key, _readable_name in H3_FULL_REFERENCE_PRESETS:
+        instruction = vlm_presets.system_instructions_vlm[runtime_key]
+        retention = instruction[
+            instruction.index("#### retention_analysis") : instruction.index(
+                "#### detailed_description and Timeline"
+            )
+        ]
+
+        assert "<Video N>" in retention or "<Video 1>" in retention
+        assert "camera movement, choreography, timing, pacing, spatial progression" in retention
+        assert "attribute_transfer" in retention
+        assert "<Subject N>" in retention
+        assert "or resulting scene" not in retention
+        assert (
+            "Use partially_preserved only when some source Video content itself "
+            "remains visible."
+            in retention
+        )
+        assert "Never create a Video entry" not in retention
+        assert "Do not emit timestamp-sample Picture identifiers, Video identifiers" not in instruction
+
+    query_presets = vlm_presets.system_query_additional_vlm
+    raw_presets = vlm_presets.system_query_raw_vlm
+    for name in ("h3_ref2va", "h3_ref2va_alt", "h3_mixed_ref2va"):
+        suffix = query_presets[f"{name}_suffix"]
+        raw = raw_presets[name]
+        for value in (suffix, raw):
+            assert "<Video N>: attribute_transfer" in value
+            assert "names the receiving `<Subject N>`" in value
+            assert "or resulting scene" not in value
+            assert "Use `partially_preserved` only when some source Video content itself remains visible." in value
+            assert "Exclude choreography, event progression" not in value
+            assert "Never emit `<Video N>`" not in value
+
+
 def test_minimax_h3_full_reference_protected_prefixes_are_unchanged():
     marker = (
         "### Principle 4: MiniMax H3 Reference-Aware Adaptive Timeline and "
@@ -1304,7 +1340,7 @@ def test_minimax_h3_full_reference_variant_contracts():
         "video_timeline_minimax_h3_reference_alt_system_instruction": (
             "Preserve the exact segment count, every supplied start",
             "visible source identity remains analysis-only",
-            "Do not emit timestamp-sample Picture identifiers or Video identifiers",
+            "Emit an actually supplied Video identifier only in retention_analysis",
             "continuously present from the first applicable frame through the last",
         ),
         "video_timeline_minimax_h3_mixed_system_instruction": (
@@ -1327,7 +1363,7 @@ def test_minimax_h3_full_reference_variant_contracts():
         ),
         "video_timeline_minimax_h3_mixed_system_instruction_new": (
             "one continuous Picture namespace",
-            "Do not create a Video namespace",
+            "Never create a Video namespace from Pictures",
             "leading timeline Pictures",
             "Never activate video editing or video continuation from timeline Pictures",
         ),

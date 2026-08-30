@@ -3124,7 +3124,7 @@ Use only these visible relationship markers:
 
 *   fully_preserved: the complete defined visible role remains.
 *   partially_preserved: the visible role remains but some defined characteristics change or remain only partially.
-*   attribute_transfer: defined characteristics move to a different identifiable target Subject.
+*   attribute_transfer: source identity, appearance, motion, choreography, camera movement, timing, or spatial progression is applied to a different final Subject.
 *   weak_reference: only broad visible similarity in style, category, composition, or atmosphere remains.
 
 Use only these Audio relationship markers:
@@ -3137,14 +3137,14 @@ Use only these Audio relationship markers:
 Use the applicable line forms:
 <Subject N>: visible_marker - concise retained, changed, or transferred relationship
 <Picture N> (concrete frame or planning role): visible_marker - concise relationship
-<Video N> (whole-video role): visible_marker - concise relationship
+<Video N> (whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
 <Audio N>: audio_marker - concise relationship
 
-A Picture or Video used only as Subject provenance does not require a separate retention line. Describe that contribution in the Subject line.
+A Picture used only as Subject provenance does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
-Do not place speaker IDs, action choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, summary restatement, or exhaustive source description in retention_analysis.
+Do not place speaker IDs, detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, summary restatement, or exhaustive source description in retention_analysis. A concise Video relationship must still state which motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is retained or transferred.
 
 #### detailed_description and Timeline
 
@@ -3361,7 +3361,7 @@ Treat every supplied Picture without an explicit timestamp association as an ind
 
 Use timestamp-associated Pictures for source motion, pose progression, interaction, setting, framing, camera, scene progression, and physical continuity. Their visible source identity remains analysis-only when the request assigns an independent Picture identity to the demonstrated role.
 
-Use an independent Picture as provenance for the final reusable content it controls. Cite that Picture in the final Subject definition. Do not emit timestamp-sample Picture identifiers or Video identifiers in summary, retention_analysis, or Timeline blocks.
+Use an independent Picture as provenance for the final reusable content it controls. Cite that Picture in the final Subject definition. Do not emit timestamp-sample Picture identifiers in summary, retention_analysis, or Timeline blocks. Emit an actually supplied Video identifier only in retention_analysis for its retained or transferred camera movement, choreography, timing, pacing, spatial progression, or continuity relationship; do not emit it in summary or Timeline blocks.
 
 Keep each emitted label’s meaning stable across every field where it is allowed.
 
@@ -3410,19 +3410,19 @@ Write one short English paragraph. Begin with one square-bracketed task prefix b
 
 Join several applicable values with literal + separators and do not repeat a value. Never invent another task type or asset role. Media presence alone does not activate a task type.
 
-After the prefix, describe only the completed target video, its final Subjects, action, setting, and governing visual style, medium, era, and Subject presentation. Do not emit timestamp-sample Picture identifiers, Video identifiers, a superseded identity, or replacement bookkeeping.
+After the prefix, describe only the completed target video, its final Subjects, action, setting, and governing visual style, medium, era, and Subject presentation. Do not emit timestamp-sample Picture identifiers, a superseded identity, or replacement bookkeeping. Emit an actually supplied Video identifier only in retention_analysis for its retained or transferred relationship.
 
 Use only final Subject and applicable Audio labels already defined. Do not create a second chronological account of the Timeline.
 
 #### retention_analysis
 
-Write one concise line for every separately tracked final Subject and applicable Audio label. Do not emit timestamp-sample Picture identifiers, Video identifiers, or source-identity bookkeeping.
+Write one concise line for every separately tracked final Subject and applicable Video and Audio label. Do not emit timestamp-sample Picture identifiers or source-identity bookkeeping.
 
 Use only these visible relationship markers:
 
 *   fully_preserved: the complete defined final visible role remains.
 *   partially_preserved: the final visible role remains but some defined characteristics change or remain only partially.
-*   attribute_transfer: independent-Picture identity or appearance is applied to the final Subject performing the timeline-sample role.
+*   attribute_transfer: independent-Picture identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject.
 *   weak_reference: only broad visible similarity in style, category, composition, or atmosphere remains.
 
 Use only these Audio relationship markers:
@@ -3434,13 +3434,14 @@ Use only these Audio relationship markers:
 
 Use the applicable line forms:
 <Subject N>: visible_marker - concise final identity, appearance, motion, scene, style, and continuity relationship
+<Video N> (whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
 <Audio N>: audio_marker - concise audible relationship
 
-Select attribute_transfer only when the request actually assigns an independent Picture identity or appearance to a demonstrated timeline role. Otherwise choose the relationship supported by the request and evidence.
+Select attribute_transfer when the request assigns independent-Picture identity or appearance to a demonstrated timeline role, or when Video motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is applied to a final Subject without retaining source identity and appearance. Name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
-Do not place speaker IDs, media bookkeeping, superseded identity, action choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, summary restatement, or exhaustive source description in retention_analysis.
+Do not place speaker IDs, media bookkeeping, superseded identity, detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, summary restatement, or exhaustive source description in retention_analysis. A concise Video relationship must still state which motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is retained or transferred.
 
 #### detailed_description and Timeline
 Use no fixed number of timestamp sections and no Part N headings. Choose every boundary from a real chronological change in action, camera, speech, sound, foreground priority, scene state, or established reference relationship.
@@ -3529,7 +3530,7 @@ The number of Subjects described must match the number clearly featured in the i
 11. Assign stable speakers in actual vocal-event order. Preserve exact user dialogue. Apply reference-audio wording, voiceover, group-speaker, <scenetrans>, and <cutoff> rules only where applicable.
 12. Keep synchronized [SPEECH], [SOUNDS], and [MUSIC] in applicable blocks. Preserve one foreground event per block and control competing channel load.
 13. Finish with overall_soundscape and non_diegetic_music using required sentence counts, audible-layer separation, Audio relationships, and N/A conditions.
-14. Review exact field order, English section language, exact supplied starts, exact duration, no gaps or overlaps, final-Subject continuity, valid task types, valid marker families, no sample Picture or Video identifiers outside definitions, no superseded identity, correct speaker identity, exact visible text, correct audio classification, omission of absent channels, no invented media, and no text outside the six fields.
+14. Review exact field order, English section language, exact supplied starts, exact duration, no gaps or overlaps, final-Subject continuity, valid task types, valid marker families, no sample Picture identifiers outside definitions, supplied Video identifiers only in retention_analysis, no superseded identity, correct speaker identity, exact visible text, correct audio classification, omission of absent channels, no invented media, and no text outside the six fields.
 ''')
 
 VIDEO_TIMELINE_MINIMAX_H3_MIXED_SYSTEM_INSTRUCTION = _crlf('''## Core Identity and Operational Environment Directives
@@ -3668,7 +3669,7 @@ Use only these visible relationship markers:
 
 *   fully_preserved: the complete defined visible role remains.
 *   partially_preserved: the visible role remains but some defined characteristics change or remain only partially.
-*   attribute_transfer: Picture-defined identity or appearance is applied to the final Subject performing the Video role.
+*   attribute_transfer: Picture-defined identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject.
 *   weak_reference: only broad visible similarity in style, category, composition, or atmosphere remains.
 
 Use only these Audio relationship markers:
@@ -3681,14 +3682,14 @@ Use only these Audio relationship markers:
 Use the applicable line forms:
 <Subject N>: visible_marker - concise final relationship
 <Picture N> (reference or concrete-frame role): visible_marker - concise relationship
-<Video 1> (whole-video role): visible_marker - concise relationship
+<Video 1> (whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
 <Audio N>: audio_marker - concise relationship
 
-For actual identity or appearance transfer, state the final Subject, applicable Picture contribution, and <Video 1> motion contribution without narrating a visible swap.
+For actual identity or appearance transfer, state the final Subject, applicable Picture contribution, and <Video 1> motion contribution without narrating a visible swap. If only Video motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is used while source identity and appearance are not retained, mark <Video 1> as attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
-Do not place speaker IDs, action choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, summary restatement, or exhaustive source description in retention_analysis.
+Do not place speaker IDs, detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, summary restatement, or exhaustive source description in retention_analysis. A concise Video relationship must still state which motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is retained or transferred.
 
 #### detailed_description and Timeline
 Use no fixed number of timestamp sections and no Part N headings unless the regular user request explicitly declares its timestamps as target segment starts. Without explicit starts, choose boundaries only from real chronological changes.
@@ -4030,7 +4031,7 @@ Use only these visible relationship markers:
 
 *   fully_preserved: the complete defined visible role remains.
 *   partially_preserved: the visible role remains but some defined characteristics change or remain only partially.
-*   attribute_transfer: later-Picture characteristics are applied to a different identifiable final Subject.
+*   attribute_transfer: later-Picture identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject.
 *   weak_reference: only broad visible similarity remains.
 
 Use only these Audio relationship markers:
@@ -4043,14 +4044,14 @@ Use only these Audio relationship markers:
 Use the applicable line forms:
 <Subject N>: visible_marker - concise final relationship
 <Picture N> (timeline-frame or later-reference role): visible_marker - concise relationship
-<Video N> (actual whole-video role): visible_marker - concise relationship
+<Video N> (actual whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
 <Audio N>: audio_marker - concise relationship
 
-For actual replacement, explicitly state which final Subject receives the relevant later-Picture identity or appearance. Cite every defining Picture individually. Distinguish reference-supplied identity or appearance from retained motion, pose progression, interaction, spatial role, framing, environment, camera progression, timing, and continuity.
+For actual replacement, explicitly state which final Subject receives the relevant later-Picture identity or appearance. Cite every defining Picture individually. Distinguish reference-supplied identity or appearance from retained motion, pose progression, interaction, spatial role, framing, environment, camera progression, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
 
 Never name, identify, or visually describe superseded timeline content. For non-replacement references, state only requested retained and changed properties.
 
-New target events do not automatically reduce reference fidelity. Exclude speaker IDs, choreography, progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description.
+New target events do not automatically reduce reference fidelity. Exclude speaker IDs, detailed choreography, detailed progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description. A concise Video relationship must still state which motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is retained or transferred.
 
 #### detailed_description and Timeline
 Use no fixed number of timestamp sections and no Part N headings. Choose every boundary from a real chronological change in action, camera, speech, sound, foreground priority, scene state, or established reference relationship.
@@ -4276,14 +4277,14 @@ Use only visible markers fully_preserved, partially_preserved, attribute_transfe
 Use applicable forms:
 <Subject N>: visible_marker - concise final relationship
 <Picture N> (timeline-frame or later-reference role): visible_marker - concise relationship
-<Video N> (actual whole-video role): visible_marker - concise relationship
+<Video N> (actual whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
 <Audio N>: audio_marker - concise relationship
 
-For actual replacement, state which final Subject receives later-Picture identity or appearance. Cite every defining reference Picture individually. Distinguish reference identity or appearance from retained timeline motion, pose, interaction, spatial role, framing, environment, camera, timing, and continuity.
+For actual replacement, state which final Subject receives later-Picture identity or appearance. Cite every defining reference Picture individually. Distinguish reference identity or appearance from retained timeline motion, pose, interaction, spatial role, framing, environment, camera, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
 
 Never name, identify, or visually describe superseded timeline content. For non-replacement references, state only requested retained and changed properties.
 
-New target events do not automatically reduce reference fidelity. Exclude speaker IDs, choreography, progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description.
+New target events do not automatically reduce reference fidelity. Exclude speaker IDs, detailed choreography, detailed progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description. A concise Video relationship must still state which motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is retained or transferred.
 
 #### detailed_description and Timeline
 Use no fixed number of timestamp sections and no Part N headings. Choose every boundary from a real chronological change in action, camera, speech, sound, foreground priority, scene state, or established reference relationship.
@@ -4418,7 +4419,7 @@ You will provide an accurate cinematic description of the **scene captured in th
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
 ### Principle 4: MiniMax H3 Reference-Aware Adaptive Timeline and Audio-Visual Structuring
-Read total duration from {user_query}. Use the user request’s declared segment count and ordered Shot N at timestamp entries to assign exactly that many leading Pictures as chronological timeline images. Treat every later Picture as a reference while preserving one continuous Picture namespace. Do not create a Video namespace.
+Read total duration from {user_query}. Use the user request’s declared segment count and ordered Shot N at timestamp entries to assign exactly that many leading Pictures as chronological timeline images. Treat every later Picture as a reference while preserving one continuous Picture namespace. Leading Pictures never create a Video namespace. When an actual Video is supplied separately, keep its existing <Video N> identifier for retention_analysis only.
 #### Fixed Output Envelope
 The output must contain exactly six top-level fields in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, and non_diegetic_music:. Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
@@ -4439,7 +4440,7 @@ non_diegetic_music:
 one to three English sentences or N/A
 #### Existing Media and Label Ownership
 
-ComfyUI presents every supplied image in one continuous ordered <Picture N> sequence. Never create or reproduce a media-prefix declaration, insert a placeholder, renumber a Picture, restart numbering for a subset, or create a <Video N> namespace.
+ComfyUI presents every supplied image in one continuous ordered <Picture N> sequence. Never create or reproduce a media-prefix declaration, insert a placeholder, renumber a Picture, restart numbering for a subset, or turn those Pictures into a <Video N> namespace. When an actual Video is supplied separately, keep its existing <Video N> identifier for retention_analysis only.
 
 When the user request declares segment count and ordered Shot starts, treat exactly that number of leading Pictures as chronological timeline images corresponding to those Shots. Treat every later Picture as a reference image and preserve its existing number. When counts match, every Picture is a timeline image and no outside reference exists.
 
@@ -4490,8 +4491,8 @@ Write one short English paragraph beginning with a square-bracketed prefix built
 
 *   keyframe completion: a timeline Picture is a concrete target-frame anchor.
 *   reference generation: a later Picture or Audio guides final content without a concrete frame or copied-signal role.
-*   video editing: never select from timeline Pictures because this preset has no Video namespace.
-*   video continuation: never select from timeline Pictures because this preset has no Video namespace.
+*   video editing: select only when an actual Video is supplied; never select from timeline Pictures.
+*   video continuation: select only when an actual Video is supplied; never select from timeline Pictures.
 *   audio reuse: all or part of the same Audio signal is reused.
 *   audio reference: audible properties are followed without copying the signal.
 
@@ -4501,20 +4502,21 @@ After the prefix, describe only completed final Subjects, action, setting, and g
 
 #### retention_analysis
 
-Write one concise line for every separately tracked Subject, Picture, and Audio label. Never create a Video entry.
+Write one concise line for every separately tracked Subject, Picture, Video, and Audio label.
 
 Use visible markers fully_preserved, partially_preserved, attribute_transfer, and weak_reference. Use Audio markers fully_copy, partially_copy, reference, and weak_reference.
 
 Use applicable forms:
 <Subject N>: visible_marker - concise final relationship
 <Picture N> (timeline-frame or later-reference role): visible_marker - concise relationship
+<Video N> (actual whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
 <Audio N>: audio_marker - concise relationship
 
-For actual replacement, state which final Subject receives later-Picture identity or appearance. Cite every defining reference Picture individually. Distinguish that contribution from retained timeline motion, pose, interaction, spatial role, framing, environment, camera, timing, and continuity.
+For actual replacement, state which final Subject receives later-Picture identity or appearance. Cite every defining reference Picture individually. Distinguish that contribution from retained timeline motion, pose, interaction, spatial role, framing, environment, camera, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
 
 Never name, identify, or visually describe superseded content. For non-replacement references, state only requested retained and changed properties.
 
-New target events do not automatically reduce reference fidelity. Exclude speaker IDs, choreography, progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description.
+New target events do not automatically reduce reference fidelity. Exclude speaker IDs, detailed choreography, detailed progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description. A concise Video relationship must still state which motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is retained or transferred.
 
 #### detailed_description and Timeline
 Use no fixed number of timestamp sections and no Part N headings unless the user request declares exact target segment starts. When starts are declared, preserve exactly that count and every start. Otherwise choose adaptive boundaries at real changes.
@@ -4593,19 +4595,19 @@ The number of Subjects described must match the number clearly featured in the i
 ## Step-by-Step Frame Analysis and Prompt Generation Process
 
 1. Read the user request first. Use declared segment count and ordered Shot starts to assign leading Pictures to the timeline and later Pictures to reference roles without renumbering.
-2. Analyze leading timeline Pictures as one chronological progression and later Pictures as separately identified references. Never create a Video namespace.
+2. Analyze leading timeline Pictures as one chronological progression and later Pictures as separately identified references. Never create a Video namespace from Pictures. Keep any separately supplied Video identifier for retention_analysis only.
 3. Parse {user_query} for duration and compatible creative, dialogue, lyric, sound, and music direction without allowing it to replace partition.
 4. Determine every later Picture role from request and evidence rather than order. Record applicable identifiers individually.
 5. Define only completed final content. For replacement, omit superseded identity and use the final alias in every affected action block.
 6. Select applicable summary task types. Never activate video editing or video continuation from timeline Pictures.
-7. Select one valid relationship marker for every tracked Subject, Picture, and Audio label. Never create a Video retention entry.
+7. Select one valid relationship marker for every tracked Subject, Picture, Video, and Audio label. Create a Video retention entry only when an actual Video is supplied.
 8. Preserve every declared start and exact segment count. Otherwise plan adaptive contiguous ranges from 00.00s through exact duration.
 9. Put [Shot 1] right after [VISUAL]: in the first Timeline segment. Put the next [Shot N] right after [VISUAL]: in every later segment. Never skip or repeat a Shot number. Keep the timestamp ranges as the timing.
 10. Write current composition, final appearance and position, environment, lighting, action, state, camera, continuity, sound, and reference effect points.
 11. Assign stable speakers in actual vocal-event order. Preserve user dialogue and apply reference-audio, voiceover, group-speaker, <scenetrans>, and <cutoff> rules.
 12. Apply the supplied-<Audio 1> override exactly when activated. Otherwise synchronize applicable [SPEECH], [SOUNDS], and [MUSIC].
 13. Finish whole-video audio fields with required sentence counts and layer separation unless supplied Audio fixes their exact values.
-14. Review field order, English language, segment partition, continuous Picture numbering, exact duration, no gaps, conditional replacement, final-alias coverage, valid tasks and markers, no Video namespace, no superseded identity, correct speakers, visible text, audio classification, absent channels, invented media, or extra output.
+14. Review field order, English language, segment partition, continuous Picture numbering, exact duration, no gaps, conditional replacement, final-alias coverage, valid tasks and markers, no Video namespace created from Pictures, any supplied Video used only in retention_analysis, no superseded identity, correct speakers, visible text, audio classification, absent channels, invented media, or extra output.
 ''')
 H3_REF2VA_PREFIX = _crlf('''
 
@@ -4623,7 +4625,7 @@ BEGIN VIDEO REQUEST:
 H3_REF2VA_SUFFIX = _crlf('''
 END VIDEO REQUEST.
 
-Return only the completed video prompt in the structure required by the active system instruction. Use every supplied picture as visual evidence and cite its existing identifier where its subject or other referenced content is first completely defined. State the governing style in `summary:`. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Exclude choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description from `retention_analysis:`. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval or use them as timestamp declarations, segment openings, shot assignments, or cuts, and never mention an unsupplied identifier. Do not assign first-frame or final-frame status unless the request itself explicitly establishes that role. Do not output the upstream media-prefix declaration or commentary about following these rules.
+Return only the completed video prompt in the structure required by the active system instruction. Use every supplied picture as visual evidence and cite its existing identifier where its subject or other referenced content is first completely defined. State the governing style in `summary:`. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Keep detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description out of `retention_analysis:`. When a supplied `<Video N>` provides camera movement, choreography, timing, pacing, spatial progression, or continuity to a final Subject without retaining source identity and appearance, write a separate `<Video N>: attribute_transfer` line that names the receiving `<Subject N>`. Use `partially_preserved` only when some source Video content itself remains visible. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval or use them as timestamp declarations, segment openings, shot assignments, or cuts, and never mention an unsupplied identifier. Do not assign first-frame or final-frame status unless the request itself explicitly establishes that role. Do not output the upstream media-prefix declaration or commentary about following these rules.
 ''')
 
 H3_FL2VA_EXPERIMENTAL_PREFIX = _crlf('''
@@ -4680,11 +4682,11 @@ END VIDEO REQUEST.
 
 Return only the completed video prompt in the structure required by the active system instruction. Output exactly the declared segment count. Copy each supplied start timestamp literally, use the next supplied start as the preceding range's end, and use the exact requested duration as the final end. Do not replace supplied starts with equal-duration divisions or round their precision.
 
-Retain every existing `<Picture N>` identifier. Never emit `<Video N>`, renumber a Picture, infer another timeline sample, or reproduce the upstream media-prefix declaration. Cite each applicable Picture only where its role is first established; do not repeat identifiers in every timeline interval.
+Retain every existing `<Picture N>` identifier and every supplied `<Video N>` identifier. Never invent a Video identifier, renumber a Picture, infer another timeline sample, or reproduce the upstream media-prefix declaration. Cite each applicable Picture only where its role is first established; do not repeat identifiers in every timeline interval.
 
 Define the completed final subject once, citing the independent Picture that supplies identity and appearance. After that definition, use only the established <Subject N> alias and ordinary role language. Do not emit timestamp-sample Picture identifiers in `summary:`, `retention_analysis:`, or timeline blocks. Keep `retention_analysis:` focused on the final subject's identity, appearance, motion, scene, style, and continuity contributions without media bookkeeping. Depict the final subject continuously in every timeline interval.
 
-State the governing style in `summary:`. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Exclude choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description from `retention_analysis:`. Keep [VISUAL] focused on the completed subject's action, interaction, camera movement, physical continuity, and visible changes. Do not mention an unsupplied identifier or output commentary about following these rules.
+State the governing style in `summary:`. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Keep detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description out of `retention_analysis:`. When a supplied `<Video N>` provides camera movement, choreography, timing, pacing, spatial progression, or continuity to a final Subject without retaining source identity and appearance, write a separate `<Video N>: attribute_transfer` line that names the receiving `<Subject N>`. Use `partially_preserved` only when some source Video content itself remains visible. Keep [VISUAL] focused on the completed subject's action, interaction, camera movement, physical continuity, and visible changes. Do not mention an unsupplied identifier or output commentary about following these rules.
 ''')
 
 H3_REF2VA_PREFIX_NEW = _crlf('''
@@ -4710,7 +4712,7 @@ BEGIN VIDEO REQUEST:
 H3_REF2VA_SUFFIX_NEW = _crlf('''
 END VIDEO REQUEST.
 
-Return only the completed video prompt in the structure required by the active system instruction. Use every supplied picture as visual evidence and cite its existing identifier where its subject or other referenced content is first completely defined. State the governing style in `summary:`. Never include replaced subject in summary. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Exclude choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description from `retention_analysis:`. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval or use them as timestamp declarations, segment openings, shot assignments, or cuts, and never mention an unsupplied identifier. Do not assign first-frame or final-frame status unless the request itself explicitly establishes that role. Do not output the upstream media-prefix declaration or commentary about following these rules.
+Return only the completed video prompt in the structure required by the active system instruction. Use every supplied picture as visual evidence and cite its existing identifier where its subject or other referenced content is first completely defined. State the governing style in `summary:`. Never include replaced subject in summary. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Keep detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description out of `retention_analysis:`. When a supplied `<Video N>` provides camera movement, choreography, timing, pacing, spatial progression, or continuity to a final Subject without retaining source identity and appearance, write a separate `<Video N>: attribute_transfer` line that names the receiving `<Subject N>`. Use `partially_preserved` only when some source Video content itself remains visible. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval or use them as timestamp declarations, segment openings, shot assignments, or cuts, and never mention an unsupplied identifier. Do not assign first-frame or final-frame status unless the request itself explicitly establishes that role. Do not output the upstream media-prefix declaration or commentary about following these rules.
 ''')
 H3_REF2VA_NEW = (
     H3_REF2VA_PREFIX_NEW.removesuffix(_crlf("\n\nBEGIN VIDEO REQUEST:\n"))
@@ -4740,9 +4742,9 @@ END VIDEO REQUEST.
 
 Return only the completed video prompt in the structure required by the active system instruction. Preserve every explicit Picture/timestamp association and the exact requested duration. When explicit segment starts are supplied, output exactly that segment count, copy each supplied start literally, use the next start as the preceding range's end, and use the exact duration as the final end. Do not replace supplied starts with equal-duration divisions or round their precision.
 
-Use every supplied picture as visual evidence. Cite an independent Picture identifier once where the final subject or reference it controls is defined. After definitions, use only established <Subject N> aliases and ordinary role language; do not emit timestamp-sample Picture identifiers in `summary:`, `retention_analysis:`, or timeline blocks. State the governing style in `summary:`. Keep `retention_analysis:` limited to the final subjects' identity, appearance, motion, scene, style, and continuity contributions without media bookkeeping. Depict the completed final subject continuously in `subject_definitions:`, `summary:`, and every timeline interval.
+Use every supplied picture as visual evidence. Cite an independent Picture identifier once where the final subject or reference it controls is defined. After definitions, use only established <Subject N> aliases and ordinary role language; do not emit timestamp-sample Picture identifiers in `summary:`, `retention_analysis:`, or timeline blocks. State the governing style in `summary:`. Keep `retention_analysis:` limited to concise final Subject, supplied Video, and Audio relationships without media bookkeeping. Depict the completed final subject continuously in `subject_definitions:`, `summary:`, and every timeline interval.
 
-Exclude choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description from `retention_analysis:`. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval, invent an identifier, or mention an unsupplied identifier. Do not output the upstream media-prefix declaration or commentary about following these rules.
+Keep detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description out of `retention_analysis:`. When a supplied `<Video N>` provides camera movement, choreography, timing, pacing, spatial progression, or continuity to a final Subject without retaining source identity and appearance, write a separate `<Video N>: attribute_transfer` line that names the receiving `<Subject N>`. Use `partially_preserved` only when some source Video content itself remains visible. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval, invent an identifier, or mention an unsupplied identifier. Do not output the upstream media-prefix declaration or commentary about following these rules.
 ''')
 
 CHARACTER_TRANSFER_GEMMA = _crlf('''
@@ -4805,7 +4807,7 @@ Determine the governing visual style from the requested target video and supplie
 
 Define referenced content with concrete visible characteristics and direct relationships using vocabulary appropriate to the governing style. A picture identifier never replaces the subject, appearance, action, motion, camera, environment, continuity, or transformation details needed by the video model. Keep reference use concise where the picture already supplies fine visual detail, while still describing active motion and interaction without vague wording. Do not invent production methods or unsupported additions.
 
-Return only the completed video prompt in the structure required by the active system instruction. Use every supplied picture as visual evidence and cite its existing identifier where its subject or other referenced content is first completely defined. State the governing style in `summary:`. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Exclude choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description from `retention_analysis:`. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval or use them as timestamp declarations, segment openings, shot assignments, or cuts, and never mention an unsupplied identifier. Do not assign first-frame or final-frame status unless the request itself explicitly establishes that role. Do not output the upstream media-prefix declaration or commentary about following these rules.
+Return only the completed video prompt in the structure required by the active system instruction. Use every supplied picture as visual evidence and cite its existing identifier where its subject or other referenced content is first completely defined. State the governing style in `summary:`. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Keep detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description out of `retention_analysis:`. When a supplied `<Video N>` provides camera movement, choreography, timing, pacing, spatial progression, or continuity to a final Subject without retaining source identity and appearance, write a separate `<Video N>: attribute_transfer` line that names the receiving `<Subject N>`. Use `partially_preserved` only when some source Video content itself remains visible. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval or use them as timestamp declarations, segment openings, shot assignments, or cuts, and never mention an unsupplied identifier. Do not assign first-frame or final-frame status unless the request itself explicitly establishes that role. Do not output the upstream media-prefix declaration or commentary about following these rules.
 ''')
 
 IDEOGRAM_4 = _crlf('''
@@ -4868,11 +4870,11 @@ Determine the governing visual style from the requested target video and supplie
 
 Return only the completed video prompt in the structure required by the active system instruction. Output exactly the declared segment count. Copy each supplied start timestamp literally, use the next supplied start as the preceding range's end, and use the exact requested duration as the final end. Do not replace supplied starts with equal-duration divisions or round their precision.
 
-Retain every existing `<Picture N>` identifier. Never emit `<Video N>`, renumber a Picture, infer another timeline sample, or reproduce the upstream media-prefix declaration. Cite each applicable Picture only where its role is first established; do not repeat identifiers in every timeline interval.
+Retain every existing `<Picture N>` identifier and every supplied `<Video N>` identifier. Never invent a Video identifier, renumber a Picture, infer another timeline sample, or reproduce the upstream media-prefix declaration. Cite each applicable Picture only where its role is first established; do not repeat identifiers in every timeline interval.
 
 Define the completed final subject once, citing the independent Picture that supplies identity and appearance. After that definition, use only the established <Subject N> alias and ordinary role language. Do not emit timestamp-sample Picture identifiers in `summary:`, `retention_analysis:`, or timeline blocks. Keep `retention_analysis:` focused on the final subject's identity, appearance, motion, scene, style, and continuity contributions without media bookkeeping. Depict the final subject continuously in every timeline interval.
 
-State the governing style in `summary:`. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Exclude choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description from `retention_analysis:`. Keep [VISUAL] focused on the completed subject's action, interaction, camera movement, physical continuity, and visible changes. Do not mention an unsupplied identifier or output commentary about following these rules.
+State the governing style in `summary:`. Keep `retention_analysis:` limited to concise media roles, retained and intentionally changed properties, style retention or replacement, and continuity relationships. Keep detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description out of `retention_analysis:`. When a supplied `<Video N>` provides camera movement, choreography, timing, pacing, spatial progression, or continuity to a final Subject without retaining source identity and appearance, write a separate `<Video N>: attribute_transfer` line that names the receiving `<Subject N>`. Use `partially_preserved` only when some source Video content itself remains visible. Keep [VISUAL] focused on the completed subject's action, interaction, camera movement, physical continuity, and visible changes. Do not mention an unsupplied identifier or output commentary about following these rules.
 ''')
 
 H3_REF2VA_ALT = _crlf('''
@@ -4891,9 +4893,9 @@ Define referenced content with concrete visible characteristics and direct relat
 
 Return only the completed video prompt in the structure required by the active system instruction. Preserve every explicit Picture/timestamp association and the exact requested duration. When explicit segment starts are supplied, output exactly that segment count, copy each supplied start literally, use the next start as the preceding range's end, and use the exact duration as the final end. Do not replace supplied starts with equal-duration divisions or round their precision.
 
-Use every supplied picture as visual evidence. Cite an independent Picture identifier once where the final subject or reference it controls is defined. After definitions, use only established <Subject N> aliases and ordinary role language; do not emit timestamp-sample Picture identifiers in `summary:`, `retention_analysis:`, or timeline blocks. State the governing style in `summary:`. Keep `retention_analysis:` limited to the final subjects' identity, appearance, motion, scene, style, and continuity contributions without media bookkeeping. Depict the completed final subject continuously in `subject_definitions:`, `summary:`, and every timeline interval.
+Use every supplied picture as visual evidence. Cite an independent Picture identifier once where the final subject or reference it controls is defined. After definitions, use only established <Subject N> aliases and ordinary role language; do not emit timestamp-sample Picture identifiers in `summary:`, `retention_analysis:`, or timeline blocks. State the governing style in `summary:`. Keep `retention_analysis:` limited to concise final Subject, supplied Video, and Audio relationships without media bookkeeping. Depict the completed final subject continuously in `subject_definitions:`, `summary:`, and every timeline interval.
 
-Exclude choreography, event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description from `retention_analysis:`. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval, invent an identifier, or mention an unsupplied identifier. Do not output the upstream media-prefix declaration or commentary about following these rules.
+Keep detailed choreography, detailed event progression, transformation timing, segment placement, production methods, construction details, repeated definitions, and exhaustive source description out of `retention_analysis:`. When a supplied `<Video N>` provides camera movement, choreography, timing, pacing, spatial progression, or continuity to a final Subject without retaining source identity and appearance, write a separate `<Video N>: attribute_transfer` line that names the receiving `<Subject N>`. Use `partially_preserved` only when some source Video content itself remains visible. Keep [VISUAL] focused on action, interaction, camera movement, reference use, and continuity without restating the global style. Do not repeat picture identifiers at each timeline interval, invent an identifier, or mention an unsupplied identifier. Do not output the upstream media-prefix declaration or commentary about following these rules.
 ''')
 
 JAILBREAK_PREFIX = _crlf('''⁠　⁠
