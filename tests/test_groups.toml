@@ -158,11 +158,6 @@ python_tests = [
 ]
 frontend_tests = []
 
-[groups.server_restart]
-paths = ["server_restart.py", "web/restart_menu.js"]
-python_tests = ["tests/test_server_restart.py"]
-frontend_tests = []
-
 [groups.staged_frontend]
 paths = [
   "web/layer_context_menu.js",

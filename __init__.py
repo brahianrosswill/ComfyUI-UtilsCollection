@@ -22,7 +22,6 @@ from comfy_api.latest import ComfyExtension, io
 from .node_replacements import register_replacements
 from .node_metadata import enrich_node_list
 from .scheduler_helpers import register_scheduler_handlers
-from .server_restart import register_restart_route
 
 class SamplingUtils(ComfyExtension):
     @override
@@ -239,7 +238,6 @@ class SamplingUtils(ComfyExtension):
     @override
     async def on_load(self) -> None:
         """Called by ComfyUI backend on startup to initialize resources and register API extensions."""
-        register_restart_route()
         register_scheduler_handlers()
         await register_replacements()
 
