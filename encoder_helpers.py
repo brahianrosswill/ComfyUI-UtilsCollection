@@ -44,9 +44,9 @@ _MINIMAX_H3_REFERENCE_KEYFRAME_MODES = {
     "first + last + match": ("first_last", "match"),
     "first + last + max": ("first_last", "max"),
 }
-MINIMAX_H3_MEDIA_STRUCTURE = "At <<time>>, <<picture>>: <<visual>> (from <<shot>>) is fully anchored."
+MINIMAX_H3_MEDIA_STRUCTURE = "<<picture>>: <<visual>>"
 _MINIMAX_H3_MEDIA_KEYWORDS = {"time", "picture", "visual", "shot"}
-_MINIMAX_H3_REQUIRED_MEDIA_KEYWORDS = {"time", "picture", "visual"}
+_MINIMAX_H3_REQUIRED_MEDIA_KEYWORDS = {"picture", "visual"}
 
 
 def prepare_vae_reference_image(samples, target_size, dimension_multiple, upscale_method="bicubic"):

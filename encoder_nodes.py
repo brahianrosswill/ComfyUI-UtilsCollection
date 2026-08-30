@@ -3324,11 +3324,11 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
         return io.Schema(
             node_id="UC_MiniMaxH3MediaConfig", display_name="MiniMax H3 Media Configurator",
             category="advanced/conditioning", is_input_list=True, is_experimental=True,
-            description="Sets custom Picture layout and separate Picture and Video timestamps for the Advanced MiniMax H3 nodes.",
+            description="Sets optional Picture timestamp syntax and the Video sampling rate used by Qwen for the Advanced MiniMax H3 nodes.",
             inputs=[
-                io.AnyType.Input("timestamps", optional=True, tooltip="Optional sequential timestamps for existing Picture slots. When disconnected, anchors one visual at 0 seconds."),
-                io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="0.0s", tooltip="Formatting used for Picture timestamps and paired Video timestamps."),
-                io.String.Input("structure", multiline=True, dynamic_prompts=False, default=MINIMAX_H3_MEDIA_STRUCTURE, tooltip="Per-shot structure using <<time>>, <<picture>>, <<visual>>, and <<shot>>."),
+                io.AnyType.Input("timestamps", optional=True, tooltip="Optional sequential timestamps for existing Picture slots. Leave disconnected to keep the default Core Picture presentation."),
+                io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="0.0s", tooltip="Formatting used when the Picture structure contains <<time>>."),
+                io.String.Input("structure", multiline=True, dynamic_prompts=False, default=MINIMAX_H3_MEDIA_STRUCTURE, tooltip="Picture constructor using required <<picture>> and <<visual>> tags. Default matches Core: <<picture>>: <<visual>>. Timestamped example: At <<time>>, <<picture>>: <<visual>> (from <<shot>>) is fully anchored."),
                 io.Int.Input("video_fps", default=2, min=1, max=24, step=1, tooltip="VLM presentation sampling rate for the 24 fps Video input. Latent video usage is unchanged."),
             ],
             outputs=[MiniMaxH3MediaConfig.Output(display_name="media_config", tooltip="Runtime media configuration for the Advanced MiniMax H3 encoder nodes.")],
@@ -3373,7 +3373,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             description=(
                 "Creates coordinated MiniMax H3 Qwen conditioning from independent frame, reference, and fusion "
                 "inputs together with native visual controls and the matching joint video/audio latent. Optional media "
-                "configuration controls Picture and Video timestamp syntax."
+                    "configuration controls optional Picture timestamp syntax and Video sampling for Qwen."
             ),
             inputs=[
                 io.Clip.Input(
@@ -3383,7 +3383,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 io.Vae.Input(
                     "vae",
                     optional=True,
-                    tooltip="Encodes first/last frames, reference images, and a complete Video. Not required when reference image size is none or when Video timestamps are connected.",
+                    tooltip="Encodes first/last frames, reference images, and a complete Video. Not required when reference image size is none.",
                 ),
                 io.Image.Input(
                     "first_frame",
@@ -3486,9 +3486,9 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 ),
                 MiniMaxH3MediaConfig.Input(
                     "media_config", optional=True,
-                    tooltip="Formats Picture timestamps and optional one-to-one Video image timestamps. Without Video timestamps, Video uses default handling.",
+                    tooltip="Optionally formats Picture timestamps and sets the Qwen Video sampling rate. Its default Picture constructor matches Core handling.",
                 ),
-                io.Image.Input("video", optional=True, tooltip="Connect selected images matching Video timestamps, or a complete 24 fps image batch when Video timestamps are disconnected."),
+                io.Image.Input("video", optional=True, tooltip="Complete Video frame batch at 24 fps. The configurator controls only how densely Qwen samples it."),
                 io.Audio.Input("audio", optional=True, tooltip="Optional H3 reference audio."),
                 io.Vae.Input("audio_vae", optional=True, tooltip="Required with audio. Resamples and encodes the reference audio."),
             ],

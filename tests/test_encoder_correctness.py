@@ -480,6 +480,8 @@ def test_minimax_h3_media_config_schema_and_payload():
     assert inputs["timestamps"].optional is True
     assert inputs["timestamp_format"].default == "0.0s"
     assert inputs["structure"].default == encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE
+    assert inputs["structure"].default == "<<picture>>: <<visual>>"
+    assert "At <<time>>, <<picture>>: <<visual>> (from <<shot>>)" in inputs["structure"].tooltip
     assert inputs["video_fps"].default == 2
     assert inputs["video_fps"].min == 1
     assert inputs["video_fps"].max == 24
@@ -762,6 +764,21 @@ def test_advanced_combined_minimax_h3_wraps_keyframe_with_native_video():
     ]
 
 
+def test_minimax_h3_media_tokenization_default_matches_core_picture_constructor():
+    clip = _MiniMaxH3TestClip()
+    tokens = encoder_helpers.tokenize_minimax_h3_media_prompt(
+        clip,
+        "prompt",
+        [torch.ones(1, 2, 2, 3)],
+        [Fraction(0)],
+        "0.00s",
+        encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
+    )
+    entries = tokens["qwen3vl_32b"][0]
+    text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
+    assert text == "<Picture 1>: \nprompt"
+
+
 def test_minimax_h3_media_tokenization_builds_picture_anchors_before_prompt():
     clip = _MiniMaxH3TestClip()
     first = torch.ones(1, 2, 3, 3)
@@ -772,7 +789,7 @@ def test_minimax_h3_media_tokenization_builds_picture_anchors_before_prompt():
         [first, second],
         [Fraction("1.21"), Fraction("2.46")],
         "0.00s",
-        encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
+        "At <<time>>, <<picture>>: <<visual>> (from <<shot>>) is fully anchored.",
     )
     entries = tokens["qwen3vl_32b"][0]
     text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
@@ -837,7 +854,7 @@ def test_minimax_h3_media_tokenization_combines_picture_and_restricted_video():
         [picture],
         [Fraction(0)],
         "0.00s",
-        encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
+        "At <<time>>, <<picture>>: <<visual>> (from <<shot>>) is fully anchored.",
         video_frames=frames,
         video_timestamps=[Fraction(1), Fraction(2)],
     )
@@ -885,7 +902,8 @@ def test_minimax_h3_media_tokenization_formats_derived_video_timestamps():
     "structure, message",
     [
         ("", "must not be empty"),
-        ("<<picture>> <<visual>> <<shot>>", "missing <<time>>"),
+        ("<<picture>> <<shot>>", "missing <<visual>>"),
+        ("<<visual>> <<shot>>", "missing <<picture>>"),
         ("<<time>> <<picture>> <<visual>> <<shot>> <<unknown>>", "Unknown"),
         ("<<time>> <<picture>> <<visual>> <<visual>> <<shot>>", "exactly one <<visual>>"),
     ],
@@ -895,8 +913,8 @@ def test_minimax_h3_media_structure_validation(structure, message):
         encoder_helpers._validate_minimax_h3_media_structure(structure)
 
 
-def test_minimax_h3_media_structure_allows_omitting_shot_label():
-    structure = "At <<time>>, <<picture>>: <<visual>> is fully anchored."
+def test_minimax_h3_media_structure_allows_optional_time_and_shot_labels():
+    structure = "<<picture>>: <<visual>>"
     assert encoder_helpers._validate_minimax_h3_media_structure(structure) == structure
 
 
