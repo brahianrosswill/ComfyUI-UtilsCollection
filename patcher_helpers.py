@@ -1273,7 +1273,13 @@ def minimax_h3_block_patch_forward(
         if kind == "audio"
     )
     video_result, audio_result = self.final_layer(
-        hidden_states, timestep_embedding, video_seg, audio_seg
+        hidden_states,
+        timestep_embedding,
+        video_seg,
+        audio_seg,
+        sigma_v,
+        transformer_options.get("sample_sigmas"),
+        (shift_v, shift_a),
     )
     video_out = minimax_model.unpatchify_video(
         video_result,
