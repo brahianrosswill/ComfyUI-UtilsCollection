@@ -45,11 +45,8 @@ _MINIMAX_H3_REFERENCE_KEYFRAME_MODES = {
     "first + last + max": ("first_last", "max"),
 }
 MINIMAX_H3_MEDIA_STRUCTURE = "At <<time>>, <<picture>>: <<visual>> (from <<shot>>) is fully anchored."
-MINIMAX_H3_VIDEO_MEDIA_STRUCTURE = "At <<time>>, <<video>>: <<visual>> (from <<shot>>) is fully anchored."
 _MINIMAX_H3_MEDIA_KEYWORDS = {"time", "picture", "visual", "shot"}
 _MINIMAX_H3_REQUIRED_MEDIA_KEYWORDS = {"time", "picture", "visual"}
-_MINIMAX_H3_VIDEO_MEDIA_KEYWORDS = {"time", "video", "visual", "shot"}
-_MINIMAX_H3_REQUIRED_VIDEO_MEDIA_KEYWORDS = {"time", "video", "visual"}
 
 
 def prepare_vae_reference_image(samples, target_size, dimension_multiple, upscale_method="bicubic"):
@@ -334,32 +331,64 @@ def _validate_minimax_h3_media_structure(structure):
     return structure
 
 
-def _validate_minimax_h3_video_media_structure(structure):
-    if not isinstance(structure, str) or not structure.strip():
-        raise ValueError("MiniMax H3 video media structure must not be empty.")
-    keywords = re.findall(r"<<([^<>]+)>>", structure)
-    unknown = sorted(set(keywords) - _MINIMAX_H3_VIDEO_MEDIA_KEYWORDS)
-    if unknown:
+def _minimax_h3_timestamped_video_entries(
+    clip, frames, timestamps, timestamp_format
+):
+    timestamps = list(timestamps)
+    if frames.shape[0] != len(timestamps):
         raise ValueError(
-            f"Unknown MiniMax H3 video media structure keyword: <<{unknown[0]}>>."
+            "MiniMax H3 video frame and timestamp counts must match."
         )
-    missing = sorted(_MINIMAX_H3_REQUIRED_VIDEO_MEDIA_KEYWORDS - set(keywords))
-    if missing:
+    if frames.shape[0] % 2 == 1:
+        frames = torch.cat([frames, frames[-1:]], dim=0)
+        timestamps.append(timestamps[-1])
+    source_entries = _token_entries(
+        clip.tokenize(
+            "",
+            minimax_ref_items=[{
+                "type": "video",
+                "data": frames,
+                "timestamps": timestamps,
+            }],
+        ),
+        "qwen3vl_32b",
+    )
+    visual_blocks = []
+    for index, item in enumerate(source_entries):
+        value = item[0]
+        if not (
+            isinstance(value, dict)
+            and value.get("type") == "image"
+            and value.get("minimax_video_block", False)
+        ):
+            continue
+        if (
+            index == 0
+            or index + 1 >= len(source_entries)
+            or source_entries[index - 1][0] != 151652
+            or source_entries[index + 1][0] != 151653
+        ):
+            raise ValueError(
+                "MiniMax H3 tokenizer returned an invalid temporal video block."
+            )
+        visual_blocks.append(source_entries[index - 1:index + 2])
+    if len(visual_blocks) != frames.shape[0] // 2:
         raise ValueError(
-            f"MiniMax H3 video media structure is missing <<{missing[0]}>>."
+            "MiniMax H3 tokenizer returned an unexpected temporal video block count."
         )
-    if keywords.count("visual") != 1:
-        raise ValueError(
-            "MiniMax H3 video media structure requires exactly one <<visual>>."
-        )
-    return structure
+    entries = _minimax_h3_text_entries(clip, "<Video 1>: ")
+    for index, visual in enumerate(visual_blocks):
+        timestamp = (timestamps[index * 2] + timestamps[index * 2 + 1]) / 2
+        formatted = format_video_timestamp(timestamp, timestamp_format)
+        entries.extend(_minimax_h3_text_entries(clip, f"<{formatted}>"))
+        entries.extend(visual)
+    return entries
 
 
 def tokenize_minimax_h3_media_prompt(
     clip, text, pictures, picture_timestamps, timestamp_format, picture_structure,
     video_frames=None, video_timestamps=(),
-    video_structure=MINIMAX_H3_VIDEO_MEDIA_STRUCTURE, audio=False,
-    default_single_visual=False, default_video_frames=None,
+    audio=False, default_single_visual=False, default_video_frames=None,
     default_video_timestamps=(),
 ):
     if default_single_visual and pictures and len(pictures) != 1:
@@ -396,61 +425,17 @@ def tokenize_minimax_h3_media_prompt(
         entries.extend(_minimax_h3_text_entries(clip, before))
         entries.extend(visual)
         entries.extend(_minimax_h3_text_entries(clip, after + "\n"))
-    for index, (frame, timestamp) in enumerate(
-        zip(configured_video_frames, video_timestamps), start=1
-    ):
-        pair = frame.expand(2, -1, -1, -1)
-        core_entries = _token_entries(
-            clip.tokenize(
-                "",
-                minimax_ref_items=[{
-                    "type": "video",
-                    "data": pair,
-                    "timestamps": [timestamp, timestamp],
-                }],
-            ),
-            "qwen3vl_32b",
-        )
-        prefix = _minimax_h3_text_entries(clip, "<Video 1>: ")
-        if [item[0] for item in core_entries[:len(prefix)]] != [
-            item[0] for item in prefix
-        ]:
-            raise ValueError("MiniMax H3 tokenizer returned an unexpected video prefix.")
-        block = core_entries[len(prefix):]
-        core_timestamp = _minimax_h3_text_entries(
-            clip, f"<{float(timestamp):.1f} seconds>"
-        )
-        if [item[0] for item in block[:len(core_timestamp)]] != [
-            item[0] for item in core_timestamp
-        ]:
-            raise ValueError("MiniMax H3 tokenizer returned an unexpected video timestamp.")
-        block = block[len(core_timestamp):]
-        visuals = [item for item in block if is_image_token(item)]
-        if (
-            len(visuals) != 1
-            or not visuals[0][0].get("minimax_video_block", False)
-        ):
-            raise ValueError("MiniMax H3 tokenizer returned an invalid temporal video block.")
-        expanded = video_structure.replace(
-            "<<time>>", format_video_timestamp(timestamp, timestamp_format)
-        )
-        expanded = expanded.replace("<<video>>", "<Video 1>: " if index == 1 else "")
-        expanded = expanded.replace("<<shot>>", f"[Shot {index}]")
-        before, after = expanded.split("<<visual>>")
-        entries.extend(_minimax_h3_text_entries(clip, before))
-        entries.extend(block)
-        entries.extend(_minimax_h3_text_entries(clip, after + "\n"))
+    if configured_video_frames:
+        frames = torch.cat(tuple(configured_video_frames), dim=0)
+        entries.extend(_minimax_h3_timestamped_video_entries(
+            clip, frames, video_timestamps, timestamp_format
+        ))
     if default_video_frames is not None:
-        entries.extend(_token_entries(
-            clip.tokenize(
-                "",
-                minimax_ref_items=[{
-                    "type": "video",
-                    "data": default_video_frames,
-                    "timestamps": list(default_video_timestamps),
-                }],
-            ),
-            "qwen3vl_32b",
+        entries.extend(_minimax_h3_timestamped_video_entries(
+            clip,
+            default_video_frames,
+            default_video_timestamps,
+            timestamp_format,
         ))
     if audio:
         entries.extend(_minimax_h3_text_entries(clip, "<Audio 1>: "))
@@ -460,35 +445,31 @@ def tokenize_minimax_h3_media_prompt(
 
 def build_minimax_h3_media_config(
     timestamps, timestamp_format="0.0s", structure=MINIMAX_H3_MEDIA_STRUCTURE,
-    video_timestamps=None,
-    video_structure=MINIMAX_H3_VIDEO_MEDIA_STRUCTURE,
+    video_fps=2,
 ):
     if isinstance(timestamp_format, list):
         timestamp_format = timestamp_format[0] if timestamp_format else "0.0s"
     if isinstance(structure, list):
         structure = structure[0] if structure else MINIMAX_H3_MEDIA_STRUCTURE
-    if isinstance(video_structure, list):
-        video_structure = (
-            video_structure[0] if video_structure else MINIMAX_H3_VIDEO_MEDIA_STRUCTURE
-        )
     default_single_visual = timestamps is None or timestamps == []
     timestamps = [Fraction(0)] if default_single_visual else parse_video_timestamps(timestamps)
-    video_timestamps = (
-        [] if video_timestamps is None or video_timestamps == []
-        else parse_video_timestamps(video_timestamps)
-    )
+    if isinstance(video_fps, list):
+        video_fps = video_fps[0] if video_fps else 2
+    if isinstance(video_fps, bool) or not isinstance(video_fps, numbers.Integral):
+        raise ValueError("MiniMax H3 video_fps must be an integer from 1 to 24.")
+    video_fps = int(video_fps)
+    if not 1 <= video_fps <= 24:
+        raise ValueError("MiniMax H3 video_fps must be an integer from 1 to 24.")
     if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
         raise ValueError(f"Unsupported video timestamp format: {timestamp_format}")
     structure = _validate_minimax_h3_media_structure(structure)
-    video_structure = _validate_minimax_h3_video_media_structure(video_structure)
     return {
         "schema_version": 3,
         "timestamps_seconds": tuple(timestamps),
         "timestamp_format": timestamp_format,
         "structure": structure,
         "default_single_visual": default_single_visual,
-        "video_timestamps_seconds": tuple(video_timestamps),
-        "video_structure": video_structure,
+        "video_fps": video_fps,
     }
 
 
@@ -506,28 +487,23 @@ def _validate_minimax_h3_media_config(media_config, output_frame_count):
             "MiniMax H3 Picture timestamps must not exceed output duration "
             f"{float(output_duration):.3f}s."
         )
-    video_timestamps = list(media_config.get("video_timestamps_seconds", ()))
-    if any(
-        not isinstance(timestamp, Fraction) or timestamp < 0
-        for timestamp in video_timestamps
+    video_fps = media_config.get("video_fps")
+    if (
+        isinstance(video_fps, bool)
+        or not isinstance(video_fps, numbers.Integral)
+        or not 1 <= video_fps <= 24
     ):
-        raise ValueError(
-            "MiniMax H3 video timestamps must be parsed nonnegative exact seconds."
-        )
+        raise ValueError("MiniMax H3 media config requires video_fps from 1 to 24.")
     timestamp_format = media_config.get("timestamp_format")
     if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
         raise ValueError("MiniMax H3 media config has an unsupported timestamp format.")
     structure = _validate_minimax_h3_media_structure(media_config.get("structure"))
-    video_structure = _validate_minimax_h3_video_media_structure(
-        media_config.get("video_structure")
-    )
     return (
         timestamps,
         timestamp_format,
         structure,
         bool(media_config.get("default_single_visual", False)),
-        video_timestamps,
-        video_structure,
+        int(video_fps),
     )
 
 
@@ -725,28 +701,20 @@ def prepare_minimax_h3_reference_video(
     }
 
 
-def prepare_minimax_h3_configured_video_frames(
-    video: torch.Tensor, timestamp_count: int,
-) -> torch.Tensor:
-    """Validate timestamp-selected H3 presentation frames without resampling them."""
-    if (
-        not torch.is_tensor(video)
-        or video.ndim != 4
-        or video.shape[0] < 1
-        or video.shape[1] < 1
-        or video.shape[2] < 1
-        or video.shape[3] < 3
-        or not torch.isfinite(video).all()
-    ):
-        raise ValueError(
-            "MiniMax H3 configured video must be a finite BHWC image batch with at least three channels."
-        )
-    if video.shape[0] != timestamp_count:
-        raise ValueError(
-            f"MiniMax H3 configured video received {video.shape[0]} images for "
-            f"{timestamp_count} timestamps."
-        )
-    return video[..., :3]
+def minimax_h3_video_sample_indices(frame_count: int, video_fps: int) -> list[int]:
+    """Select nearest 24 fps source positions at a uniform presentation rate."""
+    if frame_count < 1:
+        return []
+    indices = []
+    sample_index = 0
+    while True:
+        source_index = (sample_index * 24 + video_fps // 2) // video_fps
+        if source_index >= frame_count:
+            break
+        if not indices or source_index != indices[-1]:
+            indices.append(source_index)
+        sample_index += 1
+    return indices
 
 
 def validate_minimax_h3_model_patcher(
@@ -3363,31 +3331,21 @@ def _execute_advanced_minimax_h3_image_to_video(
     media_timestamp_format = None
     picture_structure = None
     default_single_visual = False
-    video_timestamps = []
-    video_structure = None
+    video_fps = 2
     if media_config is not None:
         (
             picture_timestamps,
             media_timestamp_format,
             picture_structure,
             default_single_visual,
-            video_timestamps,
-            video_structure,
+            video_fps,
         ) = _validate_minimax_h3_media_config(
             media_config,
             frame_count,
         )
     video_frames = None
     video_reference = None
-    if video_timestamps:
-        if video is None:
-            raise ValueError(
-                "MiniMax H3 configured video timestamps require the video input."
-            )
-        video_frames = prepare_minimax_h3_configured_video_frames(
-            video, len(video_timestamps)
-        )
-    elif video is not None:
+    if video is not None:
         video_frames, video_reference = prepare_minimax_h3_reference_video(
             video, vae, frame_count, encode_reference=frame_vae_enabled
         )
@@ -3447,16 +3405,12 @@ def _execute_advanced_minimax_h3_image_to_video(
                 if default_single_visual and default_media_image is not None
                 else ([] if default_single_visual else images)
             )
-            selected_frames = [
-                prepare_vlm_image(
-                    video_frames[index:index + 1], vlm_video_resolution
-                )
-                for index in range(len(video_timestamps))
-            ]
             default_video_frames = None
             default_video_timestamps = []
-            if video_frames is not None and not video_timestamps:
-                sample_indices = list(range(0, video_frames.shape[0], 12))
+            if video_frames is not None:
+                sample_indices = minimax_h3_video_sample_indices(
+                    video_frames.shape[0], video_fps
+                )
                 default_video_frames = prepare_minimax_h3_vlm_video_frames(
                     video_frames[sample_indices], vlm_video_resolution
                 )
@@ -3470,9 +3424,6 @@ def _execute_advanced_minimax_h3_image_to_video(
                 picture_timestamps,
                 media_timestamp_format,
                 picture_structure,
-                video_frames=selected_frames,
-                video_timestamps=video_timestamps,
-                video_structure=video_structure,
                 audio=audio_reference is not None,
                 default_single_visual=default_single_visual,
                 default_video_frames=default_video_frames,

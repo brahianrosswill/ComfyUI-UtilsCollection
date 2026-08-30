@@ -50,7 +50,6 @@ from .encoder_helpers import(
     execute_advanced_minimax_h3_image_to_video_combined,
     build_minimax_h3_media_config,
     MINIMAX_H3_MEDIA_STRUCTURE,
-    MINIMAX_H3_VIDEO_MEDIA_STRUCTURE,
     execute_minimax_h3_first_frame_references,
     execute_token_fusion_visual_conditioning,
 )
@@ -3325,13 +3324,12 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
         return io.Schema(
             node_id="UC_MiniMaxH3MediaConfig", display_name="MiniMax H3 Media Configurator",
             category="advanced/conditioning", is_input_list=True, is_experimental=True,
-            description="Sets separate Picture and Video timestamps and their text layout for the Advanced MiniMax H3 nodes.",
+            description="Sets custom Picture layout and separate Picture and Video timestamps for the Advanced MiniMax H3 nodes.",
             inputs=[
                 io.AnyType.Input("timestamps", optional=True, tooltip="Optional sequential timestamps for existing Picture slots. When disconnected, anchors one visual at 0 seconds."),
-                io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="0.0s", tooltip="Formatting used when <<time>> is expanded."),
+                io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="0.0s", tooltip="Formatting used for Picture timestamps and paired Video timestamps."),
                 io.String.Input("structure", multiline=True, dynamic_prompts=False, default=MINIMAX_H3_MEDIA_STRUCTURE, tooltip="Per-shot structure using <<time>>, <<picture>>, <<visual>>, and <<shot>>."),
-                io.AnyType.Input("video_timestamps", optional=True, tooltip="One timestamp for each selected image connected to Video. Leave disconnected when Video contains every frame at 24 fps."),
-                io.String.Input("video_structure", multiline=True, dynamic_prompts=False, default=MINIMAX_H3_VIDEO_MEDIA_STRUCTURE, tooltip="Per-video-shot structure using <<time>>, <<video>>, <<visual>>, and <<shot>>."),
+                io.Int.Input("video_fps", default=2, min=1, max=24, step=1, tooltip="VLM presentation sampling rate for the 24 fps Video input. Latent video usage is unchanged."),
             ],
             outputs=[MiniMaxH3MediaConfig.Output(display_name="media_config", tooltip="Runtime media configuration for the Advanced MiniMax H3 encoder nodes.")],
         )
@@ -3342,11 +3340,10 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
         timestamps=None,
         timestamp_format="0.0s",
         structure=MINIMAX_H3_MEDIA_STRUCTURE,
-        video_timestamps=None,
-        video_structure=MINIMAX_H3_VIDEO_MEDIA_STRUCTURE,
+        video_fps=2,
     ):
         return io.NodeOutput(build_minimax_h3_media_config(
-            timestamps, timestamp_format, structure, video_timestamps, video_structure
+            timestamps, timestamp_format, structure, video_fps
         ))
 
 

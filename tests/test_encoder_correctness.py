@@ -262,8 +262,15 @@ class _MiniMaxH3TestClip:
                     entries.extend([(151652, 1.0), ({"type": "image", "data": item["data"]}, 1.0), (151653, 1.0)])
                 elif item["type"] == "video":
                     entries.extend(self._text_entries("<Video 1>: "))
-                    entries.extend(self._text_entries(f"<{float(item['timestamps'][0]):.1f} seconds>"))
-                    entries.extend([(151652, 1.0), ({"type": "image", "data": item["data"], "minimax_video_block": True}, 1.0), (151653, 1.0)])
+                    frames = item["data"]
+                    timestamps = list(item["timestamps"])
+                    if frames.shape[0] % 2 == 1:
+                        frames = torch.cat([frames, frames[-1:]], dim=0)
+                        timestamps.append(timestamps[-1])
+                    for index in range(0, frames.shape[0], 2):
+                        timestamp = (timestamps[index] + timestamps[index + 1]) / 2
+                        entries.extend(self._text_entries(f"<{float(timestamp):.1f} seconds>"))
+                        entries.extend([(151652, 1.0), ({"type": "image", "data": frames[index:index + 2], "minimax_video_block": True}, 1.0), (151653, 1.0)])
             entries.extend(self._text_entries(text))
             return {"qwen3vl_32b": [entries]}
         entries = []
@@ -473,20 +480,20 @@ def test_minimax_h3_media_config_schema_and_payload():
     assert inputs["timestamps"].optional is True
     assert inputs["timestamp_format"].default == "0.0s"
     assert inputs["structure"].default == encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE
-    assert inputs["video_timestamps"].optional is True
-    assert inputs["video_structure"].default == encoder_helpers.MINIMAX_H3_VIDEO_MEDIA_STRUCTURE
+    assert inputs["video_fps"].default == 2
+    assert inputs["video_fps"].min == 1
+    assert inputs["video_fps"].max == 24
+    assert "video_structure" not in inputs
     assert "audio" not in inputs
     assert "audio_vae" not in inputs
     assert "video_images" not in inputs
-    payload = encoder_helpers.build_minimax_h3_media_config(
-        [["0; 1.2"]], video_timestamps=[["0.5; 2.0"]]
-    )
+    payload = encoder_helpers.build_minimax_h3_media_config([["0; 1.2"]], video_fps=[5])
     assert payload["schema_version"] == 3
     assert payload["timestamps_seconds"] == (Fraction(0), Fraction(6, 5))
-    assert payload["video_timestamps_seconds"] == (Fraction(1, 2), Fraction(2))
+    assert payload["video_fps"] == 5
     assert payload["timestamp_format"] == "0.0s"
     assert payload["structure"] == encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE
-    assert payload["video_structure"] == encoder_helpers.MINIMAX_H3_VIDEO_MEDIA_STRUCTURE
+    assert "video_structure" not in payload
     assert "audio" not in payload
     assert "audio_vae" not in payload
     default_payload = encoder_helpers.build_minimax_h3_media_config(None)
@@ -507,14 +514,19 @@ def test_minimax_h3_default_media_config_requires_one_visual():
         )
 
 
+@pytest.mark.parametrize("video_fps", [0, 25, 2.5, True])
+def test_minimax_h3_media_config_rejects_invalid_video_fps(video_fps):
+    with pytest.raises(ValueError, match="video_fps"):
+        encoder_helpers.build_minimax_h3_media_config(None, video_fps=video_fps)
+
+
 def test_minimax_h3_media_config_rejects_timestamp_beyond_output_duration():
     config = {
         "schema_version": 3,
         "timestamps_seconds": (Fraction("1.01"),),
         "timestamp_format": "0.0s",
         "structure": encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
-        "video_timestamps_seconds": (),
-        "video_structure": encoder_helpers.MINIMAX_H3_VIDEO_MEDIA_STRUCTURE,
+        "video_fps": 2,
     }
     with pytest.raises(ValueError, match="output duration"):
         encoder_helpers._validate_minimax_h3_media_config(config, 24)
@@ -580,7 +592,7 @@ def test_minimax_h3_reference_video_none_mode_skips_vae(monkeypatch):
 
 
 @pytest.mark.parametrize("connect_media_config", [False, True])
-def test_advanced_minimax_h3_video_without_video_timestamps_uses_core_presentation(
+def test_advanced_minimax_h3_media_config_uses_default_two_fps_presentation(
     connect_media_config,
 ):
     class VideoVAE:
@@ -613,56 +625,46 @@ def test_advanced_minimax_h3_video_without_video_timestamps_uses_core_presentati
     assert conditioning[0][1]["minimax_refs"][0]["kind"] == "video"
 
 
-def test_advanced_minimax_h3_video_timestamps_map_one_to_one_to_supplied_images():
+def test_minimax_h3_video_sample_indices_support_non_divisor_rates():
+    assert encoder_helpers.minimax_h3_video_sample_indices(24, 2) == [0, 12]
+    assert encoder_helpers.minimax_h3_video_sample_indices(24, 5) == [0, 5, 10, 14, 19]
+    assert encoder_helpers.minimax_h3_video_sample_indices(24, 24) == list(range(24))
+
+
+def test_advanced_minimax_h3_video_fps_samples_source_and_keeps_latent():
+    class VideoVAE:
+        def encode(self, frames):
+            return torch.ones(1, 4, 2, frames.shape[1] // 16, frames.shape[2] // 16)
+
     clip = _MiniMaxH3TestClip()
-    media_config = encoder_helpers.build_minimax_h3_media_config(
-        None, video_timestamps=[Fraction(0), Fraction(1, 2)]
-    )
+    video = (torch.arange(24, dtype=torch.float32) / 23).view(24, 1, 1, 1).expand(24, 64, 64, 3)
     conditioning, _latent = encoder_helpers.execute_advanced_minimax_h3_image_to_video(
         clip,
-        None,
+        VideoVAE(),
         "prompt",
         64,
         64,
         22,
-        video=torch.tensor([0.25, 0.75]).view(2, 1, 1, 1).expand(2, 64, 64, 3),
-        media_config=media_config,
+        video=video,
+        media_config=encoder_helpers.build_minimax_h3_media_config(None, video_fps=5),
     )
-    video_calls = [
+    video_call = next(
         call for call in clip.tokenize_calls
         if call["minimax_ref_items"]
         and call["minimax_ref_items"][0]["type"] == "video"
-    ]
-    assert len(video_calls) == 2
-    selected = [
-        call["minimax_ref_items"][0]["data"][0, 0, 0, 0].item()
-        for call in video_calls
-    ]
-    assert selected == pytest.approx([0.25, 0.75])
-    assert all(call["minimax_ref_items"][0]["data"].shape[0] == 2 for call in video_calls)
-    assert "minimax_refs" not in conditioning[0][1]
-
-
-def test_advanced_minimax_h3_configured_video_requires_one_timestamp_per_image():
-    media_config = encoder_helpers.build_minimax_h3_media_config(
-        None, video_timestamps=[Fraction(0), Fraction(1)]
     )
-    with pytest.raises(ValueError, match="3 images for 2 timestamps"):
-        encoder_helpers.execute_advanced_minimax_h3_image_to_video(
-            _MiniMaxH3TestClip(),
-            None,
-            "prompt",
-            64,
-            64,
-            22,
-            video=torch.ones(3, 64, 64, 3),
-            media_config=media_config,
-        )
+    video_item = video_call["minimax_ref_items"][0]
+    assert video_item["data"].shape[0] == 6
+    assert video_item["timestamps"] == [
+        Fraction(0), Fraction(5, 24), Fraction(5, 12),
+        Fraction(7, 12), Fraction(19, 24), Fraction(19, 24),
+    ]
+    assert conditioning[0][1]["minimax_refs"][0]["kind"] == "video"
 
 
-@pytest.mark.parametrize("configured_video", [False, True])
+@pytest.mark.parametrize("connect_media_config", [False, True])
 def test_advanced_minimax_h3_video_qwen_frames_use_vlm_resolution(
-    monkeypatch, configured_video,
+    monkeypatch, connect_media_config,
 ):
     class VideoVAE:
         def encode(self, frames):
@@ -677,19 +679,14 @@ def test_advanced_minimax_h3_video_qwen_frames_use_vlm_resolution(
         return image
 
     monkeypatch.setattr(encoder_helpers, "prepare_vlm_image", prepare)
-    if configured_video:
-        video = torch.ones(2, 64, 96, 3)
-        media_config = encoder_helpers.build_minimax_h3_media_config(
-            None, video_timestamps=[Fraction(0), Fraction(1)]
-        )
-        vae = None
-    else:
-        video = torch.ones(22, 64, 96, 3)
-        media_config = None
-        vae = VideoVAE()
+    video = torch.ones(22, 64, 96, 3)
+    media_config = (
+        encoder_helpers.build_minimax_h3_media_config(None)
+        if connect_media_config else None
+    )
     encoder_helpers.execute_advanced_minimax_h3_image_to_video(
         _MiniMaxH3TestClip(),
-        vae,
+        VideoVAE(),
         "prompt",
         64,
         64,
@@ -702,9 +699,9 @@ def test_advanced_minimax_h3_video_qwen_frames_use_vlm_resolution(
     assert calls == [((1, 64, 96, 3), 512), ((1, 64, 96, 3), 512)]
 
 
-@pytest.mark.parametrize("configured_video", [False, True])
+@pytest.mark.parametrize("connect_media_config", [False, True])
 def test_advanced_minimax_h3_keeps_reference_pictures_and_video_together(
-    configured_video,
+    connect_media_config,
 ):
     class VideoVAE:
         def encode(self, frames):
@@ -714,14 +711,11 @@ def test_advanced_minimax_h3_keeps_reference_pictures_and_video_together(
 
     clip = _MiniMaxH3TestClip()
     reference = torch.full((1, 64, 64, 3), 0.25)
-    if configured_video:
-        video = torch.full((2, 64, 64, 3), 0.75)
-        media_config = encoder_helpers.build_minimax_h3_media_config(
-            [Fraction(0)], video_timestamps=[Fraction(1), Fraction(2)]
-        )
-    else:
-        video = torch.full((22, 64, 64, 3), 0.75)
-        media_config = None
+    video = torch.full((22, 64, 64, 3), 0.75)
+    media_config = (
+        encoder_helpers.build_minimax_h3_media_config([Fraction(0)])
+        if connect_media_config else None
+    )
     conditioning, _latent = encoder_helpers.execute_advanced_minimax_h3_image_to_video(
         clip,
         VideoVAE(),
@@ -737,7 +731,7 @@ def test_advanced_minimax_h3_keeps_reference_pictures_and_video_together(
     text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
     assert text.index("<Picture 1>") < text.index("<Video 1>") < text.index("prompt")
     kinds = [reference["kind"] for reference in conditioning[0][1]["minimax_refs"]]
-    assert kinds == (["image"] if configured_video else ["image", "video"])
+    assert kinds == ["image", "video"]
 
 
 def test_advanced_combined_minimax_h3_wraps_keyframe_with_native_video():
@@ -833,7 +827,10 @@ def test_minimax_h3_media_tokenization_rejects_more_timestamps_than_pictures():
 def test_minimax_h3_media_tokenization_combines_picture_and_restricted_video():
     clip = _MiniMaxH3TestClip()
     picture = torch.ones(1, 2, 2, 3)
-    frame = torch.full((1, 2, 2, 3), 2.0)
+    frames = [
+        torch.full((1, 2, 2, 3), 2.0),
+        torch.full((1, 2, 2, 3), 3.0),
+    ]
     tokens = encoder_helpers.tokenize_minimax_h3_media_prompt(
         clip,
         "prompt",
@@ -841,21 +838,21 @@ def test_minimax_h3_media_tokenization_combines_picture_and_restricted_video():
         [Fraction(0)],
         "0.00s",
         encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
-        video_frames=[frame],
-        video_timestamps=[Fraction("1.25")],
-        video_structure="<<shot>> @ <<time>> uses <<video>>: <<visual>>",
+        video_frames=frames,
+        video_timestamps=[Fraction(1), Fraction(2)],
     )
     entries = tokens["qwen3vl_32b"][0]
     text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
     visuals = [entry[0] for entry in entries if encoder_helpers.is_image_token(entry)]
     assert "At 0.00s, <Picture 1>: " in text
-    assert "[Shot 1] @ 1.25s uses <Video 1>: " in text
+    assert text.count("<Video 1>: ") == 1
+    assert "<1.50s>" in text
     assert text.index("<Picture 1>") < text.index("<Video 1>") < text.index("prompt")
     assert visuals[1]["minimax_video_block"] is True
     assert visuals[1]["data"].shape[0] == 2
 
 
-def test_minimax_h3_media_tokenization_keeps_core_video_without_video_timestamps():
+def test_minimax_h3_media_tokenization_formats_derived_video_timestamps():
     clip = _MiniMaxH3TestClip()
     frames = torch.ones(3, 2, 2, 3)
     tokens = encoder_helpers.tokenize_minimax_h3_media_prompt(
@@ -871,11 +868,17 @@ def test_minimax_h3_media_tokenization_keeps_core_video_without_video_timestamps
     )
     entries = tokens["qwen3vl_32b"][0]
     text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
-    visual = next(entry[0] for entry in entries if encoder_helpers.is_image_token(entry))
+    visuals = [
+        entry[0] for entry in entries if encoder_helpers.is_image_token(entry)
+    ]
     assert "<Video 1>: " in text
     assert text.index("<Video 1>") < text.index("prompt")
-    assert visual["data"] is frames
-    assert visual["minimax_video_block"] is True
+    assert "<0.3s>" in text
+    assert "<1.0s>" in text
+    assert len(visuals) == 2
+    assert torch.equal(visuals[0]["data"], frames[:2])
+    assert torch.equal(visuals[1]["data"], frames[-1:].expand(2, -1, -1, -1))
+    assert all(visual["minimax_video_block"] is True for visual in visuals)
 
 
 @pytest.mark.parametrize(
@@ -895,15 +898,6 @@ def test_minimax_h3_media_structure_validation(structure, message):
 def test_minimax_h3_media_structure_allows_omitting_shot_label():
     structure = "At <<time>>, <<picture>>: <<visual>> is fully anchored."
     assert encoder_helpers._validate_minimax_h3_media_structure(structure) == structure
-
-
-def test_minimax_h3_video_media_structure_is_independent_from_picture_structure():
-    structure = "At <<time>>, <<video>>: <<visual>>"
-    assert encoder_helpers._validate_minimax_h3_video_media_structure(structure) == structure
-    with pytest.raises(ValueError, match="Unknown"):
-        encoder_helpers._validate_minimax_h3_video_media_structure(
-            "At <<time>>, <<picture>>: <<visual>>"
-        )
 
 
 def test_advanced_combined_minimax_h3_schema_is_additive():
