@@ -799,11 +799,7 @@ def test_advanced_minimax_h3_video_fps_samples_source_and_keeps_latent():
     assert conditioning[0][1]["minimax_refs"][0]["kind"] == "video"
 
 
-@pytest.mark.parametrize(
-    "media_config",
-    [None, encoder_helpers.build_minimax_h3_media_config(None, video_latent_mode="full video")],
-)
-def test_advanced_minimax_h3_core_full_video_is_independent_of_ref_image_size(media_config):
+def test_advanced_minimax_h3_explicit_full_video_is_independent_of_ref_image_size():
     class VideoVAE:
         def encode(self, frames):
             return torch.ones(1, 4, 2, frames.shape[1] // 16, frames.shape[2] // 16)
@@ -817,9 +813,31 @@ def test_advanced_minimax_h3_core_full_video_is_independent_of_ref_image_size(me
         22,
         video=torch.ones(22, 64, 64, 3),
         ref_image_size="none",
-        media_config=media_config,
+        media_config=encoder_helpers.build_minimax_h3_media_config(
+            None, video_latent_mode="full video"
+        ),
     )
     assert conditioning[0][1]["minimax_refs"][0]["kind"] == "video"
+
+
+def test_advanced_minimax_h3_disconnected_config_preserves_none_video_fallback():
+    class FailingVAE:
+        def encode(self, _frames):
+            raise AssertionError("Disconnected legacy none mode must not encode Video")
+
+    conditioning, _latent = encoder_helpers.execute_advanced_minimax_h3_image_to_video(
+        _MiniMaxH3TestClip(),
+        FailingVAE(),
+        "prompt",
+        64,
+        64,
+        22,
+        video=torch.ones(22, 64, 64, 3),
+        ref_image_size="none",
+        media_config=None,
+    )
+    assert "minimax_refs" not in conditioning[0][1]
+    assert "minimax_keyframes" not in conditioning[0][1]
 
 
 def test_advanced_minimax_h3_video_latent_off_keeps_qwen_video_without_vae():
