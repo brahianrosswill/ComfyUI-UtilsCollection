@@ -1134,7 +1134,7 @@ def test_minimax_h3_media_tokenization_default_matches_core_picture_constructor(
     )
     entries = tokens["qwen3vl_32b"][0]
     text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
-    assert text == "<Picture 1>: \nprompt"
+    assert text == "<Picture 1>: prompt"
 
 
 def test_minimax_h3_media_tokenization_builds_picture_anchors_before_prompt():
@@ -1225,6 +1225,38 @@ def test_minimax_h3_media_tokenization_combines_picture_and_restricted_video():
     assert text.index("<Picture 1>") < text.index("<Video 1>") < text.index("prompt")
     assert visuals[1]["minimax_video_block"] is True
     assert visuals[1]["data"].shape[0] == 2
+
+
+def test_minimax_h3_default_media_allows_multiple_pictures_with_video():
+    clip = _MiniMaxH3TestClip()
+    pictures = [
+        torch.full((1, 2, 2, 3), 1.0),
+        torch.full((1, 2, 2, 3), 2.0),
+    ]
+    frames = torch.full((3, 2, 2, 3), 3.0)
+
+    tokens = encoder_helpers.tokenize_minimax_h3_media_prompt(
+        clip,
+        "prompt",
+        pictures,
+        [Fraction(0)],
+        "0.0s",
+        encoder_helpers.MINIMAX_H3_MEDIA_STRUCTURE,
+        default_single_visual=True,
+        default_video_frames=frames,
+        default_video_timestamps=[Fraction(0), Fraction(1, 2), Fraction(1)],
+    )
+
+    entries = tokens["qwen3vl_32b"][0]
+    text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
+    visuals = [
+        entry[0] for entry in entries if encoder_helpers.is_image_token(entry)
+    ]
+    assert "<Picture 1>: <Picture 2>: <Video 1>: " in text
+    assert text.index("<Picture 1>") < text.index("<Picture 2>") < text.index("<Video 1>")
+    assert text.index("<Video 1>") < text.index("prompt")
+    assert len(visuals) == 4
+    assert [float(visuals[index]["data"].mean()) for index in range(2)] == [1.0, 2.0]
 
 
 def test_minimax_h3_media_tokenization_formats_derived_video_timestamps():

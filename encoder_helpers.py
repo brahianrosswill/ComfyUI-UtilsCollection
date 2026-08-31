@@ -396,7 +396,14 @@ def tokenize_minimax_h3_media_prompt(
     audio=False, default_single_visual=False, default_video_frames=None,
     default_video_timestamps=(),
 ):
-    if default_single_visual and pictures and len(pictures) != 1:
+    configured_video_frames = () if video_frames is None else video_frames
+    if (
+        default_single_visual
+        and pictures
+        and len(pictures) != 1
+        and not configured_video_frames
+        and default_video_frames is None
+    ):
         raise ValueError(
             "MiniMax H3 default media config requires exactly one visual source."
         )
@@ -408,7 +415,6 @@ def tokenize_minimax_h3_media_prompt(
             f"MiniMax H3 media config received {len(effective_picture_timestamps)} timestamps "
             f"for {len(pictures)} available Pictures."
         )
-    configured_video_frames = () if video_frames is None else video_frames
     if len(configured_video_frames) != len(video_timestamps):
         raise ValueError(
             "MiniMax H3 configured video frame and timestamp counts must match."
@@ -429,7 +435,7 @@ def tokenize_minimax_h3_media_prompt(
         before, after = expanded.split("<<visual>>")
         entries.extend(_minimax_h3_text_entries(clip, before))
         entries.extend(visual)
-        entries.extend(_minimax_h3_text_entries(clip, after + "\n"))
+        entries.extend(_minimax_h3_text_entries(clip, after))
     if configured_video_frames:
         frames = torch.cat(tuple(configured_video_frames), dim=0)
         entries.extend(_minimax_h3_timestamped_video_entries(
