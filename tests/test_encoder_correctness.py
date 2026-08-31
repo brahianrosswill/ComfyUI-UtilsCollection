@@ -1039,6 +1039,47 @@ def test_advanced_minimax_h3_keeps_reference_pictures_and_video_together(
     assert kinds == ["image", "video"]
 
 
+def test_advanced_minimax_h3_default_media_keeps_all_pictures_with_video():
+    class VideoVAE:
+        def encode(self, frames):
+            return torch.ones(
+                1, 4, 2, max(1, frames.shape[1] // 16), max(1, frames.shape[2] // 16)
+            )
+
+    clip = _MiniMaxH3TestClip()
+    media_config = encoder_helpers.build_minimax_h3_media_config(
+        None,
+        timestamp_format="0.00s",
+        video_fps=12,
+        video_latent_mode="off",
+    )
+    encoder_helpers.execute_advanced_minimax_h3_image_to_video(
+        clip,
+        VideoVAE(),
+        "prompt",
+        64,
+        64,
+        22,
+        reference_images={
+            "reference_image_1": torch.full((1, 64, 64, 3), 0.25),
+            "reference_image_2": torch.full((1, 64, 64, 3), 0.75),
+        },
+        video=torch.full((22, 64, 64, 3), 0.5),
+        media_config=media_config,
+        ref_image_size="none",
+    )
+
+    entries = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
+    text = "".join(entry[0] for entry in entries if isinstance(entry[0], str))
+    visuals = [
+        entry[0] for entry in entries if encoder_helpers.is_image_token(entry)
+    ]
+    assert "<Picture 1>: <Picture 2>: <Video 1>: " in text
+    assert [float(visuals[index]["data"].mean()) for index in range(2)] == pytest.approx(
+        [0.25, 0.75]
+    )
+
+
 def test_advanced_combined_minimax_h3_wraps_keyframe_with_native_video():
     class VideoVAE:
         def encode(self, frames):

@@ -3527,10 +3527,11 @@ def _execute_advanced_minimax_h3_image_to_video(
     visual_encoder_path = config.get("visual_encoder_path", "grid-deepstack")
     def tokenize_presentation(text, images):
         if media_config is not None:
+            collapse_default_picture = default_single_visual and video_frames is None
             presentation_images = (
                 [default_media_image]
-                if default_single_visual and default_media_image is not None
-                else ([] if default_single_visual else images)
+                if collapse_default_picture and default_media_image is not None
+                else ([] if collapse_default_picture else images)
             )
             default_video_frames = None
             default_video_timestamps = []
