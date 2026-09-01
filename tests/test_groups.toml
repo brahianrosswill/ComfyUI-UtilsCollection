@@ -50,7 +50,7 @@ python_tests = ["tests/test_patcher_nodes.py"]
 frontend_tests = []
 
 [groups.textgen]
-paths = ["textgen_nodes.py", "text_nodes.py", "text_helpers.py"]
+paths = ["textgen_nodes.py", "textgen_helpers.py", "text_nodes.py", "text_helpers.py"]
 python_tests = ["tests/test_textgen_formula.py", "tests/test_text_nodes.py"]
 frontend_tests = []
 
