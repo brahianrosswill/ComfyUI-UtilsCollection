@@ -33,14 +33,9 @@ def test_unified_attention_schema_keeps_mode_settings_separate():
         "h3_memory_optimizations",
     ]
     assert [value.id for value in options["Sparse / MiniMax H3 SLA"].inputs] == [
-        "sla_sparsity",
-        "sla_block_size",
-        "sla_minimum_sequence_length",
-        "sla_dense_tail_steps",
-        "sla_protect_audio",
-        "sla_protect_reference_media",
-        "sla_stabilize_routing",
+        "minimax_h3_sla_config",
     ]
+    assert options["Sparse / MiniMax H3 SLA"].inputs[0].optional
     assert "Sparse / MiniMax H3 Radial" not in options
     assert len(options["SageAttention"].inputs) + 1 == 4
 
@@ -68,6 +63,13 @@ def test_minimax_h3_radial_config_returns_typed_runtime_value():
 
     assert isinstance(config, patcher_helpers.MiniMaxH3RadialAttentionConfig)
     assert config == patcher_helpers.MiniMaxH3RadialAttentionConfig(1, 2, 3, 128, 0.4, True)
+
+
+def test_minimax_h3_sla_config_returns_typed_runtime_value():
+    config = patcher_nodes.UC_MiniMaxH3SlaAttentionConfig.execute(0.85, 32, 4096, 2, False, True, True).result[0]
+
+    assert isinstance(config, patcher_helpers.MiniMaxH3SlaAttentionConfig)
+    assert config == patcher_helpers.MiniMaxH3SlaAttentionConfig(0.85, 32, 4096, 2, False, True, True)
 
 
 def test_unified_attention_disabled_returns_original_model():
@@ -176,6 +178,8 @@ def test_unified_h3_sla_uses_clone_scoped_override_and_wrapper(monkeypatch):
     assert "optimized_attention_override" in patched.model_options["transformer_options"]
     wrappers = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL]
     assert patcher_helpers.MINIMAX_H3_SLA_WRAPPER_KEY in wrappers
+    outer_wrappers = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.OUTER_SAMPLE]
+    assert patcher_helpers.MINIMAX_H3_SLA_SAMPLING_SCOPE_KEY in outer_wrappers
 
     q = torch.zeros((1, 1, 8, 128))
     fallback = lambda q, _k, _v, _heads, **_kwargs: q
@@ -192,6 +196,17 @@ def test_h3_sla_dense_fallback_and_protected_block_selection(caplog):
     assert count == 2
     assert torch.all((selected == 0).any(dim=-1))
 
+    bf16_selected, bf16_count, _history = patcher_helpers._sla_select_blocks(
+        q.to(torch.bfloat16),
+        k.to(torch.bfloat16),
+        config,
+        ((0, 64),),
+        (),
+        None,
+    )
+    assert bf16_count == 2
+    assert torch.all((bf16_selected == 0).any(dim=-1))
+
     state = {"history": {}}
     override = patcher_helpers._make_h3_sla_override(config, state)
     dense_state = {patcher_helpers.MINIMAX_H3_SLA_STATE_KEY: {"dense": True}}
@@ -199,6 +214,29 @@ def test_h3_sla_dense_fallback_and_protected_block_selection(caplog):
         result = override(lambda q, *_args, **_kwargs: q, q.transpose(1, 2), k.transpose(1, 2), k.transpose(1, 2), 1, skip_reshape=True, transformer_options=dense_state)
     assert result.shape == (1, 1, 128, 128)
     assert "MiniMax H3 SLA using dense attention" in caplog.text
+
+
+def test_h3_sla_sampling_scope_reports_each_run(caplog):
+    state = {
+        "history": {0: torch.ones((1, 1, 1, 1), dtype=torch.int32)},
+        "reported_fallbacks": {"stale reason"},
+        "sparse_disabled_reason": "stale failure",
+    }
+    scope = patcher_helpers.MiniMaxH3SlaSamplingScope(state)
+
+    def sample():
+        assert state["history"] == {}
+        assert state["reported_fallbacks"] == set()
+        assert state["sparse_disabled_reason"] is None
+        patcher_helpers._report_sla_fallback(state, "configured dense step")
+        return "sampled"
+
+    with caplog.at_level(logging.INFO, logger=patcher_helpers.__name__):
+        assert scope(sample) == "sampled"
+        assert scope(sample) == "sampled"
+
+    assert state["history"] == {}
+    assert caplog.text.count("configured dense step") == 2
 
 
 def test_unified_h3_memory_optimizations_use_clone_scoped_block_patches(monkeypatch):
@@ -784,6 +822,91 @@ def test_cache_and_spectrum_reject_both_stacking_orders():
         patcher_helpers.patch_minimax_h3_spectrum_model(
             pdd_model, _spectrum_config(degree=1, warmup_steps=1)
         )
+
+
+def test_h3_sla_and_cache_preserve_both_model_patcher_contracts(monkeypatch):
+    class FakeAttention:
+        head_dim = 128
+
+    class FakeBlock:
+        def __init__(self):
+            self.attn = FakeAttention()
+
+    class FakeH3:
+        def __init__(self):
+            self.blocks = [FakeBlock(), FakeBlock()]
+
+    class FakePatcher:
+        def __init__(self, diffusion, model_options=None, object_patches=None, replacements=None, wrappers=None):
+            self.model = types.SimpleNamespace(diffusion_model=diffusion)
+            self.model_options = dict(model_options or {})
+            self.object_patches = dict(object_patches or {})
+            self.replacements = dict(replacements or {})
+            self.wrappers = {
+                wrapper_type: dict(entries) for wrapper_type, entries in (wrappers or {}).items()
+            }
+
+        def clone(self):
+            return FakePatcher(
+                self.model.diffusion_model,
+                self.model_options,
+                self.object_patches,
+                self.replacements,
+                self.wrappers,
+            )
+
+        def get_model_object(self, _name):
+            return self.model.diffusion_model
+
+        def add_object_patch(self, path, value):
+            self.object_patches[path] = value
+
+        def set_model_patch_replace(self, value, *key):
+            self.replacements[key] = value
+
+        def add_wrapper(self, wrapper_type, wrapper):
+            self.wrappers.setdefault(wrapper_type, {})[f"plain-{len(self.wrappers.get(wrapper_type, {}))}"] = wrapper
+
+        def remove_wrappers_with_key(self, wrapper_type, key):
+            self.wrappers.get(wrapper_type, {}).pop(key, None)
+
+        def add_wrapper_with_key(self, wrapper_type, key, wrapper):
+            self.wrappers.setdefault(wrapper_type, {})[key] = wrapper
+
+    monkeypatch.setattr(patcher_helpers.minimax_model, "MiniMaxH3Model", FakeH3)
+    config = patcher_helpers.MiniMaxH3SlaAttentionConfig()
+
+    def assert_combined(patched):
+        assert "diffusion_model._forward" in patched.object_patches
+        assert ("dit", "block_loop", 0) in patched.replacements
+        assert "optimized_attention_override" in patched.model_options["transformer_options"]
+        assert patcher_helpers.MINIMAX_H3_SLA_WRAPPER_KEY in patched.wrappers[
+            patcher_helpers.comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL
+        ]
+        outer = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.OUTER_SAMPLE]
+        assert patcher_helpers.MINIMAX_H3_SLA_SAMPLING_SCOPE_KEY in outer
+        assert any(key.startswith("plain-") for key in outer)
+
+    original = FakePatcher(FakeH3())
+    cached_then_sla = patcher_helpers.patch_unified_attention_model(
+        patcher_helpers.patch_minimax_h3_cache_model(original, 0.1, 0.1, 0.9, 2, "auto", False),
+        {"attention_mode": "Sparse / MiniMax H3 SLA", "minimax_h3_sla_config": config},
+    )
+    assert_combined(cached_then_sla)
+
+    sla_then_cached = patcher_helpers.patch_minimax_h3_cache_model(
+        patcher_helpers.patch_unified_attention_model(
+            original,
+            {"attention_mode": "Sparse / MiniMax H3 SLA", "minimax_h3_sla_config": config},
+        ),
+        0.1,
+        0.1,
+        0.9,
+        2,
+        "auto",
+        False,
+    )
+    assert_combined(sla_then_cached)
 
 
 def test_model_helper_rejects_invalid_inputs(monkeypatch):

@@ -225,6 +225,7 @@ the base-resolution conditioning fusion.
 - `UC_FromList`
 - `UC_GetJsonValue`
 - `UC_MiniMaxH3Cache`
+- `UC_MiniMaxH3SlaAttentionConfig`
 - `UC_MiniMaxH3Spectrum`
 - `UC_MiniMaxH3PDDAcc`
 - `UC_UnifiedAttentionPatcher`
@@ -276,31 +277,36 @@ model raises an error rather than silently applying a different patch.
 #### MiniMax H3 SLA controls
 
 SLA is experimental and only patches MiniMax H3 models with 128-dimensional
-attention heads. It does not modify ComfyUI Core files or model weights.
+attention heads. It does not modify ComfyUI Core files or model weights. The
+`minimax_h3_sla_config` input on `UC_UnifiedAttentionPatcher` is optional.
+Connect `UC_MiniMaxH3SlaAttentionConfig` to set visible SLA controls; omitting
+it uses that node's documented defaults.
 
-- `sla_sparsity`: fraction of ordinary key blocks skipped. Start with the
+- `sparsity`: fraction of ordinary key blocks skipped. Start with the
   default `0.90`; compare output and speed against dense attention for each
   model, resolution, duration, and sampler.
-- `sla_block_size`: routing granularity. Smaller blocks retain finer temporal
+- `block_size`: routing granularity. Smaller blocks retain finer temporal
   and audio detail at additional routing cost.
-- `sla_minimum_sequence_length`: sequences below this threshold stay on the
+- `minimum_sequence_length`: sequences below this threshold stay on the
   original dense attention path.
-- `sla_dense_tail_steps`: final sampler steps retained on dense attention for
+- `dense_tail_steps`: final sampler steps retained on dense attention for
   detail recovery. Set `0` to allow sparse routing at every eligible step.
-- `sla_protect_audio`: preserves text and audio ranges in every sparse key
+- `protect_audio`: preserves text and audio ranges in every sparse key
   selection.
-- `sla_protect_reference_media`: additionally preserves visual conditioning
+- `protect_reference_media`: additionally preserves visual conditioning
   and reference-media ranges in every sparse key selection.
-- `sla_stabilize_routing`: biases near-cutoff block selection toward the prior
+- `stabilize_routing`: biases near-cutoff block selection toward the prior
   sampling step. Use it only when motion detail is unstable; it retains a
   bounded routing history while sampling.
 
 SLA calls stay dense when the call is masked, not MiniMax H3 packed
 self-attention, uses an unsupported dtype/device, falls below the minimum
 sequence length, falls in the configured dense tail, lacks MiniMax H3 layout
-metadata, or when the sparse kernel fails. This preserves a usable model path
-when SLA cannot apply, but it also means a run may receive less acceleration
-than its selected sparsity suggests.
+metadata, or when the sparse kernel fails. Each reason is reported once in the
+ComfyUI console for that sampling run. A sparse-kernel failure also disables
+further sparse attempts for the remainder of that run. This preserves a usable
+model path when SLA cannot apply, but it also means a run may receive less
+acceleration than its selected sparsity suggests.
 
 ### Scheduler presets
 

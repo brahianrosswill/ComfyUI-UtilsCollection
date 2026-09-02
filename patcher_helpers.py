@@ -49,6 +49,7 @@ MINIMAX_H3_RADIAL_WRAPPER_KEY = "utilscollection_minimax_h3_radial"
 MINIMAX_H3_RADIAL_STATE_KEY = "utilscollection_minimax_h3_radial_state"
 MINIMAX_H3_SLA_WRAPPER_KEY = "utilscollection_minimax_h3_sla"
 MINIMAX_H3_SLA_STATE_KEY = "utilscollection_minimax_h3_sla_state"
+MINIMAX_H3_SLA_SAMPLING_SCOPE_KEY = "utilscollection_minimax_h3_sla_sampling_scope"
 MINIMAX_H3_PROJECTION_FOLDER = "clip_projections"
 MINIMAX_H3_PROJECTED_KEY = "qwen3vl_32b"
 MINIMAX_H3_PROJECTION_PATCH_KEY = "utilscollection_minimax_h3_projection"
@@ -5009,7 +5010,7 @@ def _sla_pool_tokens(value: torch.Tensor, block_size: int) -> torch.Tensor:
 
 
 def _sla_select_blocks(q: torch.Tensor, k: torch.Tensor, config: MiniMaxH3SlaAttentionConfig, protected_ranges: tuple[tuple[int, int], ...], reference_ranges: tuple[tuple[int, int], ...], previous: torch.Tensor | None) -> tuple[torch.Tensor, int, torch.Tensor | None]:
-    pooled_q = _sla_pool_tokens(q, config.block_size)
+    pooled_q = _sla_pool_tokens(q, config.block_size).float()
     pooled_k = _sla_pool_tokens(k, config.block_size) - k.mean(dim=1, dtype=torch.float32)[:, :, None, :]
     scores = pooled_q @ pooled_k.transpose(-1, -2)
     key_blocks = scores.shape[-1]
@@ -5110,7 +5111,9 @@ def _make_h3_sla_override(config: MiniMaxH3SlaAttentionConfig, state: dict[str, 
         options = kwargs.get("transformer_options") or {}
         current = options.get(MINIMAX_H3_SLA_STATE_KEY)
         reason = None
-        if current is None:
+        if state.get("sparse_disabled_reason") is not None:
+            reason = state["sparse_disabled_reason"]
+        elif current is None:
             reason = "SLA step state is unavailable"
         elif current.get("dense", True):
             reason = current.get("dense_reason", "this sampler step is configured dense")
@@ -5141,9 +5144,24 @@ def _make_h3_sla_override(config: MiniMaxH3SlaAttentionConfig, state: dict[str, 
             return output.transpose(1, 2) if skip_output_reshape else output.reshape(q.shape[0], q.shape[2], -1)
         except Exception as error:
             state["history"].clear()
-            _report_sla_fallback(state, f"the sparse kernel failed with {error.__class__.__name__}: {error}", logging.WARNING)
+            state["sparse_disabled_reason"] = f"the sparse kernel failed with {error.__class__.__name__}: {error}"
+            _report_sla_fallback(state, state["sparse_disabled_reason"], logging.WARNING)
             return original(q, k, v, heads, mask=mask, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs)
     return override
+
+
+class MiniMaxH3SlaSamplingScope:
+    def __init__(self, state: dict[str, Any]) -> None:
+        self.state = state
+
+    def __call__(self, sample_fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        self.state["history"].clear()
+        self.state["reported_fallbacks"].clear()
+        self.state["sparse_disabled_reason"] = None
+        try:
+            return sample_fn(*args, **kwargs)
+        finally:
+            self.state["history"].clear()
 
 
 def _make_h3_sla_wrapper(config: MiniMaxH3SlaAttentionConfig, state: dict[str, Any]):
@@ -5157,10 +5175,10 @@ def _make_h3_sla_wrapper(config: MiniMaxH3SlaAttentionConfig, state: dict[str, A
                 protected_ranges.append((int(start), int(stop)))
             elif kind in ("cond", "ref_img", "ref_video", "video_ref"):
                 reference_ranges.append((int(start), int(stop)))
-        dense_reason = None
-        if layout is None:
+        dense_reason = state.get("sparse_disabled_reason")
+        if dense_reason is None and layout is None:
             dense_reason = "MiniMax H3 layout metadata is unavailable"
-        elif _sla_dense_step(options, timestep, config.dense_tail_steps):
+        elif dense_reason is None and _sla_dense_step(options, timestep, config.dense_tail_steps):
             dense_reason = f"one of the final {config.dense_tail_steps} sampler steps is configured dense"
         current = {
             "dense": dense_reason is not None,
@@ -5193,12 +5211,14 @@ def _patch_h3_sla_attention(model: Any, config: MiniMaxH3SlaAttentionConfig) -> 
         raise ValueError("MiniMax H3 SLA requires a MiniMax H3 diffusion model.")
     if {block.attn.head_dim for block in diffusion_model.blocks} != {128}:
         raise ValueError("MiniMax H3 SLA requires 128-dimensional attention heads.")
-    state = {"history": {}, "reported_fallbacks": set()}
+    state = {"history": {}, "reported_fallbacks": set(), "sparse_disabled_reason": None}
     options = _ensure_transformer_options(patched)
     options[UNIFIED_ATTENTION_OWNER_KEY] = "Sparse / MiniMax H3 SLA"
     options["optimized_attention_override"] = _call_attention_with_fallback(_make_h3_sla_override(config, state))
     patched.remove_wrappers_with_key(comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, MINIMAX_H3_SLA_WRAPPER_KEY)
     patched.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, MINIMAX_H3_SLA_WRAPPER_KEY, _make_h3_sla_wrapper(config, state))
+    patched.remove_wrappers_with_key(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE, MINIMAX_H3_SLA_SAMPLING_SCOPE_KEY)
+    patched.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE, MINIMAX_H3_SLA_SAMPLING_SCOPE_KEY, MiniMaxH3SlaSamplingScope(state))
     logging.getLogger(__name__).info(
         "MiniMax H3 SLA installed: sparsity=%.2f, block_size=%d, minimum_sequence_length=%d, dense_tail_steps=%d, protect_audio=%s, protect_reference_media=%s, stabilize_routing=%s",
         config.sparsity,
@@ -5224,18 +5244,12 @@ def patch_unified_attention_model(model: Any, attention_mode: dict[str, Any]) ->
             raise ValueError("Sparse / MiniMax H3 Radial requires MiniMax H3 Radial Attention Config.")
         return _patch_h3_radial_attention(model, config)
     if mode == "Sparse / MiniMax H3 SLA":
-        return _patch_h3_sla_attention(
-            model,
-            MiniMaxH3SlaAttentionConfig(
-                sparsity=float(attention_mode.get("sla_sparsity", 0.9)),
-                block_size=int(attention_mode.get("sla_block_size", 64)),
-                minimum_sequence_length=int(attention_mode.get("sla_minimum_sequence_length", 8192)),
-                dense_tail_steps=int(attention_mode.get("sla_dense_tail_steps", 1)),
-                protect_audio=bool(attention_mode.get("sla_protect_audio", True)),
-                protect_reference_media=bool(attention_mode.get("sla_protect_reference_media", False)),
-                stabilize_routing=bool(attention_mode.get("sla_stabilize_routing", False)),
-            ),
-        )
+        config = attention_mode.get("minimax_h3_sla_config")
+        if config is None:
+            config = MiniMaxH3SlaAttentionConfig()
+        if not isinstance(config, MiniMaxH3SlaAttentionConfig):
+            raise ValueError("Sparse / MiniMax H3 SLA requires MiniMax H3 SLA Attention Config.")
+        return _patch_h3_sla_attention(model, config)
 
     patched = model.clone()
     options = _ensure_transformer_options(patched)
