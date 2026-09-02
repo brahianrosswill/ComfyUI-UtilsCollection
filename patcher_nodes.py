@@ -101,6 +101,18 @@ class UC_UnifiedAttentionPatcher(io.ComfyNode):
                     io.Boolean.Input("h3_memory_optimizations", default=False, tooltip="MiniMax H3 only. Reduces peak VRAM use during attention. Requires CUDA and a compatible SageAttention install."),
                 ],
             ),
+            io.DynamicCombo.Option(
+                key="Sparse / MiniMax H3 SLA",
+                inputs=[
+                    io.Float.Input("sla_sparsity", default=0.9, min=0.0, max=0.95, step=0.05, tooltip="Fraction of attention key blocks skipped after protected media is retained."),
+                    io.Combo.Input("sla_block_size", options=["32", "64", "128"], default="64", tooltip="Tokens represented by each SLA routing block. Smaller blocks preserve finer audio and motion detail."),
+                    io.Int.Input("sla_minimum_sequence_length", default=8192, min=0, max=1000000, step=1024, tooltip="Sequences below this length keep the existing dense attention path."),
+                    io.Int.Input("sla_dense_tail_steps", default=1, min=0, max=8, tooltip="Final sampler steps that keep dense attention for detail recovery."),
+                    io.Boolean.Input("sla_protect_audio", default=True, tooltip="Keep text and audio token ranges in every sparse attention selection."),
+                    io.Boolean.Input("sla_protect_reference_media", default=False, tooltip="Keep visual conditioning and reference-media token ranges in every sparse attention selection."),
+                    io.Boolean.Input("sla_stabilize_routing", default=False, tooltip="Bias near-cutoff routing toward the prior sampling step to reduce unstable motion detail."),
+                ],
+            ),
             # io.DynamicCombo.Option(
             #     key="Sparse / MiniMax H3 Radial",
             #     inputs=[

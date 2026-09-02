@@ -1,3 +1,4 @@
+import logging
 import pathlib
 import sys
 import types
@@ -24,12 +25,21 @@ def test_unified_attention_schema_keeps_mode_settings_separate():
     options = {option.key: option for option in attention_mode.options}
 
     assert schema.node_id == "UC_UnifiedAttentionPatcher"
-    assert [option.key for option in attention_mode.options] == ["disabled", "FlashAttention", "SageAttention"]
+    assert [option.key for option in attention_mode.options] == ["disabled", "FlashAttention", "SageAttention", "Sparse / MiniMax H3 SLA"]
     assert [value.id for value in options["FlashAttention"].inputs] == ["allow_compile"]
     assert [value.id for value in options["SageAttention"].inputs] == [
         "sage_mode",
         "allow_compile",
         "h3_memory_optimizations",
+    ]
+    assert [value.id for value in options["Sparse / MiniMax H3 SLA"].inputs] == [
+        "sla_sparsity",
+        "sla_block_size",
+        "sla_minimum_sequence_length",
+        "sla_dense_tail_steps",
+        "sla_protect_audio",
+        "sla_protect_reference_media",
+        "sla_stabilize_routing",
     ]
     assert "Sparse / MiniMax H3 Radial" not in options
     assert len(options["SageAttention"].inputs) + 1 == 4
@@ -121,6 +131,74 @@ def test_unified_h3_radial_uses_clone_scoped_wrapper_and_block_patches(monkeypat
     ]
     wrappers = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL]
     assert patcher_helpers.MINIMAX_H3_RADIAL_WRAPPER_KEY in wrappers
+
+
+def test_unified_h3_sla_uses_clone_scoped_override_and_wrapper(monkeypatch):
+    class FakeAttention:
+        head_dim = 128
+
+    class FakeBlock:
+        def __init__(self):
+            self.attn = FakeAttention()
+
+    class FakeH3:
+        def __init__(self):
+            self.blocks = [FakeBlock(), FakeBlock()]
+
+    monkeypatch.setattr(patcher_helpers.minimax_model, "MiniMaxH3Model", FakeH3)
+
+    class FakePatcher:
+        def __init__(self, diffusion):
+            self.model = types.SimpleNamespace(diffusion_model=diffusion)
+            self.model_options = {"transformer_options": {}}
+            self.wrappers = {}
+
+        def clone(self):
+            return FakePatcher(self.model.diffusion_model)
+
+        def get_model_object(self, _name):
+            return self.model.diffusion_model
+
+        def remove_wrappers_with_key(self, wrapper_type, key):
+            self.wrappers.get(wrapper_type, {}).pop(key, None)
+
+        def add_wrapper_with_key(self, wrapper_type, key, wrapper):
+            self.wrappers.setdefault(wrapper_type, {})[key] = [wrapper]
+
+    original = FakePatcher(FakeH3())
+    patched = patcher_helpers.patch_unified_attention_model(
+        original,
+        {"attention_mode": "Sparse / MiniMax H3 SLA"},
+    )
+
+    assert patched is not original
+    assert "optimized_attention_override" not in original.model_options["transformer_options"]
+    assert "optimized_attention_override" in patched.model_options["transformer_options"]
+    wrappers = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL]
+    assert patcher_helpers.MINIMAX_H3_SLA_WRAPPER_KEY in wrappers
+
+    q = torch.zeros((1, 1, 8, 128))
+    fallback = lambda q, _k, _v, _heads, **_kwargs: q
+    override = patched.model_options["transformer_options"]["optimized_attention_override"]
+    assert override(fallback, q, q, q, 1, skip_reshape=True, transformer_options={}) is q
+
+
+def test_h3_sla_dense_fallback_and_protected_block_selection(caplog):
+    config = patcher_helpers.MiniMaxH3SlaAttentionConfig(sparsity=0.5, block_size=64, minimum_sequence_length=0)
+    q = torch.randn((1, 128, 1, 128))
+    k = torch.randn((1, 128, 1, 128))
+    selected, count, _history = patcher_helpers._sla_select_blocks(q, k, config, ((0, 64),), (), None)
+
+    assert count == 2
+    assert torch.all((selected == 0).any(dim=-1))
+
+    state = {"history": {}}
+    override = patcher_helpers._make_h3_sla_override(config, state)
+    dense_state = {patcher_helpers.MINIMAX_H3_SLA_STATE_KEY: {"dense": True}}
+    with caplog.at_level(logging.INFO, logger=patcher_helpers.__name__):
+        result = override(lambda q, *_args, **_kwargs: q, q.transpose(1, 2), k.transpose(1, 2), k.transpose(1, 2), 1, skip_reshape=True, transformer_options=dense_state)
+    assert result.shape == (1, 1, 128, 128)
+    assert "MiniMax H3 SLA using dense attention" in caplog.text
 
 
 def test_unified_h3_memory_optimizations_use_clone_scoped_block_patches(monkeypatch):
