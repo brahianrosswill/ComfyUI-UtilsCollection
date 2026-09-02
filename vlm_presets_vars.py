@@ -2911,6 +2911,7 @@ You will provide an accurate cinematic description of the **scene captured in th
 *   **Post-Processing and Color Grade:** How might the footage have been finished? Describe the color grade, film grain, and any other post-processing effects and how they contribute to the overall kinetic feel of the scene.
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
+
 ### Principle 4: MiniMax H3 Adaptive Timeline and Audio-Visual Structuring
 
 Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Place boundaries only where the action, camera, speech, or sound meaningfully changes. Do not impose a fixed section count or fixed interval length.
@@ -3001,6 +3002,7 @@ You will provide an accurate cinematic description of the **scene captured in th
 *   **Post-Processing and Color Grade:** How might the footage have been finished? Describe the color grade, film grain, and any other post-processing effects and how they contribute to the overall kinetic feel of the scene.
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
+
 ### Principle 4: MiniMax H3 Standalone Text-to-Video Adaptive Timeline and Audio-Visual Structuring
 
 Read the requested total video duration in seconds from `{user_query}`. Divide that duration into as many or as few chronological sections as the scene requires. Place boundaries only where the action, camera, speech, sound, foreground priority, or scene state meaningfully changes. Do not impose a fixed section count or fixed interval length.
@@ -3102,13 +3104,23 @@ You will provide an accurate cinematic description of the **scene captured in th
 *   **Post-Processing and Color Grade:** How might the footage have been finished? Describe the color grade, film grain, and any other post-processing effects and how they contribute to the overall kinetic feel of the scene.
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
+
 ### Principle 4: MiniMax H3 Reference-Aware Adaptive Timeline and Audio-Visual Structuring
 
 Read the requested total video duration in seconds from {user_query}. Divide that duration into as many or as few chronological sections as the scene requires. Place boundaries only where the action, camera, speech, sound, foreground priority, scene state, or established reference relationship meaningfully changes. Do not impose a fixed section count or fixed interval length.
 
 #### Fixed Output Envelope
 
-The output must contain exactly six top-level fields in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, and non_diegetic_music:. Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
+The output must contain exactly six top-level fields in this order:
+
+subject_definitions:
+summary:
+retention_analysis:
+detailed_description:
+overall_soundscape:
+non_diegetic_music:
+
+Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 
@@ -3416,10 +3428,20 @@ You will provide an accurate cinematic description of the **scene captured in th
 *   **Post-Processing and Color Grade:** How might the footage have been finished? Describe the color grade, film grain, and any other post-processing effects and how they contribute to the overall kinetic feel of the scene.
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
+
 ### Principle 4: MiniMax H3 Reference-Aware Adaptive Timeline and Audio-Visual Structuring
 Read the requested total video duration from the regular user request. When that request explicitly associates existing <Picture N> identifiers with timestamps, treat those associations as authoritative chronological sample starts. Preserve the exact segment count, every supplied start, and the supplied decimal precision. Otherwise divide the duration into as many or as few chronological sections as the scene requires, placing boundaries only where action, camera, speech, sound, foreground priority, scene state, or an established reference relationship meaningfully changes.
 #### Fixed Output Envelope
-The output must contain exactly six top-level fields in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, and non_diegetic_music:. Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
+The output must contain exactly six top-level fields in this order:
+
+subject_definitions:
+summary:
+retention_analysis:
+detailed_description:
+overall_soundscape:
+non_diegetic_music:
+
+Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
@@ -3664,10 +3686,20 @@ You will provide an accurate cinematic description of the **scene captured in th
 *   **Post-Processing and Color Grade:** How might the footage have been finished? Describe the color grade, film grain, and any other post-processing effects and how they contribute to the overall kinetic feel of the scene.
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
+
 ### Principle 4: MiniMax H3 Reference-Aware Adaptive Timeline and Audio-Visual Structuring
 Read the requested total video duration in seconds from {user_query}. Use the regular user request to establish the mixed-media partition. Count its supplied timestamps and treat exactly that many leading ordered images as chronological samples of one <Video 1> sequence. Treat every later image as a Picture reference numbered from <Picture 1> within that later subset. Do not impose a fixed target section count unless the regular user request explicitly declares those timestamps as target segment starts.
 #### Fixed Output Envelope
-The output must contain exactly six top-level fields in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, and non_diegetic_music:. Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
+The output must contain exactly six top-level fields in this order:
+
+subject_definitions:
+summary:
+retention_analysis:
+detailed_description:
+overall_soundscape:
+non_diegetic_music:
+
+Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
@@ -4029,10 +4061,20 @@ You will provide an accurate cinematic description of the **scene captured in th
 *   **Post-Processing and Color Grade:** How might the footage have been finished? Describe the color grade, film grain, and any other post-processing effects and how they contribute to the overall kinetic feel of the scene.
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
+
 ### Principle 4: MiniMax H3 Reference-Aware Adaptive Timeline and Audio-Visual Structuring
 Read the requested total video duration in seconds from {user_query}. Divide that duration into as many or as few chronological sections as the scene requires. Place boundaries only where the action, camera, speech, sound, foreground priority, scene state, or established reference relationship meaningfully changes. Do not impose a fixed section count or fixed interval length.
 #### Fixed Output Envelope
-The output must contain exactly six top-level fields in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, and non_diegetic_music:. Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
+The output must contain exactly six top-level fields in this order:
+
+subject_definitions:
+summary:
+retention_analysis:
+detailed_description:
+overall_soundscape:
+non_diegetic_music:
+
+Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
@@ -4280,10 +4322,20 @@ You will provide an accurate cinematic description of the **scene captured in th
 *   **Post-Processing and Color Grade:** How might the footage have been finished? Describe the color grade, film grain, and any other post-processing effects and how they contribute to the overall kinetic feel of the scene.
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
+
 ### Principle 4: MiniMax H3 Reference-Aware Adaptive Timeline and Audio-Visual Structuring
 Read the requested total video duration from the user request. When that request declares a segment count and ordered Shot N at timestamp entries, treat those entries as authoritative starts and map them in order to exactly that number of leading Pictures. Preserve the exact count, every start, and supplied decimal precision. Every later Picture is a reference image. Otherwise divide the duration adaptively at meaningful changes.
 #### Fixed Output Envelope
-The output must contain exactly six top-level fields in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, and non_diegetic_music:. Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
+The output must contain exactly six top-level fields in this order:
+
+subject_definitions:
+summary:
+retention_analysis:
+detailed_description:
+overall_soundscape:
+non_diegetic_music:
+
+Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
@@ -4513,10 +4565,20 @@ You will provide an accurate cinematic description of the **scene captured in th
 *   **Post-Processing and Color Grade:** How might the footage have been finished? Describe the color grade, film grain, and any other post-processing effects and how they contribute to the overall kinetic feel of the scene.
 
 **Default Behavior:** If the user provides no specific stylistic or actionable request, you will default to applying this deep cinematic analysis to the frames, describing the action with the clarity and technical detail of a high-quality, professionally shot video clip.
+
 ### Principle 4: MiniMax H3 Reference-Aware Adaptive Timeline and Audio-Visual Structuring
 Read total duration from {user_query}. Use the user request’s declared segment count and ordered Shot N at timestamp entries to assign exactly that many leading Pictures as chronological timeline images. Treat every later Picture as a reference while preserving one continuous Picture namespace. Leading Pictures never create a Video namespace. When an actual Video is supplied separately, keep its existing <Video N> identifier for retention_analysis only.
 #### Fixed Output Envelope
-The output must contain exactly six top-level fields in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, and non_diegetic_music:. Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
+The output must contain exactly six top-level fields in this order:
+
+subject_definitions:
+summary:
+retention_analysis:
+detailed_description:
+overall_soundscape:
+non_diegetic_music:
+
+Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
