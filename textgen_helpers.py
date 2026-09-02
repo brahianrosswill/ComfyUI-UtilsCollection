@@ -61,6 +61,20 @@ def prepare_qwen3vl_video_frames(
     if len({tuple(frame.shape[1:3]) for frame in prepared}) != 1:
         raise ValueError("Qwen3-VL video frames must resolve to one common spatial size.")
     frames = torch.cat(prepared, dim=0)
+    motion_delta = (
+        float((frames[1:] - frames[:-1]).abs().mean()) if frames.shape[0] > 1 else 0.0
+    )
+    logging.info(
+        "UC_TextGenerate Qwen3-VL video: source_frames=%d sampled_frames=%d temporal_blocks=%d source_fps=%.4f sample_fps=%.4f first_index=%d last_index=%d motion_delta=%.8f",
+        frame_count,
+        len(indices),
+        (len(indices) + 1) // 2,
+        source_fps,
+        target_fps,
+        indices[0],
+        indices[-1],
+        motion_delta,
+    )
     if len(indices) % 2 == 1:
         frames = torch.cat([frames, frames[-1:]], dim=0)
         indices.append(indices[-1])
@@ -140,7 +154,7 @@ def _preprocess_qwen3vl_image(model, device, image):
         or not extra.get("deepstack")
     ):
         raise ValueError("Qwen3-VL image preprocessing did not return grid and DeepStack metadata.")
-    return {"embedding": embedding, "extra": extra}
+    return {"kind": "image", "embedding": embedding, "extra": extra}
 
 
 def _preprocess_qwen3vl_video_pair(model, device, frames):
@@ -152,7 +166,11 @@ def _preprocess_qwen3vl_video_pair(model, device, frames):
         raise ValueError(
             "Qwen3-VL video preprocessing did not return temporal and DeepStack embeddings."
         )
-    return {"embedding": embedding, "extra": {"grid": grid, "deepstack": deepstack}}
+    return {
+        "kind": "video",
+        "embedding": embedding,
+        "extra": {"grid": grid, "deepstack": deepstack},
+    }
 
 
 def _fuse_preprocessed_qwen3vl_images(blocks, config, device):
@@ -174,7 +192,7 @@ def _fuse_preprocessed_qwen3vl_images(blocks, config, device):
     )
     extra = dict(blocks[0]["extra"])
     extra["deepstack"] = fused_deepstack
-    return {"embedding": fused, "extra": extra}
+    return {"kind": "image", "embedding": fused, "extra": extra}
 
 
 def _attach_preprocessed_visuals(rows, image_blocks, video_blocks):
@@ -266,11 +284,25 @@ def generate_qwen3vl_video(
             block = source["_textgen_visual"]
             info["type"] = "image"
             info["extra"] = block["extra"]
+            info["textgen_source_kind"] = block["kind"]
             mapped += 1
         if mapped != len(tagged):
             raise ValueError(
                 "Qwen3-VL could not map every prepared visual embedding into the prompt."
             )
+
+        logging.info(
+            "UC_TextGenerate Qwen3-VL media blocks: %s",
+            [
+                (
+                    info.get("textgen_source_kind"),
+                    int(info["index"]),
+                    int(info["size"]),
+                )
+                for info in embeds_info
+                if info.get("textgen_source_kind") is not None
+            ],
+        )
 
         position_ids, visual_mask, deepstack = model.transformer.build_image_inputs(
             embeds, embeds_info
