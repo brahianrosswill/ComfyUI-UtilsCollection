@@ -3010,9 +3010,9 @@ Read the requested total video duration in seconds from `{user_query}`. Divide t
 The output must contain exactly five top-level fields in this order: `subject_definitions:`, `detailed_description:`, `summary:`, `overall_soundscape:`, and `non_diegetic_music:`. Place `Timeline:` immediately beneath `detailed_description:` and write every timestamp block beneath it. Place `summary:` immediately after the complete timeline. Do not add text outside these fields.
 
 Write the complete `subject_definitions:` field using exactly this plain-text pattern, with every line beginning in column one:
-subject_definitions:
-<Subject 1>: complete definition
-<Subject 2>: complete definition
+subject_definitions:  
+<Subject 1>: complete definition  
+<Subject 2>: complete definition  
 Do not place a bullet, numbering prefix, indentation, quotation marks, backticks, or code-block formatting before or around any subject-definition entry.
 
 *   **VLM-Only Visual Evidence:** Use every ordered image supplied to the VLM as visual evidence for constructing the requested video prompt. Infer how each image contributes to the intended subject, scene, composition, style, spatial relationships, physical state, action, and progression. MiniMax H3 receives only the completed text and receives none of these images.
@@ -3113,12 +3113,12 @@ Read the requested total video duration in seconds from {user_query}. Divide tha
 
 The output must contain exactly six top-level fields in this order:
 
-subject_definitions:
-summary:
-retention_analysis:
-detailed_description:
-overall_soundscape:
-non_diegetic_music:
+subject_definitions:  
+summary:  
+retention_analysis:  
+detailed_description:  
+overall_soundscape:  
+non_diegetic_music:  
 
 Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 
@@ -3127,19 +3127,19 @@ Write all six fields in English. Preserve original language only for dialogue an
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 
 Use this field envelope:
-subject_definitions:
-applicable reference-definition lines
-summary:
-one task-prefixed English paragraph
-retention_analysis:
-one relationship line per separately tracked label
-detailed_description:
-Timeline:
-contiguous timestamp blocks
-overall_soundscape:
-one continuous English paragraph
-non_diegetic_music:
-one to three English sentences or N/A
+subject_definitions:  
+applicable reference-definition lines  
+summary:  
+one task-prefixed English paragraph  
+retention_analysis:  
+one relationship line per separately tracked label  
+detailed_description:  
+Timeline:  
+contiguous timestamp blocks  
+overall_soundscape:  
+one continuous English paragraph  
+non_diegetic_music:  
+one to three English sentences or N/A  
 
 #### Existing Media and Label Ownership
 
@@ -3166,10 +3166,12 @@ Video and Audio numbering are independent. Matching or different indices never e
 #### subject_definitions
 
 Use only the applicable line forms:
-<Subject N>: complete reusable-content definition and applicable provenance
-<Picture N>: concrete frame-anchor or timeline-planning role
-<Video N>: whole-video editing, continuation, or temporal-structure role
-<Audio N>: copied or referenced audible role
+| Semantic tag | Purpose in `subject_definitions` |
+| --- | --- |
+| `<Subject N>:` | complete reusable-content definition and applicable provenance |
+| `<Picture N>:` | concrete frame-anchor or timeline-planning role |
+| `<Video N>:` | whole-video editing, continuation, or temporal-structure role |
+| `<Audio N>:` | copied or referenced audible role |
 
 Define every supported reference with its prompt role and the concrete visible or audible characteristics needed to keep the relationship unambiguous. State its ordered-input position only when that position governs its role.
 
@@ -3179,7 +3181,7 @@ Do not invent production methods, unsupported additions, external identities, or
 
 Create and number <Subject N> aliases only for reusable content supported by visible evidence or explicitly introduced by {user_query}. Define each alias once.
 
-In the Timeline, use the literal alias at first introduction, after a cut or re-entry when identity would otherwise be ambiguous, and in required speech attribution. Otherwise use a concise ordinary name, role, or pronoun. Preserve identity through concrete traits and relationships rather than repeated aliases. Never repeat one alias within a timestamp block unless needed to distinguish Subjects.
+In every Timeline segment, every mentioned Subject action must include that Subject's literal <Subject N> alias at the action mention. An ordinary name, role, or pronoun may supplement the alias but never replace it. Repeat the alias whenever another action is attributed to that Subject, including after a cut, re-entry, or speech attribution. Preserve identity through concrete traits and relationships.
 
 Treat every <Subject N> alias as an immutable semantic token rather than a word or name. Emit it as plain text without backticks or quotation marks. Never place an apostrophe, possessive marker, contraction, plural ending, hyphen, or other character immediately after the closing >. Express possession through relational sentence structure. Correct possession form: the red sash worn by <Subject 1>. Forbidden possession form: <Subject 1>'s red sash.
 
@@ -3191,14 +3193,18 @@ When one Audio item serves several audible roles, describe every role in one nat
 
 Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
 
-*   keyframe completion: an existing Picture is a concrete target first frame, keyframe, last frame, edited frame, or other frame anchor.
-*   reference generation: an existing Picture, Video, or Audio guides a Subject, scene, style, action, camera, storyboard, or audible property without serving as a concrete target frame or direct edit or continuation source.
-*   video editing: an existing Video is directly modified. Editing an image or generating between still frames does not activate this type.
-*   video continuation: new content continues, extends, resumes, or transitions from an existing Video.
-*   audio reuse: all or part of the same Audio signal is reused.
-*   audio reference: audible properties are followed without copying the Audio signal.
+| Task type | Meaning |
+| --- | --- |
+| `keyframe completion` | an existing Picture is a concrete target first frame, keyframe, last frame, edited frame, or other frame anchor. |
+| `reference generation` | an existing Picture, Video, or Audio guides a Subject, scene, style, action, camera, storyboard, or audible property without serving as a concrete target frame or direct edit or continuation source. |
+| `video editing` | an existing Video is directly modified, including full Subject, object, or visual transfer onto it. Editing an image or generating between still frames does not activate this type. |
+| `video continuation` | new content continues, extends, resumes, or transitions from an existing Video. |
+| `audio reuse` | all or part of the same Audio signal is reused. |
+| `audio reference` | audible properties are followed without copying the Audio signal. |
 
 Join several applicable values with literal + separators and do not repeat a value. Never invent another task type or asset role. Media presence alone does not activate a task type.
+
+Any full Subject, object, or visual transfer onto an actual Video activates video editing. When several values apply, place video editing first; for example: [video editing + reference generation + audio reuse].
 
 Video camera, cut, rhythm, pacing, or temporal guidance without direct editing or continuation normally remains reference generation.
 
@@ -3212,27 +3218,35 @@ When direct Video editing applies, begin the paragraph after the prefix with: Th
 
 Write one concise line for every separately tracked label. Preserve the role defined for that label in subject_definitions. Do not introduce another label.
 
+Every retention entry must use `<label>: <relationship_marker> - <relationship descriptor or marker-specific instruction>`. The literal separator is one space, hyphen, one space. The suffix must be nonempty. Never emit a bare `<label>: <relationship_marker>` line.
+
 Use only these visible relationship markers:
 
-*   fully_preserved: the complete defined visible role remains.
-*   partially_preserved: the visible role remains but some defined characteristics change or remain only partially.
-*   attribute_transfer: source identity, appearance, motion, choreography, camera movement, timing, or spatial progression is applied to a different final Subject.
-*   weak_reference: only broad visible similarity in style, category, composition, or atmosphere remains.
+| Visible marker | Meaning |
+| --- | --- |
+| `fully_preserved` | use for a `<Subject N>` only when every defined characteristic and applicable role remains in the target; do not infer it from Picture or Video input use alone. |
+| `partially_preserved` | use when any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. |
+| `attribute_transfer` | source identity, appearance, motion, choreography, camera movement, timing, or spatial progression is applied to a different final Subject. |
+| `weak_reference` | only broad visible similarity in style, category, composition, or atmosphere remains. |
 
 Use only these Audio relationship markers:
 
-*   fully_copy: the complete source signal serves as the complete final audio track.
-*   partially_copy: only part of the signal or selected layers are copied, or other audio is added, removed, or replaced.
-*   reference: the signal is not copied and only timbre, rhythm, music style, dialogue content, lyric content, or sound texture is followed.
-*   weak_reference: only broad audible category or atmosphere remains.
+| Audio marker | Meaning |
+| --- | --- |
+| `fully_copy` | the complete source signal serves as the complete final audio track. |
+| `partially_copy` | only part of the signal or selected layers are copied, or other audio is added, removed, or replaced. |
+| `reference` | the signal is not copied and only timbre, rhythm, music style, dialogue content, lyric content, or sound texture is followed. |
+| `weak_reference` | only broad audible category or atmosphere remains. |
 
 Use the applicable line forms:
-<Subject N>: visible_marker - concise retained, changed, or transferred relationship
-<Picture N> (concrete frame or planning role): visible_marker - concise relationship
-<Video N> (whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
-<Audio N>: audio_marker - concise relationship
+| Line form | Required relationship |
+| --- | --- |
+| `<Subject N>: visible_marker - relationship descriptor or marker-specific instruction` | concise retained, changed, or transferred relationship |
+| `<Picture N>` (concrete frame or planning role): `visible_marker` - relationship descriptor or marker-specific instruction | concise relationship |
+| `<Video N>` (whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
+| `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-A Picture used only as Subject provenance does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
+A Picture used only as Subject provenance does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
@@ -3247,11 +3261,11 @@ The first range begins at 00.00s. Every range touches the next without a gap or 
 Write every range in the form [00.00s-00.00s]:. Use at least two integer digits, exactly two decimal digits, and a trailing s on both boundaries.
 
 Use this block order:
-[START-END]:
-[VISUAL]: chronological visual and camera description
-[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>
-[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound
-[MUSIC]: synchronized diegetic or segment-specific music
+[START-END]:  
+[VISUAL]: chronological visual and camera description  
+[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>  
+[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound  
+[MUSIC]: synchronized diegetic or segment-specific music  
 
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 
@@ -3277,18 +3291,20 @@ Describe camera movement as a natural action inside [VISUAL]. State motion type 
 
 Use this closed camera-motion vocabulary:
 
-*   Zoom In / Zoom Out: focal length changes while the camera body remains stationary.
-*   Push In / Pull Out: the camera body moves forward or backward.
-*   Pan Left / Pan Right: the camera remains in place while the lens pivots horizontally.
-*   Truck Left / Truck Right: the camera translates horizontally.
-*   Tilt Up / Tilt Down: the camera remains in place while the lens pivots vertically.
-*   Pedestal Up / Pedestal Down: the complete camera moves upward or downward.
-*   Arc Shot: the camera moves in an arc around the Subject.
-*   Tracking Shot: the camera follows a moving Subject.
-*   Static Shot: camera position and lens remain still.
-*   Shake Slightly / Shake Strongly: the camera uses slight or strong shake.
-*   POV: the camera presents a Subject’s point of view.
-*   Roll Clockwise / Roll Counterclockwise: the camera rolls around the lens axis.
+| Camera motion | Meaning |
+| --- | --- |
+| `Zoom In / Zoom Out` | focal length changes while the camera body remains stationary. |
+| `Push In / Pull Out` | the camera body moves forward or backward. |
+| `Pan Left / Pan Right` | the camera remains in place while the lens pivots horizontally. |
+| `Truck Left / Truck Right` | the camera translates horizontally. |
+| `Tilt Up / Tilt Down` | the camera remains in place while the lens pivots vertically. |
+| `Pedestal Up / Pedestal Down` | the complete camera moves upward or downward. |
+| `Arc Shot` | the camera moves in an arc around the Subject. |
+| `Tracking Shot` | the camera follows a moving Subject. |
+| `Static Shot` | camera position and lens remain still. |
+| `Shake Slightly / Shake Strongly` | the camera uses slight or strong shake. |
+| `POV` | the camera presents a Subject’s point of view. |
+| `Roll Clockwise / Roll Counterclockwise` | the camera rolls around the lens axis. |
 
 State small or large amplitude when amplitude materially matters. Omit medium amplitude. State slow or fast speed when speed materially matters. Omit normal speed.
 
@@ -3434,30 +3450,30 @@ Read the requested total video duration from the regular user request. When that
 #### Fixed Output Envelope
 The output must contain exactly six top-level fields in this order:
 
-subject_definitions:
-summary:
-retention_analysis:
-detailed_description:
-overall_soundscape:
-non_diegetic_music:
+subject_definitions:  
+summary:  
+retention_analysis:  
+detailed_description:  
+overall_soundscape:  
+non_diegetic_music:  
 
 Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
-subject_definitions:
-applicable reference-definition lines
-summary:
-one task-prefixed English paragraph
-retention_analysis:
-one relationship line per separately tracked label
-detailed_description:
-Timeline:
-contiguous timestamp blocks
-overall_soundscape:
-one continuous English paragraph
-non_diegetic_music:
-one to three English sentences or N/A
+subject_definitions:  
+applicable reference-definition lines  
+summary:  
+one task-prefixed English paragraph  
+retention_analysis:  
+one relationship line per separately tracked label  
+detailed_description:  
+Timeline:  
+contiguous timestamp blocks  
+overall_soundscape:  
+one continuous English paragraph  
+non_diegetic_music:  
+one to three English sentences or N/A  
 #### Existing Media and Label Ownership
 
 ComfyUI constructs and numbers existing <Picture N>, <Video N>, and <Audio N> media prefixes before the generated H3 prompt. Never create or reproduce a media-prefix declaration, insert a visual placeholder, assign a media number, restart a media namespace, or renumber an existing identifier.
@@ -3485,8 +3501,10 @@ Video and Audio numbering are independent. A Video containing sound does not cre
 #### subject_definitions
 
 Use only the applicable line forms:
-<Subject N>: completed final reusable-content definition with independent Picture provenance
-<Audio N>: copied or referenced audible role
+| Semantic tag | Purpose in `subject_definitions` |
+| --- | --- |
+| `<Subject N>:` | completed final reusable-content definition with independent Picture provenance |
+| `<Audio N>:` | copied or referenced audible role |
 
 Define every supported final Subject with concrete visible or audible characteristics and its prompt role. Cite the independent Picture that supplies final identity or appearance. Do not define, name, identify, visually describe, or depict a superseded timeline-sample identity.
 
@@ -3496,7 +3514,7 @@ Do not invent production methods, unsupported additions, external identities, or
 
 Create and number <Subject N> aliases only for final reusable content supported by visible evidence or explicitly introduced by the effective request. Define each alias once.
 
-Use the literal alias at first introduction, after a cut or re-entry when identity would otherwise be ambiguous, and in required speech attribution. Otherwise use a concise ordinary name, role, or pronoun. Preserve identity through concrete traits and relationships rather than repeated aliases.
+In every Timeline segment, every mentioned Subject action must include that Subject's literal <Subject N> alias at the action mention. An ordinary name, role, or pronoun may supplement the alias but never replace it. Repeat the alias whenever another action is attributed to that Subject, including after a cut, re-entry, or speech attribution. Preserve identity through concrete traits and relationships.
 
 Treat every <Subject N> alias as an immutable semantic token rather than a word or name. Emit it as plain text without backticks or quotation marks. Never place an apostrophe, possessive marker, contraction, plural ending, hyphen, or other character immediately after the closing >. Express possession through relational sentence structure. Correct possession form: the red sash worn by <Subject 1>. Forbidden possession form: <Subject 1>'s red sash.
 
@@ -3508,14 +3526,18 @@ When one Audio item serves several audible roles, describe every role in one def
 
 Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
 
-*   keyframe completion: an explicitly timestamp-associated Picture is a concrete target-frame anchor.
-*   reference generation: an independent Picture or Audio guides final content or audible properties without serving as a concrete target frame or copied signal.
-*   video editing: use only when an actual existing Video is directly modified. Timestamp-sample Pictures alone do not activate this type.
-*   video continuation: use only when new content continues from an actual existing Video. Timestamp-sample Pictures alone do not activate this type.
-*   audio reuse: all or part of the same Audio signal is reused.
-*   audio reference: audible properties are followed without copying the Audio signal.
+| Task type | Meaning |
+| --- | --- |
+| `keyframe completion` | an explicitly timestamp-associated Picture is a concrete target-frame anchor. |
+| `reference generation` | an independent Picture or Audio guides final content or audible properties without serving as a concrete target frame or copied signal. |
+| `video editing` | use only when an actual existing Video is directly modified, including full Subject, object, or visual transfer onto it. Timestamp-sample Pictures alone do not activate this type. |
+| `video continuation` | use only when new content continues from an actual existing Video. Timestamp-sample Pictures alone do not activate this type. |
+| `audio reuse` | all or part of the same Audio signal is reused. |
+| `audio reference` | audible properties are followed without copying the Audio signal. |
 
 Join several applicable values with literal + separators and do not repeat a value. Never invent another task type or asset role. Media presence alone does not activate a task type.
+
+Any full Subject, object, or visual transfer onto an actual Video activates video editing. When several values apply, place video editing first; for example: [video editing + reference generation + audio reuse].
 
 After the prefix, describe only the completed target video, its final Subjects, action, setting, and governing visual style, medium, era, and Subject presentation. Do not emit timestamp-sample Picture identifiers, a superseded identity, or replacement bookkeeping. Emit an actually supplied Video identifier only in retention_analysis for its retained or transferred relationship.
 
@@ -3525,26 +3547,34 @@ Use only final Subject and applicable Audio labels already defined. Do not creat
 
 Write one concise line for every separately tracked final Subject and applicable Video and Audio label. Do not emit timestamp-sample Picture identifiers or source-identity bookkeeping.
 
+Every retention entry must use `<label>: <relationship_marker> - <relationship descriptor or marker-specific instruction>`. The literal separator is one space, hyphen, one space. The suffix must be nonempty. Never emit a bare `<label>: <relationship_marker>` line.
+
 Use only these visible relationship markers:
 
-*   fully_preserved: the complete defined final visible role remains.
-*   partially_preserved: the final visible role remains but some defined characteristics change or remain only partially.
-*   attribute_transfer: independent-Picture identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject.
-*   weak_reference: only broad visible similarity in style, category, composition, or atmosphere remains.
+| Visible marker | Meaning |
+| --- | --- |
+| `fully_preserved` | use for a `<Subject N>` only when every defined characteristic and applicable role remains in the target; do not infer it from Picture or Video input use alone. |
+| `partially_preserved` | use when any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. |
+| `attribute_transfer` | independent-Picture identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject. |
+| `weak_reference` | only broad visible similarity in style, category, composition, or atmosphere remains. |
 
 Use only these Audio relationship markers:
 
-*   fully_copy: the complete source signal serves as the complete final audio track.
-*   partially_copy: only part of the signal or selected layers are copied, or other audio is added, removed, or replaced.
-*   reference: the signal is not copied and only timbre, rhythm, music style, dialogue content, lyric content, or sound texture is followed.
-*   weak_reference: only broad audible category or atmosphere remains.
+| Audio marker | Meaning |
+| --- | --- |
+| `fully_copy` | the complete source signal serves as the complete final audio track. |
+| `partially_copy` | only part of the signal or selected layers are copied, or other audio is added, removed, or replaced. |
+| `reference` | the signal is not copied and only timbre, rhythm, music style, dialogue content, lyric content, or sound texture is followed. |
+| `weak_reference` | only broad audible category or atmosphere remains. |
 
 Use the applicable line forms:
-<Subject N>: visible_marker - concise final identity, appearance, motion, scene, style, and continuity relationship
-<Video N> (whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
-<Audio N>: audio_marker - concise audible relationship
+| Line form | Required relationship |
+| --- | --- |
+| `<Subject N>: visible_marker - relationship descriptor or marker-specific instruction` | concise final identity, appearance, motion, scene, style, and continuity relationship |
+| `<Video N>` (whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
+| `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise audible relationship |
 
-Select attribute_transfer when the request assigns independent-Picture identity or appearance to a demonstrated timeline role, or when Video motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is applied to a final Subject without retaining source identity and appearance. Name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
+Select attribute_transfer when the request assigns independent-Picture identity or appearance to a demonstrated timeline role, or when Video motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is applied to a final Subject without retaining source identity and appearance. Name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
@@ -3555,11 +3585,11 @@ Use no fixed number of timestamp sections and no Part N headings. Choose every b
 The first range begins at 00.00s. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in {user_query} using the same zero-padded two-decimal total-seconds format.
 Write every range in the form [00.00s-00.00s]:. Use at least two integer digits, exactly two decimal digits, and a trailing s on both boundaries.
 Use this block order:
-[START-END]:
-[VISUAL]: chronological visual and camera description
-[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>
-[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound
-[MUSIC]: synchronized diegetic or segment-specific music
+[START-END]:  
+[VISUAL]: chronological visual and camera description  
+[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>  
+[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound  
+[MUSIC]: synchronized diegetic or segment-specific music  
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
@@ -3572,18 +3602,20 @@ Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later
 Use direct natural-language cut or transition wording. Use cross-dissolve, fade, or wipe only when requested or visibly required. A cut must introduce a meaningful Subject, space, state, viewpoint, or time change. Prefer camera motion when only distance or a slight angle changes.
 Describe camera movement as a natural action inside [VISUAL]. State motion type and add amplitude or speed only when those properties materially affect the shot.
 Use this closed camera-motion vocabulary:
-*   Zoom In / Zoom Out: focal length changes while the camera body remains stationary.
-*   Push In / Pull Out: the camera body moves forward or backward.
-*   Pan Left / Pan Right: the camera remains in place while the lens pivots horizontally.
-*   Truck Left / Truck Right: the camera translates horizontally.
-*   Tilt Up / Tilt Down: the camera remains in place while the lens pivots vertically.
-*   Pedestal Up / Pedestal Down: the complete camera moves upward or downward.
-*   Arc Shot: the camera moves in an arc around the Subject.
-*   Tracking Shot: the camera follows a moving Subject.
-*   Static Shot: camera position and lens remain still.
-*   Shake Slightly / Shake Strongly: the camera uses slight or strong shake.
-*   POV: the camera presents a Subject’s point of view.
-*   Roll Clockwise / Roll Counterclockwise: the camera rolls around the lens axis.
+| Camera motion | Meaning |
+| --- | --- |
+| `Zoom In / Zoom Out` | focal length changes while the camera body remains stationary. |
+| `Push In / Pull Out` | the camera body moves forward or backward. |
+| `Pan Left / Pan Right` | the camera remains in place while the lens pivots horizontally. |
+| `Truck Left / Truck Right` | the camera translates horizontally. |
+| `Tilt Up / Tilt Down` | the camera remains in place while the lens pivots vertically. |
+| `Pedestal Up / Pedestal Down` | the complete camera moves upward or downward. |
+| `Arc Shot` | the camera moves in an arc around the Subject. |
+| `Tracking Shot` | the camera follows a moving Subject. |
+| `Static Shot` | camera position and lens remain still. |
+| `Shake Slightly / Shake Strongly` | the camera uses slight or strong shake. |
+| `POV` | the camera presents a Subject’s point of view. |
+| `Roll Clockwise / Roll Counterclockwise` | the camera rolls around the lens axis. |
 State small or large amplitude when amplitude materially matters. Omit medium amplitude. State slow or fast speed when speed materially matters. Omit normal speed.
 Maintain concrete visual-motion language throughout every [VISUAL] line. Continuously state how the camera, Subjects, objects, clothing, effects, and environment move and change.
 #### Speakers, Dialogue, Lyrics, and Audible Sources
@@ -3692,30 +3724,30 @@ Read the requested total video duration in seconds from {user_query}. Use the re
 #### Fixed Output Envelope
 The output must contain exactly six top-level fields in this order:
 
-subject_definitions:
-summary:
-retention_analysis:
-detailed_description:
-overall_soundscape:
-non_diegetic_music:
+subject_definitions:  
+summary:  
+retention_analysis:  
+detailed_description:  
+overall_soundscape:  
+non_diegetic_music:  
 
 Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
-subject_definitions:
-applicable reference-definition lines
-summary:
-one task-prefixed English paragraph
-retention_analysis:
-one relationship line per separately tracked label
-detailed_description:
-Timeline:
-contiguous timestamp blocks
-overall_soundscape:
-one continuous English paragraph
-non_diegetic_music:
-one to three English sentences or N/A
+subject_definitions:  
+applicable reference-definition lines  
+summary:  
+one task-prefixed English paragraph  
+retention_analysis:  
+one relationship line per separately tracked label  
+detailed_description:  
+Timeline:  
+contiguous timestamp blocks  
+overall_soundscape:  
+one continuous English paragraph  
+non_diegetic_music:  
+one to three English sentences or N/A  
 #### Existing Media and Label Ownership
 
 ComfyUI constructs downstream media prefixes before the generated H3 prompt. The encoder presents the timestamped leading-image subset as one <Video 1> sequence, the later reference-image subset as <Picture N>, and enabled audio as <Audio N>.
@@ -3741,10 +3773,12 @@ Video, Picture, and Audio namespaces remain independent. Matching indices never 
 #### subject_definitions
 
 Use only the applicable line forms:
-<Subject N>: completed final Subject with Picture identity or appearance and Video motion role
-<Picture N>: concrete frame-anchor or planning role
-<Video 1>: whole-video temporal and motion-source role
-<Audio N>: copied or referenced audible role
+| Semantic tag | Purpose in `subject_definitions` |
+| --- | --- |
+| `<Subject N>:` | completed final Subject with Picture identity or appearance and Video motion role |
+| `<Picture N>:` | concrete frame-anchor or planning role |
+| `<Video 1>:` | whole-video temporal and motion-source role |
+| `<Audio N>:` | copied or referenced audible role |
 
 Define every supported final Subject with its concrete visible characteristics and prompt role. Cite an existing Picture only when that Picture supplies the Subject or another property that must remain explicit. Use the Picture number from the later reference subset.
 
@@ -3756,7 +3790,7 @@ Do not invent production methods, unsupported additions, external identities, or
 
 Create and number <Subject N> aliases only for reusable completed content supported by visible evidence or explicitly introduced by {user_query}. Define each alias once.
 
-Use the literal alias at first introduction, after a cut or re-entry when identity would otherwise be ambiguous, and in required speech attribution. Otherwise use a concise ordinary name, role, or pronoun. Never repeat one alias within a timestamp block unless needed to distinguish Subjects.
+In every Timeline segment, every mentioned Subject action must include that Subject's literal <Subject N> alias at the action mention. An ordinary name, role, or pronoun may supplement the alias but never replace it. Repeat the alias whenever another action is attributed to that Subject, including after a cut, re-entry, or speech attribution. Preserve identity through concrete traits and relationships.
 
 Treat every <Subject N> alias as an immutable semantic token. Emit it as plain text without backticks or quotation marks. Never place an apostrophe, possessive marker, contraction, plural ending, hyphen, or other character immediately after the closing >. Express possession relationally. Correct possession form: the red sash worn by <Subject 1>. Forbidden possession form: <Subject 1>'s red sash.
 
@@ -3768,14 +3802,18 @@ When one Audio item serves several audible roles, describe every role in one def
 
 Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
 
-*   keyframe completion: a Picture is a concrete target-frame anchor.
-*   reference generation: a Picture, <Video 1>, or Audio guides final content without serving as a concrete frame, direct edit source, continuation source, or copied signal.
-*   video editing: <Video 1> is directly modified.
-*   video continuation: new content continues from <Video 1>.
-*   audio reuse: all or part of the same Audio signal is reused.
-*   audio reference: audible properties are followed without copying the Audio signal.
+| Task type | Meaning |
+| --- | --- |
+| `keyframe completion` | a Picture is a concrete target-frame anchor. |
+| `reference generation` | a Picture, `<Video 1>`, or Audio guides final content without serving as a concrete frame, direct edit source, continuation source, or copied signal. |
+| `video editing` | `<Video 1>` is directly modified, including full Subject, object, or visual transfer onto it. |
+| `video continuation` | new content continues from `<Video 1>`. |
+| `audio reuse` | all or part of the same Audio signal is reused. |
+| `audio reference` | audible properties are followed without copying the Audio signal. |
 
 Join several applicable values with literal + separators and do not repeat a value. Never invent another task type or asset role. Media presence alone does not activate a task type.
+
+Any full Subject, object, or visual transfer onto `<Video 1>` activates video editing. When several values apply, place video editing first; for example: [video editing + reference generation + audio reuse].
 
 Camera, cut, rhythm, pacing, or temporal guidance from <Video 1> without direct editing or continuation normally remains reference generation.
 
@@ -3787,27 +3825,35 @@ When direct editing applies, begin after the prefix with: The target video is an
 
 Write one concise line for every separately tracked Subject, Picture, Video, and Audio label.
 
+Every retention entry must use `<label>: <relationship_marker> - <relationship descriptor or marker-specific instruction>`. The literal separator is one space, hyphen, one space. The suffix must be nonempty. Never emit a bare `<label>: <relationship_marker>` line.
+
 Use only these visible relationship markers:
 
-*   fully_preserved: the complete defined visible role remains.
-*   partially_preserved: the visible role remains but some defined characteristics change or remain only partially.
-*   attribute_transfer: Picture-defined identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject.
-*   weak_reference: only broad visible similarity in style, category, composition, or atmosphere remains.
+| Visible marker | Meaning |
+| --- | --- |
+| `fully_preserved` | use for a `<Subject N>` only when every defined characteristic and applicable role remains in the target; do not infer it from Picture or Video input use alone. |
+| `partially_preserved` | use when any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. |
+| `attribute_transfer` | Picture-defined identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject. |
+| `weak_reference` | only broad visible similarity in style, category, composition, or atmosphere remains. |
 
 Use only these Audio relationship markers:
 
-*   fully_copy: the complete source signal serves as the complete final audio track.
-*   partially_copy: only part of the signal or selected layers are copied, or other audio is added, removed, or replaced.
-*   reference: the signal is not copied and only defined audible properties are followed.
-*   weak_reference: only broad audible category or atmosphere remains.
+| Audio marker | Meaning |
+| --- | --- |
+| `fully_copy` | the complete source signal serves as the complete final audio track. |
+| `partially_copy` | only part of the signal or selected layers are copied, or other audio is added, removed, or replaced. |
+| `reference` | the signal is not copied and only defined audible properties are followed. |
+| `weak_reference` | only broad audible category or atmosphere remains. |
 
 Use the applicable line forms:
-<Subject N>: visible_marker - concise final relationship
-<Picture N> (reference or concrete-frame role): visible_marker - concise relationship
-<Video 1> (whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
-<Audio N>: audio_marker - concise relationship
+| Line form | Required relationship |
+| --- | --- |
+| `<Subject N>: visible_marker - relationship descriptor or marker-specific instruction` | concise final relationship |
+| `<Picture N>` (reference or concrete-frame role): `visible_marker` - relationship descriptor or marker-specific instruction | concise relationship |
+| `<Video 1>` (whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
+| `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-For actual identity or appearance transfer, state the final Subject, applicable Picture contribution, and <Video 1> motion contribution without narrating a visible swap. If only Video motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is used while source identity and appearance are not retained, mark <Video 1> as attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
+For actual identity or appearance transfer, state the final Subject, applicable Picture contribution, and <Video 1> motion contribution without narrating a visible swap. If only Video motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is used while source identity and appearance are not retained, mark <Video 1> as attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
@@ -3818,11 +3864,11 @@ Use no fixed number of timestamp sections and no Part N headings unless the regu
 The first range begins at 00.00s. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in {user_query} using the same zero-padded two-decimal total-seconds format.
 Write every range in the form [00.00s-00.00s]:. Use at least two integer digits, exactly two decimal digits, and a trailing s on both boundaries.
 Use this block order:
-[START-END]:
-[VISUAL]: chronological visual and camera description
-[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>
-[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound
-[MUSIC]: synchronized diegetic or segment-specific music
+[START-END]:  
+[VISUAL]: chronological visual and camera description  
+[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>  
+[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound  
+[MUSIC]: synchronized diegetic or segment-specific music  
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
@@ -3835,18 +3881,20 @@ Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later
 Use direct natural-language cut or transition wording. Use cross-dissolve, fade, or wipe only when requested or visibly required. A cut must introduce a meaningful Subject, space, state, viewpoint, or time change. Prefer camera motion when only distance or a slight angle changes.
 Describe camera movement as a natural action inside [VISUAL]. State motion type and add amplitude or speed only when those properties materially affect the shot.
 Use this closed camera-motion vocabulary:
-*   Zoom In / Zoom Out: focal length changes while the camera body remains stationary.
-*   Push In / Pull Out: the camera body moves forward or backward.
-*   Pan Left / Pan Right: the camera remains in place while the lens pivots horizontally.
-*   Truck Left / Truck Right: the camera translates horizontally.
-*   Tilt Up / Tilt Down: the camera remains in place while the lens pivots vertically.
-*   Pedestal Up / Pedestal Down: the complete camera moves upward or downward.
-*   Arc Shot: the camera moves in an arc around the Subject.
-*   Tracking Shot: the camera follows a moving Subject.
-*   Static Shot: camera position and lens remain still.
-*   Shake Slightly / Shake Strongly: the camera uses slight or strong shake.
-*   POV: the camera presents a Subject’s point of view.
-*   Roll Clockwise / Roll Counterclockwise: the camera rolls around the lens axis.
+| Camera motion | Meaning |
+| --- | --- |
+| `Zoom In / Zoom Out` | focal length changes while the camera body remains stationary. |
+| `Push In / Pull Out` | the camera body moves forward or backward. |
+| `Pan Left / Pan Right` | the camera remains in place while the lens pivots horizontally. |
+| `Truck Left / Truck Right` | the camera translates horizontally. |
+| `Tilt Up / Tilt Down` | the camera remains in place while the lens pivots vertically. |
+| `Pedestal Up / Pedestal Down` | the complete camera moves upward or downward. |
+| `Arc Shot` | the camera moves in an arc around the Subject. |
+| `Tracking Shot` | the camera follows a moving Subject. |
+| `Static Shot` | camera position and lens remain still. |
+| `Shake Slightly / Shake Strongly` | the camera uses slight or strong shake. |
+| `POV` | the camera presents a Subject’s point of view. |
+| `Roll Clockwise / Roll Counterclockwise` | the camera rolls around the lens axis. |
 State small or large amplitude when amplitude materially matters. Omit medium amplitude. State slow or fast speed when speed materially matters. Omit normal speed.
 Maintain concrete visual-motion language throughout every [VISUAL] line. Continuously state how the camera, Subjects, objects, clothing, effects, and environment move and change.
 #### Speakers, Dialogue, Lyrics, and Audible Sources
@@ -3992,6 +4040,8 @@ Use every ordered image supplied with this request only as visual evidence for c
 
 Use all supplied images deliberately. Infer how their visible content contributes to the requested video, but never output `<Picture N>`, a media-prefix declaration, an image number, or language that points MiniMax H3 toward an image, frame, reference asset, or other source it cannot inspect. Never state that target content appears in, comes from, matches, or is shown by an input image.
 
+When the user request explicitly assigns an input image a timestamped, first-frame, final-frame, keyframe, shot, or other temporal role, follow that relation when constructing the target progression. Express the resulting target state without naming the input image or describing source-image bookkeeping.
+
 The completed prompt must stand on its text alone. Any explicitly requested target visual style, medium, era, or subject presentation governs the completed prompt and overrides conflicting source rendering style. Define every material subject and scene fully at first use through visible identity, anatomy, physical characteristics, clothing, accessories, objects, pose, placement, spatial relationships, environment, composition, camera viewpoint, lighting, color treatment, visual style, and the physical state from which motion develops. Describe subjects with concrete target-appropriate visual vocabulary while preserving supported identity and visible traits, and state the governing target visual direction in `summary:`. Do not invent production methods or unsupported visual additions. Continue with concrete active motion and interaction without vague wording or omitted visual dependencies.
 
 BEGIN VIDEO REQUEST:
@@ -4067,30 +4117,30 @@ Read the requested total video duration in seconds from {user_query}. Divide tha
 #### Fixed Output Envelope
 The output must contain exactly six top-level fields in this order:
 
-subject_definitions:
-summary:
-retention_analysis:
-detailed_description:
-overall_soundscape:
-non_diegetic_music:
+subject_definitions:  
+summary:  
+retention_analysis:  
+detailed_description:  
+overall_soundscape:  
+non_diegetic_music:  
 
 Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
-subject_definitions:
-applicable reference-definition lines
-summary:
-one task-prefixed English paragraph
-retention_analysis:
-one relationship line per separately tracked label
-detailed_description:
-Timeline:
-contiguous timestamp blocks
-overall_soundscape:
-one continuous English paragraph
-non_diegetic_music:
-one to three English sentences or N/A
+subject_definitions:  
+applicable reference-definition lines  
+summary:  
+one task-prefixed English paragraph  
+retention_analysis:  
+one relationship line per separately tracked label  
+detailed_description:  
+Timeline:  
+contiguous timestamp blocks  
+overall_soundscape:  
+one continuous English paragraph  
+non_diegetic_music:  
+one to three English sentences or N/A  
 #### Existing Media and Label Ownership
 
 ComfyUI constructs and numbers the existing <Picture N>, <Video N>, and <Audio N> media prefixes before the generated H3 prompt. Refer only to identifiers that exist. Never create or reproduce a media-prefix declaration, insert a visual placeholder, assign a media number, restart a namespace, or renumber an identifier.
@@ -4118,10 +4168,12 @@ Video and Audio numbering remain independent. A Video containing sound does not 
 #### subject_definitions
 
 Use only the applicable line forms:
-<Subject N>: complete final reusable-content definition with every applicable Picture identifier
-<Picture N>: concrete frame-anchor or timeline-planning role
-<Video N>: actual whole-video editing, continuation, or temporal-structure role
-<Audio N>: copied or referenced audible role
+| Semantic tag | Purpose in `subject_definitions` |
+| --- | --- |
+| `<Subject N>:` | complete final reusable-content definition with every applicable Picture identifier |
+| `<Picture N>:` | concrete frame-anchor or timeline-planning role |
+| `<Video N>:` | source video for direct target-video editing, continuation, or whole-video temporal structure |
+| `<Audio N>:` | copied or referenced audible role |
 
 Define every supported final reference and every applicable Picture identifier individually. When replacement applies, define only final referenced content and omit superseded timeline content.
 
@@ -4135,7 +4187,7 @@ Create <Subject N> aliases for reusable people, characters, objects, environment
 
 For user-requested replacement, use the literal alias in every Timeline block where final referenced content performs an action or controls a visible change. Never substitute a guessed name, inferred identity, ordinary role, or pronoun.
 
-For content outside replacement, use concise natural references after introduction when identity remains unambiguous. Never repeat one alias within a timestamp block unless separate actions or relationships require it.
+In every Timeline segment, every mentioned Subject action must include that Subject's literal <Subject N> alias at the action mention. An ordinary name, role, or pronoun may supplement the alias but never replace it. Repeat the alias whenever another action is attributed to that Subject, including after a cut, re-entry, or speech attribution.
 
 Treat every <Subject N> alias as an immutable semantic token. Emit it as plain text without backticks or quotation marks. Never attach an apostrophe, possessive marker, contraction, plural ending, hyphen, or other character after >. Express possession relationally. Correct possession form: the red sash worn by <Subject 1>. Forbidden possession form: <Subject 1>'s red sash.
 
@@ -4145,14 +4197,18 @@ When an Audio item corresponds to a target speaker, reuse that speaker’s globa
 
 Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
 
-*   keyframe completion: a timeline Picture serves as a concrete target-frame anchor.
-*   reference generation: a later Picture, actual Video, or Audio guides final content without serving as a concrete frame, direct edit source, continuation source, or copied signal.
-*   video editing: an actual existing Video is directly modified. Timeline Pictures alone do not activate this type.
-*   video continuation: new content continues from an actual existing Video. Timeline Pictures alone do not activate this type.
-*   audio reuse: all or part of the same Audio signal is reused.
-*   audio reference: audible properties are followed without copying the Audio signal.
+| Task type | Meaning |
+| --- | --- |
+| `keyframe completion` | a timeline Picture serves as a concrete target-frame anchor. |
+| `reference generation` | a later Picture, actual Video, or Audio guides final content without serving as a concrete frame, direct edit source, continuation source, or copied signal. |
+| `video editing` | an actual existing Video is directly modified, including full Subject, object, or visual transfer onto it. Timeline Pictures alone do not activate this type. |
+| `video continuation` | new content continues from an actual existing Video. Timeline Pictures alone do not activate this type. |
+| `audio reuse` | all or part of the same Audio signal is reused. |
+| `audio reference` | audible properties are followed without copying the Audio signal. |
 
 Join applicable values with literal + separators and do not repeat a value. Never invent another task type or asset role. Media presence alone does not activate a task type.
+
+Any full Subject, object, or visual transfer onto an actual Video activates video editing. When several values apply, place video editing first; for example: [video editing + reference generation + audio reuse].
 
 After the prefix, describe only the completed target video: final Subjects, action, setting, and governing visual style, medium, era, and Subject presentation.
 
@@ -4164,27 +4220,35 @@ Never include superseded content, state that one identity replaces another, comp
 
 Write one concise line for every separately tracked label.
 
+Every retention entry must use `<label>: <relationship_marker> - <relationship descriptor or marker-specific instruction>`. The literal separator is one space, hyphen, one space. The suffix must be nonempty. Never emit a bare `<label>: <relationship_marker>` line.
+
 Use only these visible relationship markers:
 
-*   fully_preserved: the complete defined visible role remains.
-*   partially_preserved: the visible role remains but some defined characteristics change or remain only partially.
-*   attribute_transfer: later-Picture identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject.
-*   weak_reference: only broad visible similarity remains.
+| Visible marker | Meaning |
+| --- | --- |
+| `fully_preserved` | use for a `<Subject N>` only when every defined characteristic and applicable role remains in the target; do not infer it from Picture or Video input use alone. |
+| `partially_preserved` | use when any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. |
+| `attribute_transfer` | later-Picture identity or appearance, or Video motion, choreography, camera movement, timing, or spatial progression, is applied to a different final Subject. |
+| `weak_reference` | only broad visible similarity remains. |
 
 Use only these Audio relationship markers:
 
-*   fully_copy: the complete signal serves as the complete final audio track.
-*   partially_copy: only part of the signal or selected layers are copied, or other audio is added, removed, or replaced.
-*   reference: the signal is not copied and only defined audible properties are followed.
-*   weak_reference: only broad audible category or atmosphere remains.
+| Audio marker | Meaning |
+| --- | --- |
+| `fully_copy` | the complete signal serves as the complete final audio track. |
+| `partially_copy` | only part of the signal or selected layers are copied, or other audio is added, removed, or replaced. |
+| `reference` | the signal is not copied and only defined audible properties are followed. |
+| `weak_reference` | only broad audible category or atmosphere remains. |
 
 Use the applicable line forms:
-<Subject N>: visible_marker - concise final relationship
-<Picture N> (timeline-frame or later-reference role): visible_marker - concise relationship
-<Video N> (actual whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
-<Audio N>: audio_marker - concise relationship
+| Line form | Required relationship |
+| --- | --- |
+| `<Subject N>: visible_marker - relationship descriptor or marker-specific instruction` | concise final relationship |
+| `<Picture N>` (timeline-frame or later-reference role): `visible_marker` - relationship descriptor or marker-specific instruction | concise relationship |
+| `<Video N>` (actual whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
+| `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-For actual replacement, explicitly state which final Subject receives the relevant later-Picture identity or appearance. Cite every defining Picture individually. Distinguish reference-supplied identity or appearance from retained motion, pose progression, interaction, spatial role, framing, environment, camera progression, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
+For actual replacement, explicitly state which final Subject receives the relevant later-Picture identity or appearance. Cite every defining Picture individually. Distinguish reference-supplied identity or appearance from retained motion, pose progression, interaction, spatial role, framing, environment, camera progression, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 Never name, identify, or visually describe superseded timeline content. For non-replacement references, state only requested retained and changed properties.
 
@@ -4195,11 +4259,11 @@ Use no fixed number of timestamp sections and no Part N headings. Choose every b
 The first range begins at 00.00s. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in {user_query} using the same zero-padded two-decimal total-seconds format.
 Write every range in the form [00.00s-00.00s]:. Use at least two integer digits, exactly two decimal digits, and a trailing s on both boundaries.
 Use this block order:
-[START-END]:
-[VISUAL]: chronological visual and camera description
-[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>
-[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound
-[MUSIC]: synchronized diegetic or segment-specific music
+[START-END]:  
+[VISUAL]: chronological visual and camera description  
+[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>  
+[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound  
+[MUSIC]: synchronized diegetic or segment-specific music  
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
@@ -4212,18 +4276,20 @@ Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later
 Use direct natural-language cut or transition wording. Use cross-dissolve, fade, or wipe only when requested or visibly required. A cut must introduce a meaningful Subject, space, state, viewpoint, or time change. Prefer camera motion when only distance or a slight angle changes.
 Describe camera movement as a natural action inside [VISUAL]. State motion type and add amplitude or speed only when those properties materially affect the shot.
 Use this closed camera-motion vocabulary:
-*   Zoom In / Zoom Out: focal length changes while the camera body remains stationary.
-*   Push In / Pull Out: the camera body moves forward or backward.
-*   Pan Left / Pan Right: the camera remains in place while the lens pivots horizontally.
-*   Truck Left / Truck Right: the camera translates horizontally.
-*   Tilt Up / Tilt Down: the camera remains in place while the lens pivots vertically.
-*   Pedestal Up / Pedestal Down: the complete camera moves upward or downward.
-*   Arc Shot: the camera moves in an arc around the Subject.
-*   Tracking Shot: the camera follows a moving Subject.
-*   Static Shot: camera position and lens remain still.
-*   Shake Slightly / Shake Strongly: the camera uses slight or strong shake.
-*   POV: the camera presents a Subject’s point of view.
-*   Roll Clockwise / Roll Counterclockwise: the camera rolls around the lens axis.
+| Camera motion | Meaning |
+| --- | --- |
+| `Zoom In / Zoom Out` | focal length changes while the camera body remains stationary. |
+| `Push In / Pull Out` | the camera body moves forward or backward. |
+| `Pan Left / Pan Right` | the camera remains in place while the lens pivots horizontally. |
+| `Truck Left / Truck Right` | the camera translates horizontally. |
+| `Tilt Up / Tilt Down` | the camera remains in place while the lens pivots vertically. |
+| `Pedestal Up / Pedestal Down` | the complete camera moves upward or downward. |
+| `Arc Shot` | the camera moves in an arc around the Subject. |
+| `Tracking Shot` | the camera follows a moving Subject. |
+| `Static Shot` | camera position and lens remain still. |
+| `Shake Slightly / Shake Strongly` | the camera uses slight or strong shake. |
+| `POV` | the camera presents a Subject’s point of view. |
+| `Roll Clockwise / Roll Counterclockwise` | the camera rolls around the lens axis. |
 State small or large amplitude when amplitude materially matters. Omit medium amplitude. State slow or fast speed when speed materially matters. Omit normal speed.
 Maintain concrete visual-motion language throughout every [VISUAL] line. Continuously state how the camera, Subjects, objects, clothing, effects, and environment move and change.
 #### Speakers, Dialogue, Lyrics, and Audible Sources
@@ -4328,30 +4394,30 @@ Read the requested total video duration from the user request. When that request
 #### Fixed Output Envelope
 The output must contain exactly six top-level fields in this order:
 
-subject_definitions:
-summary:
-retention_analysis:
-detailed_description:
-overall_soundscape:
-non_diegetic_music:
+subject_definitions:  
+summary:  
+retention_analysis:  
+detailed_description:  
+overall_soundscape:  
+non_diegetic_music:  
 
 Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
-subject_definitions:
-applicable reference-definition lines
-summary:
-one task-prefixed English paragraph
-retention_analysis:
-one relationship line per separately tracked label
-detailed_description:
-Timeline:
-contiguous timestamp blocks
-overall_soundscape:
-one continuous English paragraph
-non_diegetic_music:
-one to three English sentences or N/A
+subject_definitions:  
+applicable reference-definition lines  
+summary:  
+one task-prefixed English paragraph  
+retention_analysis:  
+one relationship line per separately tracked label  
+detailed_description:  
+Timeline:  
+contiguous timestamp blocks  
+overall_soundscape:  
+one continuous English paragraph  
+non_diegetic_music:  
+one to three English sentences or N/A  
 #### Existing Media and Label Ownership
 
 ComfyUI constructs and numbers existing <Picture N>, <Video N>, and <Audio N> media prefixes before the generated H3 prompt. Never create or reproduce a media-prefix declaration, insert a placeholder, assign a media number, restart a namespace, or renumber an identifier.
@@ -4379,10 +4445,12 @@ Timeline Pictures supply chronological motion, pose progression, interaction, se
 #### subject_definitions
 
 Use only applicable line forms:
-<Subject N>: complete final reusable-content definition with every applicable reference Picture
-<Picture N>: concrete frame-anchor or planning role
-<Video N>: actual whole-video role
-<Audio N>: copied or referenced audible role
+| Semantic tag | Purpose in `subject_definitions` |
+| --- | --- |
+| `<Subject N>:` | complete final reusable-content definition with every applicable reference Picture |
+| `<Picture N>:` | concrete frame-anchor or planning role |
+| `<Video N>:` | actual whole-video role |
+| `<Audio N>:` | copied or referenced audible role |
 
 Define every supported final reference and cite every applicable Picture individually. When replacement applies, define only final referenced content and omit superseded timeline content.
 
@@ -4394,7 +4462,7 @@ Do not invent production methods, unsupported additions, or speculative unseen S
 
 Create stable <Subject N> aliases for reusable final content. For replacement, use the literal alias in every block where final content performs an action or controls a visible change. Never substitute a guessed name, ordinary role, or pronoun.
 
-For content outside replacement, use concise natural references after introduction when unambiguous. Never repeat one alias within a block unless separate actions require it.
+In every Timeline segment, every mentioned Subject action must include that Subject's literal <Subject N> alias at the action mention. An ordinary name, role, or pronoun may supplement the alias but never replace it. Repeat the alias whenever another action is attributed to that Subject, including after a cut, re-entry, or speech attribution.
 
 Treat every alias as an immutable semantic token. Emit plain text without backticks or quotation marks. Never attach an apostrophe, possessive marker, contraction, plural ending, hyphen, or other character after >. Correct possession form: the red sash worn by <Subject 1>. Forbidden possession form: <Subject 1>'s red sash.
 
@@ -4404,14 +4472,20 @@ An Audio definition reuses the speaker ID established by actual vocal-event orde
 
 Write one short English paragraph beginning with a square-bracketed prefix built only from applicable closed values:
 
-*   keyframe completion: a timeline Picture is a concrete target-frame anchor.
-*   reference generation: a later Picture, actual Video, or Audio guides final content without a concrete frame, direct edit, continuation, or copied-signal role.
-*   video editing: an actual existing Video is directly modified.
-*   video continuation: new content continues from an actual existing Video.
-*   audio reuse: all or part of the same Audio signal is reused.
-*   audio reference: audible properties are followed without copying the signal.
+| Task type | Meaning |
+| --- | --- |
+| `keyframe completion` | a timeline Picture is a concrete target-frame anchor. |
+| `reference generation` | a later Picture, actual Video, or Audio guides final content without a concrete frame, direct edit, continuation, or copied-signal role. |
+| `video editing` | an actual existing Video is directly modified, including full Subject, object, or visual transfer onto it. |
+| `video continuation` | new content continues from an actual existing Video. |
+| `audio reuse` | all or part of the same Audio signal is reused. |
+| `audio reference` | audible properties are followed without copying the signal. |
 
 Join applicable values with literal + separators. Do not repeat a value or invent another task or asset role. Media presence alone does not activate a type.
+
+When direct Video editing applies, begin the paragraph after the prefix with: The target video is an edited version of <Video N>.
+
+Any full Subject, object, or visual transfer onto an actual Video activates video editing. When several values apply, place video editing first; for example: [video editing + reference generation + audio reuse].
 
 After the prefix, describe only completed final Subjects, action, setting, and governing style, medium, era, and Subject presentation. Never name superseded content, compare source and final identity, describe replacement mechanics, or duplicate the Timeline.
 
@@ -4419,15 +4493,28 @@ After the prefix, describe only completed final Subjects, action, setting, and g
 
 Write one concise line for every separately tracked label.
 
-Use only visible markers fully_preserved, partially_preserved, attribute_transfer, and weak_reference. Use only Audio markers fully_copy, partially_copy, reference, and weak_reference.
+Every retention entry must use `<label>: <relationship_marker> - <relationship descriptor or marker-specific instruction>`. The literal separator is one space, hyphen, one space. The suffix must be nonempty. Never emit a bare `<label>: <relationship_marker>` line.
+
+Use only these visible relationship markers:
+
+| Relationship marker | Meaning |
+| --- | --- |
+| `fully_preserved` | use for a `<Subject N>` only when every defined characteristic and applicable role remains in the target; do not infer it from Picture or Video input use alone. |
+| `partially_preserved` | use when any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. |
+| `attribute_transfer` | referenced characteristics are transferred to a different identifiable target Subject. |
+| `weak_reference` | only broad similarity in style, category, composition, or atmosphere is retained. |
+
+Use only Audio markers fully_copy, partially_copy, reference, and weak_reference.
 
 Use applicable forms:
-<Subject N>: visible_marker - concise final relationship
-<Picture N> (timeline-frame or later-reference role): visible_marker - concise relationship
-<Video N> (actual whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
-<Audio N>: audio_marker - concise relationship
+| Line form | Required relationship |
+| --- | --- |
+| `<Subject N>: visible_marker - relationship descriptor or marker-specific instruction` | concise final relationship |
+| `<Picture N>` (timeline-frame or later-reference role): `visible_marker` - relationship descriptor or marker-specific instruction | concise relationship |
+| `<Video N>` (actual whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
+| `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-For actual replacement, state which final Subject receives later-Picture identity or appearance. Cite every defining reference Picture individually. Distinguish reference identity or appearance from retained timeline motion, pose, interaction, spatial role, framing, environment, camera, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
+For actual replacement, state which final Subject receives later-Picture identity or appearance. Cite every defining reference Picture individually. Distinguish reference identity or appearance from retained timeline motion, pose, interaction, spatial role, framing, environment, camera, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 Never name, identify, or visually describe superseded timeline content. For non-replacement references, state only requested retained and changed properties.
 
@@ -4438,11 +4525,11 @@ Use no fixed number of timestamp sections and no Part N headings. Choose every b
 The first range begins at 00.00s. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in {user_query} using the same zero-padded two-decimal total-seconds format.
 Write every range in the form [00.00s-00.00s]:. Use at least two integer digits, exactly two decimal digits, and a trailing s on both boundaries.
 Use this block order:
-[START-END]:
-[VISUAL]: chronological visual and camera description
-[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>
-[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound
-[MUSIC]: synchronized diegetic or segment-specific music
+[START-END]:  
+[VISUAL]: chronological visual and camera description  
+[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>  
+[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound  
+[MUSIC]: synchronized diegetic or segment-specific music  
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
@@ -4455,18 +4542,20 @@ Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later
 Use direct natural-language cut or transition wording. Use cross-dissolve, fade, or wipe only when requested or visibly required. A cut must introduce a meaningful Subject, space, state, viewpoint, or time change. Prefer camera motion when only distance or a slight angle changes.
 Describe camera movement as a natural action inside [VISUAL]. State motion type and add amplitude or speed only when those properties materially affect the shot.
 Use this closed camera-motion vocabulary:
-*   Zoom In / Zoom Out: focal length changes while the camera body remains stationary.
-*   Push In / Pull Out: the camera body moves forward or backward.
-*   Pan Left / Pan Right: the camera remains in place while the lens pivots horizontally.
-*   Truck Left / Truck Right: the camera translates horizontally.
-*   Tilt Up / Tilt Down: the camera remains in place while the lens pivots vertically.
-*   Pedestal Up / Pedestal Down: the complete camera moves upward or downward.
-*   Arc Shot: the camera moves in an arc around the Subject.
-*   Tracking Shot: the camera follows a moving Subject.
-*   Static Shot: camera position and lens remain still.
-*   Shake Slightly / Shake Strongly: the camera uses slight or strong shake.
-*   POV: the camera presents a Subject’s point of view.
-*   Roll Clockwise / Roll Counterclockwise: the camera rolls around the lens axis.
+| Camera motion | Meaning |
+| --- | --- |
+| `Zoom In / Zoom Out` | focal length changes while the camera body remains stationary. |
+| `Push In / Pull Out` | the camera body moves forward or backward. |
+| `Pan Left / Pan Right` | the camera remains in place while the lens pivots horizontally. |
+| `Truck Left / Truck Right` | the camera translates horizontally. |
+| `Tilt Up / Tilt Down` | the camera remains in place while the lens pivots vertically. |
+| `Pedestal Up / Pedestal Down` | the complete camera moves upward or downward. |
+| `Arc Shot` | the camera moves in an arc around the Subject. |
+| `Tracking Shot` | the camera follows a moving Subject. |
+| `Static Shot` | camera position and lens remain still. |
+| `Shake Slightly / Shake Strongly` | the camera uses slight or strong shake. |
+| `POV` | the camera presents a Subject’s point of view. |
+| `Roll Clockwise / Roll Counterclockwise` | the camera rolls around the lens axis. |
 State small or large amplitude when amplitude materially matters. Omit medium amplitude. State slow or fast speed when speed materially matters. Omit normal speed.
 Maintain concrete visual-motion language throughout every [VISUAL] line. Continuously state how the camera, Subjects, objects, clothing, effects, and environment move and change.
 #### Speakers, Dialogue, Lyrics, and Audible Sources
@@ -4571,30 +4660,30 @@ Read total duration from {user_query}. Use the user request’s declared segment
 #### Fixed Output Envelope
 The output must contain exactly six top-level fields in this order:
 
-subject_definitions:
-summary:
-retention_analysis:
-detailed_description:
-overall_soundscape:
-non_diegetic_music:
+subject_definitions:  
+summary:  
+retention_analysis:  
+detailed_description:  
+overall_soundscape:  
+non_diegetic_music:  
 
 Place Timeline: immediately beneath detailed_description: and write every timestamp block beneath it. Do not add text outside these fields.
 Write all six fields in English. Preserve original language only for dialogue and lyrics inside <d> and for text visibly present in the scene.
 Write field names in column one. Write every definition and retention entry on its own line. Do not place bullets, numbering prefixes, indentation, quotation marks, backticks, or code-block formatting around generated field names or entries.
 Use this field envelope:
-subject_definitions:
-applicable reference-definition lines
-summary:
-one task-prefixed English paragraph
-retention_analysis:
-one relationship line per separately tracked label
-detailed_description:
-Timeline:
-contiguous timestamp blocks
-overall_soundscape:
-one continuous English paragraph
-non_diegetic_music:
-one to three English sentences or N/A
+subject_definitions:  
+applicable reference-definition lines  
+summary:  
+one task-prefixed English paragraph  
+retention_analysis:  
+one relationship line per separately tracked label  
+detailed_description:  
+Timeline:  
+contiguous timestamp blocks  
+overall_soundscape:  
+one continuous English paragraph  
+non_diegetic_music:  
+one to three English sentences or N/A  
 #### Existing Media and Label Ownership
 
 ComfyUI presents every supplied image in one continuous ordered <Picture N> sequence. Never create or reproduce a media-prefix declaration, insert a placeholder, renumber a Picture, restart numbering for a subset, or turn those Pictures into a <Video N> namespace. When an actual Video is supplied separately, keep its existing <Video N> identifier for retention_analysis only.
@@ -4622,9 +4711,11 @@ Picture and Audio numbering remain independent. Do not infer Audio from visual m
 #### subject_definitions
 
 Use only applicable line forms:
-<Subject N>: complete final reusable-content definition with every applicable reference Picture
-<Picture N>: concrete timeline-frame, reference-frame, or planning role
-<Audio N>: copied or referenced audible role
+| Semantic tag | Purpose in `subject_definitions` |
+| --- | --- |
+| `<Subject N>:` | complete final reusable-content definition with every applicable reference Picture |
+| `<Picture N>:` | concrete timeline-frame, reference-frame, or planning role |
+| `<Audio N>:` | copied or referenced audible role |
 
 Preserve one continuous Picture namespace. Define every supported final reference and cite every applicable Picture individually.
 
@@ -4636,7 +4727,7 @@ Do not invent production methods, unsupported additions, external identities, or
 
 Create stable <Subject N> aliases for reusable final content. For replacement, use the literal alias in every block where final content performs an action or controls a visible change. Never substitute a guessed name, role, or pronoun.
 
-For non-replacement content, use natural references after introduction when unambiguous. Never repeat one alias in a block unless separate actions require it.
+In every Timeline segment, every mentioned Subject action must include that Subject's literal <Subject N> alias at the action mention. An ordinary name, role, or pronoun may supplement the alias but never replace it. Repeat the alias whenever another action is attributed to that Subject, including after a cut, re-entry, or speech attribution.
 
 Treat every alias as an immutable semantic token. Emit plain text without backticks or quotation marks. Never attach an apostrophe, possessive marker, contraction, plural ending, hyphen, or other character after >. Correct possession form: the red sash worn by <Subject 1>. Forbidden possession form: <Subject 1>'s red sash.
 
@@ -4646,14 +4737,18 @@ An Audio definition reuses a speaker ID established by actual vocal-event order.
 
 Write one short English paragraph beginning with a square-bracketed prefix built only from applicable values:
 
-*   keyframe completion: a timeline Picture is a concrete target-frame anchor.
-*   reference generation: a later Picture or Audio guides final content without a concrete frame or copied-signal role.
-*   video editing: select only when an actual Video is supplied; never select from timeline Pictures.
-*   video continuation: select only when an actual Video is supplied; never select from timeline Pictures.
-*   audio reuse: all or part of the same Audio signal is reused.
-*   audio reference: audible properties are followed without copying the signal.
+| Task type | Meaning |
+| --- | --- |
+| `keyframe completion` | a timeline Picture is a concrete target-frame anchor. |
+| `reference generation` | a later Picture or Audio guides final content without a concrete frame or copied-signal role. |
+| `video editing` | select only when an actual Video is supplied and directly modified, including full Subject, object, or visual transfer onto it; never select from timeline Pictures. |
+| `video continuation` | select only when an actual Video is supplied; never select from timeline Pictures. |
+| `audio reuse` | all or part of the same Audio signal is reused. |
+| `audio reference` | audible properties are followed without copying the signal. |
 
 Join applicable values with literal + separators. Do not repeat a value or invent another task or role. Media presence alone does not activate a type.
+
+Any full Subject, object, or visual transfer onto an actual Video activates video editing. When several values apply, place video editing first; for example: [video editing + reference generation + audio reuse].
 
 After the prefix, describe only completed final Subjects, action, setting, and governing style, medium, era, and Subject presentation. Never mention superseded content, replacement mechanics, or a Video label. Do not duplicate the Timeline.
 
@@ -4661,15 +4756,28 @@ After the prefix, describe only completed final Subjects, action, setting, and g
 
 Write one concise line for every separately tracked Subject, Picture, Video, and Audio label.
 
-Use visible markers fully_preserved, partially_preserved, attribute_transfer, and weak_reference. Use Audio markers fully_copy, partially_copy, reference, and weak_reference.
+Every retention entry must use `<label>: <relationship_marker> - <relationship descriptor or marker-specific instruction>`. The literal separator is one space, hyphen, one space. The suffix must be nonempty. Never emit a bare `<label>: <relationship_marker>` line.
+
+Use these visible relationship markers:
+
+| Relationship marker | Meaning |
+| --- | --- |
+| `fully_preserved` | use for a `<Subject N>` only when every defined characteristic and applicable role remains in the target; do not infer it from Picture or Video input use alone. |
+| `partially_preserved` | use when any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. |
+| `attribute_transfer` | referenced characteristics are transferred to a different identifiable target Subject. |
+| `weak_reference` | only broad similarity in style, category, composition, or atmosphere is retained. |
+
+Use Audio markers fully_copy, partially_copy, reference, and weak_reference.
 
 Use applicable forms:
-<Subject N>: visible_marker - concise final relationship
-<Picture N> (timeline-frame or later-reference role): visible_marker - concise relationship
-<Video N> (actual whole-video role): visible_marker - concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship
-<Audio N>: audio_marker - concise relationship
+| Line form | Required relationship |
+| --- | --- |
+| `<Subject N>: visible_marker - relationship descriptor or marker-specific instruction` | concise final relationship |
+| `<Picture N>` (timeline-frame or later-reference role): `visible_marker` - relationship descriptor or marker-specific instruction | concise relationship |
+| `<Video N>` (actual whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
+| `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-For actual replacement, state which final Subject receives later-Picture identity or appearance. Cite every defining reference Picture individually. Distinguish that contribution from retained timeline motion, pose, interaction, spatial role, framing, environment, camera, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved only when some source Video content itself remains visible.
+For actual replacement, state which final Subject receives later-Picture identity or appearance. Cite every defining reference Picture individually. Distinguish that contribution from retained timeline motion, pose, interaction, spatial role, framing, environment, camera, timing, and continuity. When a Video supplies only motion, choreography, camera movement, timing, pacing, spatial progression, or continuity, mark that Video as attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 Never name, identify, or visually describe superseded content. For non-replacement references, state only requested retained and changed properties.
 
@@ -4680,11 +4788,11 @@ Use no fixed number of timestamp sections and no Part N headings unless the user
 The first range begins at 00.00s. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in {user_query} using the same zero-padded two-decimal total-seconds format.
 Write every range in the form [00.00s-00.00s]:. Use at least two integer digits, exactly two decimal digits, and a trailing s on both boundaries.
 Use this block order:
-[START-END]:
-[VISUAL]: chronological visual and camera description
-[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>
-[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound
-[MUSIC]: synchronized diegetic or segment-specific music
+[START-END]:  
+[VISUAL]: chronological visual and camera description  
+[SPEECH]: applicable source (Sx) <d>[Language] spoken content</d>  
+[SOUNDS]: synchronized ambience, physical sound, and non-verbal sound  
+[MUSIC]: synchronized diegetic or segment-specific music  
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
@@ -4697,18 +4805,20 @@ Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later
 Use direct natural-language cut or transition wording. Use cross-dissolve, fade, or wipe only when requested or visibly required. A cut must introduce a meaningful Subject, space, state, viewpoint, or time change. Prefer camera motion when only distance or a slight angle changes.
 Describe camera movement as a natural action inside [VISUAL]. State motion type and add amplitude or speed only when those properties materially affect the shot.
 Use this closed camera-motion vocabulary:
-*   Zoom In / Zoom Out: focal length changes while the camera body remains stationary.
-*   Push In / Pull Out: the camera body moves forward or backward.
-*   Pan Left / Pan Right: the camera remains in place while the lens pivots horizontally.
-*   Truck Left / Truck Right: the camera translates horizontally.
-*   Tilt Up / Tilt Down: the camera remains in place while the lens pivots vertically.
-*   Pedestal Up / Pedestal Down: the complete camera moves upward or downward.
-*   Arc Shot: the camera moves in an arc around the Subject.
-*   Tracking Shot: the camera follows a moving Subject.
-*   Static Shot: camera position and lens remain still.
-*   Shake Slightly / Shake Strongly: the camera uses slight or strong shake.
-*   POV: the camera presents a Subject’s point of view.
-*   Roll Clockwise / Roll Counterclockwise: the camera rolls around the lens axis.
+| Camera motion | Meaning |
+| --- | --- |
+| `Zoom In / Zoom Out` | focal length changes while the camera body remains stationary. |
+| `Push In / Pull Out` | the camera body moves forward or backward. |
+| `Pan Left / Pan Right` | the camera remains in place while the lens pivots horizontally. |
+| `Truck Left / Truck Right` | the camera translates horizontally. |
+| `Tilt Up / Tilt Down` | the camera remains in place while the lens pivots vertically. |
+| `Pedestal Up / Pedestal Down` | the complete camera moves upward or downward. |
+| `Arc Shot` | the camera moves in an arc around the Subject. |
+| `Tracking Shot` | the camera follows a moving Subject. |
+| `Static Shot` | camera position and lens remain still. |
+| `Shake Slightly / Shake Strongly` | the camera uses slight or strong shake. |
+| `POV` | the camera presents a Subject’s point of view. |
+| `Roll Clockwise / Roll Counterclockwise` | the camera rolls around the lens axis. |
 State small or large amplitude when amplitude materially matters. Omit medium amplitude. State slow or fast speed when speed materially matters. Omit normal speed.
 Maintain concrete visual-motion language throughout every [VISUAL] line. Continuously state how the camera, Subjects, objects, clothing, effects, and environment move and change.
 #### Speakers, Dialogue, Lyrics, and Audible Sources
@@ -4776,6 +4886,8 @@ Determine the governing visual style from the requested target video and supplie
 
 Define referenced content with concrete visible characteristics and direct relationships using vocabulary appropriate to the governing style. A picture identifier never replaces the subject, appearance, action, motion, camera, environment, continuity, or transformation details needed by the video model. Keep reference use concise where the picture already supplies fine visual detail, while still describing active motion and interaction without vague wording. Do not invent production methods or unsupported additions.
 
+An input Picture used only to establish Subject identity or appearance is provenance: cite it inside that Subject's first complete definition and do not create a standalone Picture entry or retention_analysis line for it. Create and track a standalone Picture only when the user request explicitly assigns it a keyframe, first-frame, final-frame, shot-anchor, composition, storyboard, or planning role.
+
 BEGIN VIDEO REQUEST:
 ''')
 
@@ -4810,6 +4922,8 @@ Determine the semantic role of every supplied picture from its visible content, 
 
 Define referenced content with concrete visible characteristics and direct relationships. A picture identifier never replaces the subject, appearance, action, motion, camera, environment, continuity, or transformation details needed by the video model. Keep reference use concise where the picture already supplies fine visual detail, while still describing active motion and interaction without vague wording.
 
+An input Picture used only to establish Subject identity or appearance is provenance: cite it inside that Subject's first complete definition and do not create a standalone Picture entry or retention_analysis line for it. Create and track a standalone Picture only when the user request explicitly assigns it a keyframe, first-frame, final-frame, shot-anchor, composition, storyboard, or planning role.
+
 BEGIN VIDEO REQUEST:
 ''')
 
@@ -4830,6 +4944,8 @@ Use timestamp-associated Pictures for source motion, pose progression, interacti
 When the request assigns an independent Picture's subject identity to a role demonstrated by timeline samples, create one final subject: identity and appearance come from the independent Picture, while motion, pose progression, interaction, setting, framing, camera, and timing come from the samples. Cite the independent Picture once in that final subject's definition. Use only the final subject's <Subject N> alias and ordinary name after the definition. Describe the final subject as continuously present throughout the completed target video.
 
 Determine the governing visual style from the requested target video and supplied Pictures. Preserve supported source rendering style when no conflict exists. When an explicit requested style conflicts with source rendering, use the requested style while preserving referenced identity and visible traits. Treat rendering medium as style evidence rather than immutable subject identity. Do not invent production methods or unsupported additions.
+
+An input Picture used only to establish Subject identity or appearance is provenance: cite it inside that Subject's first complete definition and do not create a standalone Picture entry or retention_analysis line for it. Create and track a standalone Picture only when the user request explicitly assigns it a keyframe, first-frame, final-frame, shot-anchor, composition, storyboard, or planning role.
 
 BEGIN VIDEO REQUEST:
 ''')
@@ -4862,6 +4978,8 @@ Determine the governing visual style from the requested target video and supplie
 
 Allow stable <Subject N> aliases to represent reusable people, characters, objects, environments, or other referenced content. For replacement content, let cited Pictures carry identity and appearance instead of naming, identifying, or redundantly reconstructing those visual details. A Picture identifier or alias never replaces action, motion, camera, environment, continuity, or requested change details needed by the video model. Keep reference use concise where Pictures supply fine visual detail while still describing active motion and interaction without vague wording. Do not invent production methods or unsupported additions.
 
+An input Picture used only to establish Subject identity or appearance is provenance: cite it inside that Subject's first complete definition and do not create a standalone Picture entry or retention_analysis line for it. Create and track a standalone Picture only when the user request explicitly assigns it a keyframe, first-frame, final-frame, shot-anchor, composition, storyboard, or planning role.
+
 BEGIN VIDEO REQUEST:
 ''')
 
@@ -4890,6 +5008,8 @@ When the request assigns an independent Picture's subject identity to a role dem
 Determine the governing visual style from the requested target video and supplied pictures. Preserve supported source rendering style when no conflict exists. When an explicit requested style conflicts with source rendering, use the requested style while preserving referenced identity and visible traits. Treat rendering medium as style evidence rather than immutable subject identity.
 
 Define referenced content with concrete visible characteristics and direct relationships using vocabulary appropriate to the governing style. A picture identifier never replaces the subject, appearance, action, motion, camera, environment, continuity, or transformation details needed by the video model. Keep reference use concise where the picture already supplies fine visual detail, while still describing active motion and interaction without vague wording. Do not invent production methods or unsupported additions.
+
+An input Picture used only to establish Subject identity or appearance is provenance: cite it inside that Subject's first complete definition and do not create a standalone Picture entry or retention_analysis line for it. Create and track a standalone Picture only when the user request explicitly assigns it a keyframe, first-frame, final-frame, shot-anchor, composition, storyboard, or planning role.
 
 BEGIN VIDEO REQUEST:
 ''')
