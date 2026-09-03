@@ -347,6 +347,47 @@ def test_h3_sla_reference_protection_modes_add_reference_quota():
     assert counts == {"Off": 2, "Light": 3, "Heavy Enforcement": 4}
 
 
+def test_h3_sla_triton_launch_ladder_retries_and_caches_success(monkeypatch):
+    class OutOfResources(RuntimeError):
+        pass
+
+    calls = []
+
+    class FakeKernel:
+        def __getitem__(self, _grid):
+            def launch(*_args, **kwargs):
+                calls.append((kwargs["num_warps"], kwargs["num_stages"]))
+                if len(calls) == 1:
+                    raise OutOfResources("first launch cannot fit")
+
+            return launch
+
+    monkeypatch.setattr(
+        patcher_helpers,
+        "triton",
+        types.SimpleNamespace(
+            cdiv=lambda value, block: (value + block - 1) // block,
+            runtime=types.SimpleNamespace(errors=types.SimpleNamespace(OutOfResources=OutOfResources)),
+        ),
+    )
+    monkeypatch.setattr(patcher_helpers, "_sla_attention_kernel", FakeKernel())
+    patcher_helpers._SLA_TRITON_CHOSEN.clear()
+    q = torch.zeros((1, 32, 1, 128))
+
+    output = patcher_helpers._sla_sparse_attention(
+        q,
+        q,
+        q,
+        torch.zeros((1, 1, 1, 1), dtype=torch.int32),
+        1,
+        patcher_helpers.MiniMaxH3SlaAttentionConfig(block_size=32),
+    )
+
+    assert output.shape == q.shape
+    assert calls == list(patcher_helpers.SLA_TRITON_LAUNCH_LADDER[(32, 32)][:2])
+    assert patcher_helpers._SLA_TRITON_CHOSEN[(32, 32, 128)] == calls[-1]
+
+
 def test_h3_sla_dense_step_selection_unions_explicit_and_tail_steps():
     config = patcher_helpers.MiniMaxH3SlaAttentionConfig(dense_steps="0,2-3", dense_tail_steps=1)
     options = {"sample_sigmas": torch.tensor([4.0, 3.0, 2.0, 1.0, 0.0])}

@@ -5097,6 +5097,16 @@ def _sla_select_blocks(q: torch.Tensor, k: torch.Tensor, config: MiniMaxH3SlaAtt
     return selected, selected_count, history
 
 
+SLA_TRITON_LAUNCH_LADDER = {
+    (32, 32): ((4, 2), (2, 1), (4, 1), (2, 2)),
+    (64, 64): ((4, 1), (4, 3), (8, 3), (8, 1)),
+    (64, 128): ((4, 2), (8, 2), (4, 1)),
+    (128, 64): ((8, 3), (4, 3), (8, 2), (4, 1)),
+    (128, 128): ((8, 2), (4, 2), (8, 1), (4, 1)),
+}
+_SLA_TRITON_CHOSEN: dict[tuple[int, int, int], tuple[int, int]] = {}
+
+
 if triton is not None:
     @triton.jit
     def _sla_attention_kernel(Q, K, V, scale: tl.constexpr, topk: tl.constexpr, lookup, output, heads: tl.constexpr, query_length: tl.constexpr, key_length: tl.constexpr, query_blocks: tl.constexpr, head_dim: tl.constexpr, query_block: tl.constexpr, key_block: tl.constexpr):
@@ -5144,12 +5154,22 @@ def _sla_sparse_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, loo
     key_block = 64 if config.block_size == 128 else config.block_size
     query_blocks = triton.cdiv(sequence, config.block_size)
     output = torch.empty_like(q)
-    _sla_attention_kernel[(query_blocks, batch * heads)](
-        q, k, v, head_dim**-0.5, selected_count, lookup, output,
-        heads, sequence, k.shape[1], query_blocks, head_dim,
-        config.block_size, key_block, num_warps=4, num_stages=2,
-    )
-    return output
+    key = (config.block_size, key_block, head_dim)
+    ladder = (_SLA_TRITON_CHOSEN[key],) if key in _SLA_TRITON_CHOSEN else SLA_TRITON_LAUNCH_LADDER[(config.block_size, key_block)]
+    last_error = None
+    for num_warps, num_stages in ladder:
+        try:
+            _sla_attention_kernel[(query_blocks, batch * heads)](
+                q, k, v, head_dim**-0.5, selected_count, lookup, output,
+                heads, sequence, k.shape[1], query_blocks, head_dim,
+                config.block_size, key_block, num_warps=num_warps, num_stages=num_stages,
+            )
+        except triton.runtime.errors.OutOfResources as error:
+            last_error = error
+            continue
+        _SLA_TRITON_CHOSEN[key] = (num_warps, num_stages)
+        return output
+    raise last_error if last_error is not None else RuntimeError("MiniMax H3 SLA found no viable Triton launch configuration.")
 
 
 def _sla_sampler_step_index(transformer_options: dict[str, Any], timestep: torch.Tensor) -> tuple[int, int] | None:
