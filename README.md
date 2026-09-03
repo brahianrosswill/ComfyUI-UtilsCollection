@@ -263,9 +263,9 @@ backend. Connect its `model` output in place of the original model. The
 | `SageAttention` | General model attention | `sageattention`; `sageattn3` or `sageattn3_per_block_mean` additionally need `sageattn3` | Select a Sage kernel from `sage_mode`. `allow_compile` permits compilation after the initial run. |
 | `Sparse / MiniMax H3 SLA` | MiniMax H3 self-attention only | CUDA and Triton | Routes each H3 attention block to selected key blocks while retaining dense attention where sparse routing is unsuitable. |
 
-SLA retains the normal ComfyUI-selected attention implementation as its dense
-fallback for unsupported calls. No attention package, model checkpoint, or LoRA
-is downloaded or loaded by this node.
+SLA uses its selected `dense_backend` for deliberate dense steps and sparse
+fallbacks. `auto` retains the incoming ComfyUI-selected attention callable. No
+attention package, model checkpoint, or LoRA is downloaded by this node.
 
 #### SageAttention MiniMax H3 memory option
 
@@ -279,34 +279,44 @@ model raises an error rather than silently applying a different patch.
 SLA is experimental and only patches MiniMax H3 models with 128-dimensional
 attention heads. It does not modify ComfyUI Core files or model weights. The
 `minimax_h3_sla_config` input on `UC_UnifiedAttentionPatcher` is optional.
-Connect `UC_MiniMaxH3SlaAttentionConfig` to set visible SLA controls; omitting
-it uses that node's documented defaults.
+Connect `UC_MiniMaxH3SlaAttentionConfig` to configure its documented controls;
+omitting it uses their defaults.
 
-- `sparsity`: fraction of ordinary key blocks skipped. Start with the
+- Main SLA controls:
+  - `sparsity`: fraction of ordinary key blocks skipped. Start with the
   default `0.90`; compare output and speed against dense attention for each
   model, resolution, duration, and sampler.
-- `block_size`: routing granularity. Smaller blocks retain finer temporal
+  - `block_size`: routing granularity. Smaller blocks retain finer temporal
   and audio detail at additional routing cost.
-- `minimum_sequence_length`: sequences below this threshold stay on the
-  original dense attention path.
-- `dense_tail_steps`: final sampler steps retained on dense attention for
+  - `dense_tail_steps`: final sampler steps retained on dense attention for
   detail recovery. Set `0` to allow sparse routing at every eligible step.
-- `protect_audio`: preserves text and audio ranges in every sparse key
+  - `protect_reference_media`: `Off` adds no visual-reference quota; `Light`
+  retains the best-scoring 15% of each reference block range; `Heavy
+  Enforcement` retains every reference block.
+  - `dense_backend`: `comfy_kitchen`, `auto`, `pytorch`, or a value from
+  `CUSTOM_SAGE_MODES`. A selected unavailable backend raises an actionable
+  error before sampling.
+- `UC_MiniMaxH3SlaAttentionConfig` controls:
+  - `minimum_sequence_length`: sequences below this threshold stay on the
+  selected dense attention path.
+  - `dense_steps`: comma-separated zero-based steps or inclusive ranges kept
+  dense, such as `0,3-5`. Default `0` preserves the first sampling step.
+  - `protect_audio`: preserves text and audio ranges in every sparse key
   selection.
-- `protect_reference_media`: additionally preserves visual conditioning
-  and reference-media ranges in every sparse key selection.
-- `stabilize_routing`: biases near-cutoff block selection toward the prior
+  - `disable_fp16_accumulation`: disables FP16/BF16 reduced-precision matmul
+  accumulation for this SLA sampling run, then restores prior settings.
+  - `stabilize_routing`: biases near-cutoff block selection toward the prior
   sampling step. Use it only when motion detail is unstable; it retains a
   bounded routing history while sampling.
 
 SLA calls stay dense when the call is masked, not MiniMax H3 packed
 self-attention, uses an unsupported dtype/device, falls below the minimum
-sequence length, falls in the configured dense tail, lacks MiniMax H3 layout
-metadata, or when the sparse kernel fails. Each reason is reported once in the
-ComfyUI console for that sampling run. A sparse-kernel failure also disables
-further sparse attempts for the remainder of that run. This preserves a usable
-model path when SLA cannot apply, but it also means a run may receive less
-acceleration than its selected sparsity suggests.
+sequence length, falls in `dense_steps` or the configured dense tail, lacks
+MiniMax H3 layout metadata, or when the sparse kernel fails. Each reason is
+reported once in the ComfyUI console for that sampling run. A sparse-kernel
+failure also disables further sparse attempts for the remainder of that run.
+This preserves a usable model path when SLA cannot apply, but it also means a
+run may receive less acceleration than its selected sparsity suggests.
 
 ### Scheduler presets
 
