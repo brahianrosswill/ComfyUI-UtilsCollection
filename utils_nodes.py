@@ -39,7 +39,7 @@ class UC_MiniMaxH3RefVid(io.ComfyNode):
                 io.Int.Output("height", tooltip="Matching generation height in pixels."),
                 io.Int.Output("length", tooltip="Matching generation length in frames at 24 fps, including the H3 length adjustment."),
                 io.Video.Output("video", tooltip="24 fps video built from the exact frames and audio returned by this node, including the selected resolution, crop, and duration."),
-                io.String.Output("transcribed_audio", tooltip="Word-aligned speech grouped into the first 5 frames, then 17-frame intervals at 24 fps. Each word appears once in its greatest-overlap interval; empty intervals are omitted. Times start at the selected clip's beginning. Empty when Whisper is disconnected or no speech/audio is available."),
+                io.String.Output("transcribed_audio", tooltip="Word-timed phrases split before uppercase words and after commas or sentence punctuation. Countable English phrases target 4–6 dictionary syllables; unknown or ambiguous counts keep text boundaries only. Each word appears once. Times start at the selected clip's beginning. Empty when Whisper is disconnected or no speech/audio is available."),
             ],
         )
 

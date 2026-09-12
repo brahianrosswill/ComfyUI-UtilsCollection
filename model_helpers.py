@@ -1,7 +1,6 @@
 import json
-from fractions import Fraction
 from .image_helpers import format_video_timestamp
-from .parameter_helpers import h3_frame_segments
+import unicodedata
 import string
 import base64
 import zlib
@@ -2257,6 +2256,60 @@ def transcribe_whisper(model, waveform, task, language, word_timestamps=False):
     return {"text": tokenizer.decode(all_tokens), "segments": segments, "language": language}
 
 
+def reference_syllable_key(text):
+    text = text.strip().lower().replace("’", "'").replace("‘", "'")
+    while text and unicodedata.category(text[0]).startswith("P"):
+        text = text[1:]
+    while text and unicodedata.category(text[-1]).startswith("P"):
+        text = text[:-1]
+    return text
+
+
+def reference_syllable_counts(keys):
+    """Read only requested counts; differing pronunciation counts remain unknown."""
+    counts = {}
+    with (Path(__file__).parent / "assets" / "cmudict" / "cmudict.dict").open(encoding="utf-8") as dictionary:
+        for line in dictionary:
+            entry, _, pronunciation = line.partition(" ")
+            key = entry.split("(", 1)[0]
+            if key not in keys:
+                continue
+            count = sum(phone[-1:] in ("0", "1", "2") for phone in pronunciation.split("#", 1)[0].split())
+            if key not in counts:
+                counts[key] = count
+            elif counts[key] != count:
+                counts[key] = None
+    return counts
+
+
+def partition_reference_phrase(words, counts):
+    """Optimize whole-word groups without crossing a textual phrase boundary."""
+    syllables = [counts.get(reference_syllable_key(word["word"])) for word in words]
+    if not all(syllables):
+        return [words]
+    size = len(words)
+    scores = [(0, 0, 0)] * (size + 1)
+    ends = [size] * size
+    for left in range(size - 1, -1, -1):
+        total = 0
+        best = None
+        for right in range(left + 1, size + 1):
+            total += syllables[right - 1]
+            tail = scores[right]
+            score = (tail[0] + max(4 - total, 0, total - 6), tail[1] + 1, tail[2] + (total - 5) ** 2)
+            # Later ends win exact ties: the earliest group is longer.
+            if best is None or score <= best:
+                best, ends[left] = score, right
+        scores[left] = best
+    groups = []
+    left = 0
+    while left < size:
+        right = ends[left]
+        groups.append(words[left:right])
+        left = right
+    return groups
+
+
 def transcribe_reference_audio(whisper_model, source_audio, prepared_audio, timestamp_format, frame_count):
     """Return clip-relative speech lines; never transcribe synthetic no-track audio."""
     if whisper_model is None or source_audio is None:
@@ -2264,33 +2317,40 @@ def transcribe_reference_audio(whisper_model, source_audio, prepared_audio, time
     waveform = source_audio.get("waveform")
     if waveform is None or waveform.numel() == 0:
         return ""
-    _, segment_batches, _ = run_whisper(whisper_model, prepared_audio, "transcribe", "auto", word_timestamps=True)
+    _, segment_batches, languages = run_whisper(whisper_model, prepared_audio, "transcribe", "auto", word_timestamps=True)
     if len(segment_batches) != 1:
         raise ValueError("H3 reference transcription requires one audio recording.")
     segments = json.loads(segment_batches[0])
-    groups = h3_frame_segments(frame_count)
-    speech = [[] for _ in groups]
+    duration = frame_count / 24
+    phrases, phrase = [], []
     for word in (word for segment in segments for word in segment["words"]):
-        text = " ".join(word["word"].split())
-        if not text or not groups:
+        text = word["word"].strip()
+        if not text or duration <= 0:
             continue
-        start, end = float(word["start"]) * 24, float(word["end"]) * 24
-        if end < 0 or start >= frame_count:
+        if float(word["end"]) < 0 or float(word["start"]) >= duration:
             continue
-        overlaps = [max(0.0, min(end, right) - max(start, left)) for left, right in groups]
-        if max(overlaps) > 0:
-            index = max(range(len(groups)), key=overlaps.__getitem__)
-        else:
-            index = next((i for i, (left, right) in enumerate(groups) if left <= start < right), None)
-            if index is None:
-                continue
-        speech[index].append(word["word"].replace("\r", " ").replace("\n", " "))
+        first_letter = next((character for character in text if character.isalpha()), "")
+        if phrase and first_letter.isupper():
+            phrases.append(phrase)
+            phrase = []
+        phrase.append(word)
+        ending = text.rstrip("\"'’”»›)]}）］｝」』】")
+        if ending.endswith(tuple(",，、.。!！?？")):
+            phrases.append(phrase)
+            phrase = []
+    if phrase:
+        phrases.append(phrase)
+    counts = {}
+    if phrases and languages[0] == "en":
+        keys = {reference_syllable_key(word["word"]) for phrase in phrases for word in phrase}
+        counts = reference_syllable_counts(keys)
     lines = []
-    for (left, right), words in zip(groups, speech):
-        if words:
-            start = format_video_timestamp(Fraction(left, 24), timestamp_format)
-            end = format_video_timestamp(Fraction(right, 24), timestamp_format)
-            lines.append(f"[{start}–{end}] {''.join(words).strip()}")
+    for phrase in phrases:
+        for words in partition_reference_phrase(phrase, counts):
+            start = format_video_timestamp(min(duration, max(0.0, float(words[0]["start"]))), timestamp_format)
+            end = format_video_timestamp(min(duration, max(0.0, float(words[-1]["end"]))), timestamp_format)
+            text = "".join(word["word"].replace("\r", " ").replace("\n", " ") for word in words).strip()
+            lines.append(f"[{start}–{end}] {text}")
     return "\n".join(lines)
 
 

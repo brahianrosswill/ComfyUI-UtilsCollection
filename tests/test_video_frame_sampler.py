@@ -749,8 +749,8 @@ def test_h3_reference_components_round_seconds_and_preserve_audio_start():
 
 
 @pytest.mark.parametrize("timestamp_format, expected", [
-    ("00.000s", "[00.208s–00.917s] Shake the\n[00.917s–01.625s] bottle."),
-    ("MM:SS.mmm", "[00:00.208–00:00.917] Shake the\n[00:00.917–00:01.625] bottle."),
+    ("00.000s", "[00.400s–01.800s] Shake the bottle."),
+    ("MM:SS.mmm", "[00:00.400–00:01.800] Shake the bottle."),
 ])
 def test_h3_whisper_selected_audio_and_timestamp_format(monkeypatch, timestamp_format, expected):
     from utils_collection_video_frame_sampler_test import model_helpers as speech
@@ -832,14 +832,91 @@ def test_h3_transcript_groups_boundary_words_once_and_omits_padding(monkeypatch)
     ]
     monkeypatch.setattr(speech, "run_whisper", lambda *a, **kw: ([""], [json.dumps([{"words": words}])], ["en"]))
     audio = {"waveform": torch.zeros(1, 1, 60000), "sample_rate": 32000}
+    # "boundary" has both two- and three-syllable dictionary pronunciations.
     assert speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 39) == (
-        "[00.000s–00.208s] First\n"
-        "[00.208s–00.917s] crossing\n"
-        "[00.917s–01.625s] boundary last."
+        "[00.000s–01.625s] First crossing boundary last."
     )
     assert speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 5) == "[00.000s–00.208s] First crossing"
     assert speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 22) == (
-        "[00.000s–00.208s] First\n[00.208s–00.917s] crossing"
+        "[00.000s–00.375s] First crossing"
+    )
+
+
+def test_h3_transcript_text_boundaries_across_segments(monkeypatch):
+    import json
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    tokens = ['say', ' hello,”', ' then', ' I', " I'm", ' Alice', ' speaks.', ' “Next?”', ' 終わり。', ' 最後、']
+    words = [{"word": token, "start": i / 2, "end": (i + 1) / 2} for i, token in enumerate(tokens)]
+    segments = [{"words": words[:1]}, {"words": words[1:4]}, {"words": words[4:]}]
+    monkeypatch.setattr(speech, "run_whisper", lambda *a, **kw: ([""], [json.dumps(segments)], ["ja"]))
+    monkeypatch.setattr(speech, "reference_syllable_counts", lambda keys: pytest.fail("Non-English must not read dictionary"))
+    audio = {"waveform": torch.ones(1), "sample_rate": 24}
+    result = speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 240)
+    assert result.splitlines() == [
+        '[00.000s–01.000s] say hello,”', '[01.000s–01.500s] then',
+        '[01.500s–02.000s] I', "[02.000s–02.500s] I'm", '[02.500s–03.500s] Alice speaks.',
+        '[03.500s–04.000s] “Next?”', '[04.000s–04.500s] 終わり。', '[04.500s–05.000s] 最後、',
+    ]
+    assert ' '.join(line.split('] ', 1)[1] for line in result.splitlines()) == ''.join(tokens)
+
+
+def test_h3_transcript_dictionary_counts_and_unknown_phrases(monkeypatch):
+    import json
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    counts = speech.reference_syllable_counts({'disappear', 'poof', 'addicted', 'smoking', 'something', 'fire', 'every', 'zzzxq'})
+    assert counts == {'disappear': 3, 'poof': 1, 'addicted': 3, 'smoking': 2, 'something': 2, 'fire': None, 'every': None}
+    assert speech.reference_syllable_key(' “I’m,” ') == "i'm"
+    phrases = [
+        'Disappear just like poof,', " then she's gone", ' Addicted,',
+        ' it starts with smoking something strong.',
+        ' zzzxq it starts with smoking something strong.',
+        ' fire it starts with smoking something strong.',
+    ]
+    tokens = (' '.join(phrases)).split()
+    words = [{"word": ' ' + token, "start": i, "end": i + 1} for i, token in enumerate(tokens)]
+    monkeypatch.setattr(speech, "run_whisper", lambda *a, **kw: ([""], [json.dumps([{"words": words}])], ["en"]))
+    audio = {"waveform": torch.ones(1), "sample_rate": 24}
+    result = speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 2400)
+    assert [line.split('] ', 1)[1] for line in result.splitlines()] == [
+        'Disappear just like poof,', "then she's gone", 'Addicted,',
+        'it starts with smoking', 'something strong.',
+        'zzzxq it starts with smoking something strong.',
+        'fire it starts with smoking something strong.',
+    ]
+
+
+@pytest.mark.parametrize('counts, expected', [
+    ([2, 2, 2, 2], [[0, 1], [2, 3]]),  # 4+4 beats greedy 6+2.
+    ([3, 2, 3], [[0, 1], [2]]),  # 5+3 wins the tie against 3+5.
+    ([7, 2, 2], [[0], [1, 2]]),  # Never split an indivisible long word.
+    ([2, 2, 2], [[0, 1, 2]]),
+])
+def test_h3_syllable_partition_objective(counts, expected):
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    words = [{"word": str(i)} for i in range(len(counts))]
+    groups = speech.partition_reference_phrase(words, {str(i): value for i, value in enumerate(counts)})
+    assert [[int(word['word']) for word in group] for group in groups] == expected
+
+
+def test_h3_transcript_clamps_crossing_words_and_keeps_zero_duration(monkeypatch):
+    import json
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    words = [
+        {"word": "excluded", "start": -2, "end": -1},
+        {"word": " crossing,", "start": -0.2, "end": 0.1},
+        {"word": " point,", "start": 0.5, "end": 0.5},
+        {"word": " end.", "start": 0.8, "end": 1.2},
+        {"word": " padding", "start": 1, "end": 2},
+        {"word": " \n", "start": 0.1, "end": 0.2},
+    ]
+    monkeypatch.setattr(speech, 'run_whisper', lambda *a, **kw: ([""], [json.dumps([{"words": words}])], ['de']))
+    audio = {"waveform": torch.ones(1), "sample_rate": 24}
+    assert speech.transcribe_reference_audio(object(), audio, audio, '00.000s', 24) == (
+        '[00.000s–00.100s] crossing,\n[00.500s–00.500s] point,\n[00.800s–01.000s] end.'
     )
 
 
