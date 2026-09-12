@@ -42,15 +42,16 @@ class UC_WhisperTranscribe(io.ComfyNode):
             description="Transcribes full recordings or translates speech to English; one aligned result per audio batch item.",
             inputs=[WhisperModel.Input("whisper_model"), io.Audio.Input("audio"),
                     io.Combo.Input("task", options=["transcribe", "translate"], default="transcribe"),
-                    io.Combo.Input("language", options=["auto", *WHISPER_LANGUAGES], default="auto", tooltip="Spoken language code, or automatic detection. Translation outputs English.")],
+                    io.Combo.Input("language", options=["auto", *WHISPER_LANGUAGES], default="auto", tooltip="Spoken language code, or automatic detection. Translation outputs English."),
+                    io.Boolean.Input("word_timestamps", default=False, optional=True, tooltip="Compute cross-attention alignment. Adds words with start/end seconds and confidence to each segment; requires an additional alignment pass.")],
             outputs=[io.String.Output("text", is_output_list=True),
-                     io.String.Output("segments", is_output_list=True, tooltip="JSON array of start/end seconds and text for this recording."),
+                     io.String.Output("segments", is_output_list=True, tooltip="JSON array of start/end seconds and text. With word timestamps enabled, each segment also has words containing word, start, end, and probability."),
                      io.String.Output("language", is_output_list=True)],
         )
 
     @classmethod
-    def execute(cls, whisper_model, audio, task="transcribe", language="auto"):
-        return io.NodeOutput(*run_whisper(whisper_model, audio, task, language))
+    def execute(cls, whisper_model, audio, task="transcribe", language="auto", word_timestamps=False):
+        return io.NodeOutput(*run_whisper(whisper_model, audio, task, language, word_timestamps=word_timestamps))
 
 
 MiniMaxH3Ref = io.Custom("MINIMAX_H3_REF")

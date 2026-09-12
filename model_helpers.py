@@ -1,4 +1,5 @@
 import json
+import string
 import base64
 import zlib
 from dataclasses import dataclass, field, fields, replace
@@ -13,6 +14,7 @@ except ImportError:
     tiktoken = None
 from comfy.model_management import throw_exception_if_processing_interrupted
 from .models.whisper import ModelDimensions, Whisper
+from .whisper_timing_helpers import alignment_heads, add_word_timestamps
 import numpy as np
 import comfy.model_patcher
 import comfy.ops
@@ -997,7 +999,58 @@ WHISPER_TO_LANGUAGE_CODE = {
 
 @dataclass
 class WhisperTokenizer:
-    """A thin wrapper around `tiktoken` providing quick access to special tokens"""
+    """Native tokenizer with upstream Unicode-aware word grouping."""
+    def split_to_word_tokens(self, tokens: List[int]):
+        if self.language in {"zh", "ja", "th", "lo", "my", "yue"}:
+            # These languages don't typically use spaces, so it is difficult to split words
+            # without morpheme analysis. Here, we instead split words at any
+            # position where the tokens are decoded as valid unicode points
+            return self.split_tokens_on_unicode(tokens)
+
+        return self.split_tokens_on_spaces(tokens)
+
+    def split_tokens_on_unicode(self, tokens: List[int]):
+        decoded_full = self.decode_with_timestamps(tokens)
+        replacement_char = "\ufffd"
+
+        words = []
+        word_tokens = []
+        current_tokens = []
+        unicode_offset = 0
+
+        for token in tokens:
+            current_tokens.append(token)
+            decoded = self.decode_with_timestamps(current_tokens)
+
+            if (
+                replacement_char not in decoded
+                or decoded_full[unicode_offset + decoded.index(replacement_char)]
+                == replacement_char
+            ):
+                words.append(decoded)
+                word_tokens.append(current_tokens)
+                current_tokens = []
+                unicode_offset += len(decoded)
+
+        return words, word_tokens
+
+    def split_tokens_on_spaces(self, tokens: List[int]):
+        subwords, subword_tokens_list = self.split_tokens_on_unicode(tokens)
+        words = []
+        word_tokens = []
+
+        for subword, subword_tokens in zip(subwords, subword_tokens_list):
+            special = subword_tokens[0] >= self.eot
+            with_space = subword.startswith(" ")
+            punctuation = subword.strip() in string.punctuation
+            if special or with_space or punctuation or len(words) == 0:
+                words.append(subword)
+                word_tokens.append(subword_tokens)
+            else:
+                words[-1] = words[-1] + subword
+                word_tokens[-1].extend(subword_tokens)
+
+        return words, word_tokens
 
     encoding: "tiktoken.Encoding"
     num_languages: int
@@ -2064,6 +2117,7 @@ def load_whisper_safetensors(path, model_name):
         # Meta construction avoids an additional full-sized allocation before UEL streaming.
         with torch.device("meta"):
             model = Whisper(dims)
+        model.alignment_heads = alignment_heads(model_name, dims)
         expected = dict(model.state_dict())
         for name, module in model.named_modules():
             if isinstance(module, comfy.ops.disable_weight_init.Linear) and module.weight is None:
@@ -2112,7 +2166,7 @@ def whisper_decode_with_fallback(model, mel, language, task, prompt):
     return result
 
 
-def transcribe_whisper(model, waveform, task, language):
+def transcribe_whisper(model, waveform, task, language, word_timestamps=False):
     mel = whisper_log_mel_spectrogram(waveform, model.dims.n_mels, padding=WHISPER_N_SAMPLES)
     content_frames = mel.shape[-1] - WHISPER_N_FRAMES
     duration = waveform.shape[-1] / WHISPER_SAMPLE_RATE
@@ -2125,6 +2179,7 @@ def transcribe_whisper(model, waveform, task, language):
     time_precision = input_stride * WHISPER_HOP_LENGTH / WHISPER_SAMPLE_RATE
     seek, prompt_reset_since = 0, 0
     all_tokens, segments = [], []
+    last_speech_timestamp = 0.0
     progress = comfy.utils.ProgressBar(content_frames)
     while seek < content_frames:
         comfy.model_management.throw_exception_if_processing_interrupted()
@@ -2173,6 +2228,21 @@ def transcribe_whisper(model, waveform, task, language):
             add_segment(time_offset, time_offset + segment_duration, tokens)
             seek += segment_size
 
+        if word_timestamps and current_segments:
+            add_word_timestamps(segments=current_segments, model=model, tokenizer=tokenizer,
+                                mel=window, num_frames=segment_size,
+                                last_speech_timestamp=last_speech_timestamp, time_offset=time_offset)
+            for segment in current_segments:
+                for word in segment["words"]:
+                    word["start"] = min(max(0.0, word["start"]), duration)
+                    word["end"] = min(max(word["start"], word["end"]), duration)
+                segment["start"] = min(max(0.0, segment["start"]), duration)
+                segment["end"] = min(max(segment["start"], segment["end"]), duration)
+            ends = [word["end"] for segment in current_segments for word in segment["words"]]
+            if ends:
+                last_speech_timestamp = ends[-1]
+                if not single_timestamp_ending and last_speech_timestamp > time_offset:
+                    seek = round(last_speech_timestamp * WHISPER_SAMPLE_RATE / WHISPER_HOP_LENGTH)
         if seek <= previous_seek:
             raise RuntimeError("Whisper produced non-advancing timestamps; transcription cannot continue.")
         for segment in current_segments:
@@ -2184,7 +2254,7 @@ def transcribe_whisper(model, waveform, task, language):
     return {"text": tokenizer.decode(all_tokens), "segments": segments, "language": language}
 
 
-def run_whisper(patcher, audio, task, language):
+def run_whisper(patcher, audio, task, language, word_timestamps=False):
     if tiktoken is None:
         raise RuntimeError("Whisper requires tiktoken. Install tiktoken in ComfyUI's Python environment and restart ComfyUI.")
     if task not in ("transcribe", "translate"):
@@ -2198,7 +2268,8 @@ def run_whisper(patcher, audio, task, language):
     transcripts, segments, languages = [], [], []
     for waveform in recordings:
         comfy.model_management.throw_exception_if_processing_interrupted()
-        result = transcribe_whisper(patcher.model, waveform, task, language)
+        result = (transcribe_whisper(patcher.model, waveform, task, language, word_timestamps=True)
+                  if word_timestamps else transcribe_whisper(patcher.model, waveform, task, language))
         transcripts.append(result["text"])
         segments.append(json.dumps(result["segments"], ensure_ascii=False))
         languages.append(result["language"])

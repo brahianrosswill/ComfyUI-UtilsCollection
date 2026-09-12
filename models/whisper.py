@@ -37,7 +37,7 @@ class MultiHeadAttention(nn.Module):
         self.value = operations.Linear(n_state, n_state)
         self.out = operations.Linear(n_state, n_state)
 
-    def forward(self, x, xa=None, mask=None, kv_cache=None):
+    def forward(self, x, xa=None, mask=None, kv_cache=None, alignment=None):
         q = self.query(x)
         if kv_cache is None or xa is None or self.key not in kv_cache:
             k = self.key(x if xa is None else xa)
@@ -53,6 +53,13 @@ class MultiHeadAttention(nn.Module):
             mask = mask[offset:offset + q.shape[1], :k.shape[1]]
             mask = comfy.ops.cast_to_input(mask, q)
         attention = optimized_attention_for_device(q.device, mask=mask is not None)
+        if alignment is not None:
+            heads, scores = alignment
+            head_size = q.shape[-1] // self.n_head
+            aq = q.reshape(q.shape[0], q.shape[1], self.n_head, head_size).transpose(1, 2)[:, heads]
+            ak = k.reshape(k.shape[0], k.shape[1], self.n_head, head_size).transpose(1, 2)[:, heads]
+            scale = head_size ** -0.25
+            scores.append(((aq * scale) @ (ak * scale).transpose(-1, -2))[0].detach().float().cpu())
         return self.out(attention(q, k, v, self.n_head, mask=mask))
 
 
@@ -66,11 +73,11 @@ class ResidualAttentionBlock(nn.Module):
         self.mlp = nn.Sequential(operations.Linear(n_state, n_state * 4), nn.GELU(), operations.Linear(n_state * 4, n_state))
         self.mlp_ln = operations.LayerNorm(n_state)
 
-    def forward(self, x, xa=None, mask=None, kv_cache=None):
+    def forward(self, x, xa=None, mask=None, kv_cache=None, alignment=None):
         throw_exception_if_processing_interrupted()
         x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache)
         if self.cross_attn is not None:
-            x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache)
+            x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache, alignment=alignment)
         return x + self.mlp(self.mlp_ln(x))
 
 
@@ -103,12 +110,14 @@ class TextDecoder(nn.Module):
         self.ln = operations.LayerNorm(dims.n_text_state)
         self.register_buffer("mask", torch.full((dims.n_text_ctx, dims.n_text_ctx), -torch.inf).triu_(1), persistent=False)
 
-    def forward(self, tokens, xa, kv_cache=None):
+    def forward(self, tokens, xa, kv_cache=None, alignment_heads=None, alignment_scores=None):
         offset = kv_cache[self.blocks[0].attn.key].shape[1] if kv_cache else 0
         x = self.token_embedding(tokens, out_dtype=xa.dtype)
         x = x + comfy.ops.cast_to_input(self.positional_embedding[offset:offset + tokens.shape[-1]], x)
-        for block in self.blocks:
-            x = block(x, xa, mask=self.mask, kv_cache=kv_cache)
+        for index, block in enumerate(self.blocks):
+            capture = ((alignment_heads[index], alignment_scores)
+                       if alignment_scores is not None and index in alignment_heads else None)
+            x = block(x, xa, mask=self.mask, kv_cache=kv_cache, alignment=capture)
         x = self.ln(x)
         # Use the embedding's managed weights for the tied output projection too.
         with comfy.ops.CastBiasWeightContext(self.token_embedding, input=x, offloadable=True) as (weight, _):
@@ -123,6 +132,8 @@ class Whisper(nn.Module):
         self.device = torch.device("cpu")
         self.encoder = AudioEncoder(dims, operations)
         self.decoder = TextDecoder(dims, operations)
+        self.alignment_heads = {layer: list(range(dims.n_text_head))
+                                for layer in range(dims.n_text_layer // 2, dims.n_text_layer)}
 
     @property
     def is_multilingual(self):
@@ -138,8 +149,9 @@ class Whisper(nn.Module):
     def logits(self, tokens, audio_features):
         return self.decoder(tokens, audio_features)
 
-    def forward(self, mel, tokens):
-        return self.decoder(tokens, self.encoder(mel))
+    def forward(self, mel, tokens, alignment_scores=None):
+        return self.decoder(tokens, self.encoder(mel), alignment_heads=self.alignment_heads,
+                            alignment_scores=alignment_scores)
 
     def install_kv_cache_hooks(self):
         cache, hooks = {}, []
