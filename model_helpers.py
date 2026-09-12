@@ -2268,7 +2268,7 @@ def reference_syllable_key(text):
 def reference_syllable_counts(keys):
     """Read only requested counts; differing pronunciation counts remain unknown."""
     counts = {}
-    with (Path(__file__).parent / "assets" / "cmudict" / "cmudict.dict").open(encoding="utf-8") as dictionary:
+    with (Path(__file__).parent / "models" / "whisper_assets" / "cmudict" / "cmudict.dict").open(encoding="utf-8") as dictionary:
         for line in dictionary:
             entry, _, pronunciation = line.partition(" ")
             key = entry.split("(", 1)[0]
