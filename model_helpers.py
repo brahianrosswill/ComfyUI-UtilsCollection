@@ -1,4 +1,7 @@
 import json
+from fractions import Fraction
+from .image_helpers import format_video_timestamp
+from .parameter_helpers import h3_frame_segments
 import string
 import base64
 import zlib
@@ -2252,6 +2255,43 @@ def transcribe_whisper(model, waveform, task, language, word_timestamps=False):
             prompt_reset_since = len(all_tokens)
         progress.update_absolute(min(content_frames, seek))
     return {"text": tokenizer.decode(all_tokens), "segments": segments, "language": language}
+
+
+def transcribe_reference_audio(whisper_model, source_audio, prepared_audio, timestamp_format, frame_count):
+    """Return clip-relative speech lines; never transcribe synthetic no-track audio."""
+    if whisper_model is None or source_audio is None:
+        return ""
+    waveform = source_audio.get("waveform")
+    if waveform is None or waveform.numel() == 0:
+        return ""
+    _, segment_batches, _ = run_whisper(whisper_model, prepared_audio, "transcribe", "auto", word_timestamps=True)
+    if len(segment_batches) != 1:
+        raise ValueError("H3 reference transcription requires one audio recording.")
+    segments = json.loads(segment_batches[0])
+    groups = h3_frame_segments(frame_count)
+    speech = [[] for _ in groups]
+    for word in (word for segment in segments for word in segment["words"]):
+        text = " ".join(word["word"].split())
+        if not text or not groups:
+            continue
+        start, end = float(word["start"]) * 24, float(word["end"]) * 24
+        if end < 0 or start >= frame_count:
+            continue
+        overlaps = [max(0.0, min(end, right) - max(start, left)) for left, right in groups]
+        if max(overlaps) > 0:
+            index = max(range(len(groups)), key=overlaps.__getitem__)
+        else:
+            index = next((i for i, (left, right) in enumerate(groups) if left <= start < right), None)
+            if index is None:
+                continue
+        speech[index].append(word["word"].replace("\r", " ").replace("\n", " "))
+    lines = []
+    for (left, right), words in zip(groups, speech):
+        if words:
+            start = format_video_timestamp(Fraction(left, 24), timestamp_format)
+            end = format_video_timestamp(Fraction(right, 24), timestamp_format)
+            lines.append(f"[{start}–{end}] {''.join(words).strip()}")
+    return "\n".join(lines)
 
 
 def run_whisper(patcher, audio, task, language, word_timestamps=False):

@@ -1,6 +1,14 @@
 from __future__ import annotations
 
 import io
+import hashlib
+import json
+import logging
+from pathlib import Path
+import uuid
+import zipfile
+import folder_paths
+from comfy.model_management import throw_exception_if_processing_interrupted
 import colorsys
 import comfy.model_management
 import comfy.utils
@@ -20,6 +28,7 @@ from nodes import MAX_RESOLUTION
 
 from .helper_functions import ASPECT_RATIOS, resize_nchw
 from .parameter_helpers import h3_video_length_from_seconds, select_video_resolution
+from comfy_api.latest import InputImpl, Types
 
 
 BODY_LIMBS = ((1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9),
@@ -691,8 +700,245 @@ def run_densepose_batch(images, resolution=0, batch_size=2, cmap="viridis", *, l
     return output
 
 
+def _hash_stream(stream):
+    digest = hashlib.sha256()
+    while chunk := stream.read(8 * 1024 * 1024):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def video_source_hash(video):
+    """Hash encoded bytes and the installed Core file wrapper's decode settings."""
+    # Subclasses may change decoding semantics; do not cache them by file alone.
+    if type(video) is not InputImpl.VideoFromFile:
+        return None
+    source = video.get_stream_source()
+    if isinstance(source, io.BytesIO):
+        position = source.tell()
+        try:
+            source.seek(0)
+            content = _hash_stream(source)
+        finally:
+            source.seek(position)
+    else:
+        with open(source, "rb") as stream:
+            content = _hash_stream(stream)
+    # Core has no public crop accessor. Include the verified wrapper fields,
+    # not just dimensions: equally sized crops can contain different pixels.
+    settings = [video._VideoFromFile__start_time, video._VideoFromFile__duration,
+                video._VideoFromFile__crop]
+    return hashlib.sha256(json.dumps([1, content, settings]).encode()).hexdigest()
+
+
+def _frame_storage(video):
+    """Quantize only verified 8-bit SDR sources; preserve other decoded floats."""
+    with av.open(video.get_stream_source()) as container:
+        context = container.streams.video[0].codec_context
+        pixel_format = context.format
+        if (pixel_format is not None and all(c.bits <= 8 for c in pixel_format.components)
+                and context.color_trc not in (16, 18)):
+            return "png8"
+    return "npz"
+
+
+class CachedVideoFrames:
+    """Array-shaped disk view; H3 indexing reads only requested frame entries."""
+
+    def __init__(self, path, shape, storage):
+        self.path, self.shape, self.storage = path, tuple(shape), storage
+        self.ndim = len(self.shape)
+
+    def __getitem__(self, indices):
+        scalar = isinstance(indices, int)
+        if scalar:
+            indices = [indices]
+        elif isinstance(indices, slice):
+            indices = range(*indices.indices(self.shape[0]))
+        decoded = {}
+        frames = []
+        with zipfile.ZipFile(self.path) as archive:
+            for index in indices:
+                index = int(index) % self.shape[0]
+                if index not in decoded:
+                    data = archive.read(f"frames/{index:08d}.{self.storage}")
+                    if self.storage == "png8":
+                        array = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        if array is None:
+                            raise ValueError(f"Invalid cached video frame {index}")
+                        array = cv2.cvtColor(array, cv2.COLOR_BGR2RGB)
+                        decoded[index] = torch.from_numpy(array.astype(np.float32) / 255.0)
+                    else:
+                        with np.load(io.BytesIO(data), allow_pickle=False) as entry:
+                            decoded[index] = torch.from_numpy(entry["frame"])
+                frames.append(decoded[index])
+        if scalar:
+            return frames[0]
+        return torch.stack(frames)
+
+
+class LegacyVideoFrames:
+    """Read only requested bytes from the old float32 safetensors payload."""
+
+    def __init__(self, path, header, offset):
+        spec = header["frames"]
+        if spec["dtype"] != "F32":
+            raise ValueError("Unsupported legacy frame dtype")
+        self.shape = tuple(spec["shape"])
+        self.path = path
+        self.offset = offset + spec["data_offsets"][0]
+        self.frame_bytes = int(np.prod(self.shape[1:])) * 4
+
+    def __getitem__(self, index):
+        with open(self.path, "rb") as stream:
+            stream.seek(self.offset + index * self.frame_bytes)
+            data = stream.read(self.frame_bytes)
+        return torch.from_numpy(np.frombuffer(data, dtype="<f4").copy().reshape(self.shape[1:]))
+
+
+def read_legacy_components(path, key):
+    with open(path, "rb") as stream:
+        size = int.from_bytes(stream.read(8), "little")
+        if size > 1024 * 1024:
+            raise ValueError("Invalid legacy video cache header")
+        header = json.loads(stream.read(size))
+        metadata = header["__metadata__"]
+        if metadata["source_hash"] != key:
+            raise ValueError("Legacy video cache hash mismatch")
+        frames = LegacyVideoFrames(path, header, 8 + size)
+        audio = None
+        if "audio" in header:
+            spec = header["audio"]
+            if spec["dtype"] != "F32":
+                raise ValueError("Unsupported legacy audio dtype")
+            stream.seek(8 + size + spec["data_offsets"][0])
+            data = stream.read(spec["data_offsets"][1] - spec["data_offsets"][0])
+            audio = {"waveform": torch.from_numpy(np.frombuffer(data, dtype="<f4").copy().reshape(spec["shape"])),
+                     "sample_rate": int(metadata["sample_rate"])}
+    return Types.VideoComponents(images=frames, audio=audio, frame_rate=Fraction(metadata["frame_rate"]))
+
+
+def _read_components(path, key):
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        if manifest["version"] != 2 or manifest["source_hash"] != key:
+            raise ValueError("Video cache source hash/version mismatch")
+        frames = CachedVideoFrames(path, manifest["shape"], manifest["storage"])
+        audio = None
+        if manifest["sample_rate"] is not None:
+            audio = {"waveform": torch.from_numpy(np.load(io.BytesIO(archive.read("audio.npy")), allow_pickle=False)),
+                     "sample_rate": manifest["sample_rate"]}
+    return Types.VideoComponents(images=frames, audio=audio, frame_rate=Fraction(manifest["frame_rate"]))
+
+
+def _write_components(path, key, frames, shape, audio, rate, storage):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
+            for index in range(shape[0]):
+                if index % 16 == 0:
+                    throw_exception_if_processing_interrupted()
+                array = frames[index].detach().cpu().numpy()
+                if storage == "png8":
+                    rgb = np.rint(np.clip(array, 0, 1) * 255).astype(np.uint8)
+                    ok, encoded = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 3])
+                    if not ok:
+                        raise ValueError("Video frame PNG encoding failed")
+                    data = encoded.tobytes()
+                else:
+                    buffer = io.BytesIO()
+                    np.savez_compressed(buffer, frame=array)
+                    data = buffer.getvalue()
+                archive.writestr(f"frames/{index:08d}.{storage}", data)
+            if audio is not None:
+                buffer = io.BytesIO()
+                np.save(buffer, audio["waveform"].cpu().numpy(), allow_pickle=False)
+                archive.writestr("audio.npy", buffer.getvalue(), compress_type=zipfile.ZIP_DEFLATED)
+            archive.writestr("manifest.json", json.dumps({
+                "version": 2, "source_hash": key, "shape": list(shape), "storage": storage,
+                "frame_rate": str(rate), "sample_rate": audio["sample_rate"] if audio is not None else None,
+            }))
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def cached_video_components(video, preparation=None, prepare=None):
+    """Cache all source frames compressed; return a lazy range-readable view."""
+    key = video_source_hash(video)
+    if key is None:
+        components = video.get_components()
+        return prepare(components) if prepare is not None else components
+    source_key = key
+    if preparation is not None:
+        key = hashlib.sha256(json.dumps([3, key, preparation], sort_keys=True).encode()).hexdigest()
+    root = Path(folder_paths.get_temp_directory()) / "utilscollection_video_components"
+    path = root / ("v3" if preparation is not None else "v2") / f"{key}.zip"
+    try:
+        return _read_components(path, key)
+    except FileNotFoundError:
+        pass
+    except (zipfile.BadZipFile, KeyError, ValueError) as error:
+        logging.warning("Rebuilding invalid video cache: %s", error)
+    storage = _frame_storage(video)
+    legacy = root / "v1" / f"{source_key}.safetensors"
+    previous = root / "v2" / f"{source_key}.zip"
+    if preparation is not None and previous.is_file():
+        components = _read_components(previous, source_key)
+    elif legacy.is_file():
+        # Migrate frame-by-frame, never materializing the old multi-GB tensor.
+        components = read_legacy_components(legacy, source_key)
+    else:
+        components = video.get_components()
+    if prepare is not None:
+        components = prepare(components)
+    _write_components(path, key, components.images, components.images.shape,
+                      components.audio, components.frame_rate, storage)
+    return _read_components(path, key)
+
+
+
+
 def prepare_h3_reference_video_components(video, megapixels: float, duration_seconds: float = 0.0, start_at_timestamp: float = 0.0):
-    components = video.get_components()
+    components = cached_h3_reference_components(video, megapixels)
+    return prepare_h3_reference_components(components, megapixels, duration_seconds, start_at_timestamp, spatially_prepared=True)
+
+
+class H3SizedFrames:
+    """Resize source frames individually while constructing the full-clip cache."""
+
+    def __init__(self, frames, width, height):
+        self.frames = frames
+        self.shape = (frames.shape[0], height, width, frames.shape[3])
+        self.ndim = 4
+
+    def __getitem__(self, index):
+        if not isinstance(index, int):
+            return torch.stack([self[i] for i in index])
+        frame = self.frames[index]
+        if tuple(frame.shape[:2]) == self.shape[1:3]:
+            return frame
+        return resize_nchw(frame.unsqueeze(0).movedim(-1, 1), self.shape[2], self.shape[1], "lanczos", "center").clamp(0, 1).movedim(1, -1)[0].contiguous()
+
+
+def cached_h3_reference_components(video, megapixels):
+    if not math.isfinite(megapixels) or megapixels <= 0:
+        raise ValueError("Megapixels must be positive.")
+
+    def prepare(components):
+        frames = components.images
+        if frames.ndim != 4 or min(frames.shape[:3]) < 1:
+            raise ValueError("Reference video must contain non-empty frames.")
+        aspect = frames.shape[2] / frames.shape[1]
+        ratio = min(ASPECT_RATIOS.values(), key=lambda value: abs(aspect - value[0] / value[1]))
+        width, height = select_video_resolution(*ratio, megapixels, 32, 32, MAX_RESOLUTION)
+        return Types.VideoComponents(images=H3SizedFrames(frames, width, height), audio=components.audio, frame_rate=components.frame_rate)
+
+    return cached_video_components(video, {"megapixels": megapixels, "resize": "h3-lanczos-center-v1"}, prepare)
+
+
+def prepare_h3_reference_components(components, megapixels: float, duration_seconds: float = 0.0, start_at_timestamp: float = 0.0, *, spatially_prepared=False):
+    """Prepare already-decoded components while retaining source audio provenance at the caller."""
     source_frames = components.images
     source_rate = float(components.frame_rate)
     if source_frames.ndim != 4 or min(source_frames.shape[:3]) < 1:
@@ -728,6 +974,8 @@ def prepare_h3_reference_video_components(video, megapixels: float, duration_sec
     output_width, output_height = select_video_resolution(
         ratio_width, ratio_height, megapixels, 32, 32, MAX_RESOLUTION,
     )
+    if spatially_prepared:
+        output_width, output_height = source_width, source_height
     if (output_height, output_width) != (source_height, source_width):
         prepared_frames = resize_nchw(
             prepared_frames.movedim(-1, 1), output_width, output_height, "lanczos", "center",

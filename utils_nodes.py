@@ -8,7 +8,8 @@ import torch
 from comfy_api.latest import InputImpl, Types, io
 from comfy_extras.nodes_logic import SwitchNode, SoftSwitchNode
 from .helper_functions import to_video_prompt
-from .image_helpers import prepare_h3_reference_video_components
+from .image_helpers import prepare_h3_reference_components, cached_h3_reference_components, VIDEO_FRAME_TIMESTAMP_FORMATS
+from .model_helpers import transcribe_reference_audio
 
 _MAX_SEED = 0xFFFFFFFFFFFFFFFF
 SeedClusterType = io.Custom("UC_SEED_CLUSTER")
@@ -25,9 +26,11 @@ class UC_MiniMaxH3RefVid(io.ComfyNode):
             search_aliases=["minimax", "h3", "reference", "video", "components", "24 fps"],
             inputs=[
                 io.Video.Input("video", tooltip="Reference clip. Its original frame rate is used to preserve playback speed when preparing 24 fps frames."),
-                io.Float.Input("megapixels", default=0.258, min=0.01, max=4.0, step=0.001, tooltip="Target frame size. Matches the video to the nearest standard aspect ratio from Video Resolution Selector, chooses its preferred resolution, and center-crops to fit. Edges may be trimmed; the picture is not stretched."),
+                io.Float.Input("megapixels", default=0.5, min=0.01, max=4.0, step=0.001, tooltip="Target frame size. Matches the video to the nearest standard aspect ratio from Video Resolution Selector, chooses its preferred resolution, and center-crops to fit. Edges may be trimmed; the picture is not stretched."),
                 io.Float.Input("duration_seconds", default=0.0, min=0.0, step=0.1, tooltip="Maximum reference duration after the start offset. 0 uses the remaining clip. The selected duration rounds up to a supported H3 frame count at 24 fps, so it may run slightly longer and repeat the final frame."),
                 io.Float.Input("start_at_timestamp", default=0.0, min=0.0, step=0.1, tooltip="Seconds to skip at the start, for both video and audio. 0 skips nothing; positive values use the same H3 frame-count rounding as duration. Preview frame numbers are zero-based and the end frame is inclusive."),
+                io.Custom("WHISPER_MODEL").Input("whisper_model", optional=True, tooltip="Optional native Whisper Loader output. Transcribes the selected audio in its original language; disconnected skips transcription."),
+                io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="00.000s", optional=True, tooltip="Timestamp formatting for transcribed audio, matching the timeline nodes."),
             ],
             outputs=[
                 io.Image.Output("frames", tooltip="Prepared 24 fps frames. Connect to H3 Reference to Video's reference-video input."),
@@ -35,17 +38,20 @@ class UC_MiniMaxH3RefVid(io.ComfyNode):
                 io.Int.Output("width", tooltip="Matching generation width in pixels."),
                 io.Int.Output("height", tooltip="Matching generation height in pixels."),
                 io.Int.Output("length", tooltip="Matching generation length in frames at 24 fps, including the H3 length adjustment."),
-                io.Video.Output("video", tooltip="Length-adjusted 24 fps video with matching audio, preserving the source resolution and framing. The megapixels setting affects only the separate frames output."),
+                io.Video.Output("video", tooltip="24 fps video built from the exact frames and audio returned by this node, including the selected resolution, crop, and duration."),
+                io.String.Output("transcribed_audio", tooltip="Word-aligned speech grouped into the first 5 frames, then 17-frame intervals at 24 fps. Each word appears once in its greatest-overlap interval; empty intervals are omitted. Times start at the selected clip's beginning. Empty when Whisper is disconnected or no speech/audio is available."),
             ],
         )
 
     @classmethod
-    def execute(cls, video, megapixels=0.258, duration_seconds=0.0, start_at_timestamp=0.0):
-        frames, audio, width, height, length, video_frames, preview = prepare_h3_reference_video_components(video, megapixels, duration_seconds, start_at_timestamp)
+    def execute(cls, video, megapixels=0.5, duration_seconds=0.0, start_at_timestamp=0.0, whisper_model=None, timestamp_format="00.000s"):
+        components = cached_h3_reference_components(video, megapixels)
+        frames, audio, width, height, length, _, preview = prepare_h3_reference_components(components, megapixels, duration_seconds, start_at_timestamp, spatially_prepared=True)
+        transcribed_audio = transcribe_reference_audio(whisper_model, components.audio, audio, timestamp_format, length)
         prepared_video = InputImpl.VideoFromComponents(
-            Types.VideoComponents(images=video_frames, audio=audio, frame_rate=Fraction(24)),
+            Types.VideoComponents(images=frames, audio=audio, frame_rate=Fraction(24)),
         )
-        return io.NodeOutput(frames, audio, width, height, length, prepared_video, ui={"h3_reference_range": [preview]})
+        return io.NodeOutput(frames, audio, width, height, length, prepared_video, transcribed_audio, ui={"h3_reference_range": [preview]})
 
 
 class UC_SeedCluster(io.ComfyNode):

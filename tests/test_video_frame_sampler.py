@@ -707,7 +707,8 @@ def test_h3_reference_components_round_seconds_and_preserve_audio_start():
     components = types.SimpleNamespace(images=frames, frame_rate=10, audio={"waveform": waveform, "sample_rate": 44100})
     video = types.SimpleNamespace(get_components=lambda: components)
     result = utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=9.3112024)
-    prepared, audio, width, height, length, combined_video = result.result
+    prepared, audio, width, height, length, combined_video, transcript = result.result
+    assert transcript == ""
     assert (width, height, length) == (160, 64, 226)
     assert tuple(prepared.shape) == (226, 64, 160, 3)
     assert float(prepared[24].mean()) == pytest.approx(10 / 99, abs=1e-6)
@@ -717,26 +718,24 @@ def test_h3_reference_components_round_seconds_and_preserve_audio_start():
     assert torch.all(audio["waveform"][..., 0] > 0.5)
     assert torch.count_nonzero(audio["waveform"][..., 301333:]) == 0
     schema = utils_nodes.UC_MiniMaxH3RefVid.GET_SCHEMA()
-    assert [output.id for output in schema.outputs] == ["frames", "audio", "width", "height", "length", "video"]
+    assert [output.id for output in schema.outputs] == ["frames", "audio", "width", "height", "length", "video", "transcribed_audio"]
     combined = combined_video.get_components()
-    assert combined.images.shape == (226, 8, 16, 3)
-    torch.testing.assert_close(combined.images[24], frames[10])
+    assert combined.images is prepared
     assert combined.audio is audio
     assert combined.frame_rate == 24
 
     # Positive start offsets use H3 rounding and move video and audio together.
     waveform[..., 71662] = 1.0  # round((39 / 24) * 44100)
     shifted = utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2.0, start_at_timestamp=1.0)
-    shifted_frames, shifted_audio, _, _, shifted_length, shifted_video = shifted.result
+    shifted_frames, shifted_audio, _, _, shifted_length, shifted_video, _ = shifted.result
     assert shifted_length == 56
-    torch.testing.assert_close(shifted_video.get_components().images[0], frames[16])
-    torch.testing.assert_close(shifted_video.get_components().images[-1], frames[39])
+    assert shifted_video.get_components().images is shifted_frames
     assert float(shifted_frames[0].mean()) == pytest.approx(16 / 99, abs=1e-6)
     assert torch.all(shifted_audio["waveform"][..., 0] > 0.5)
     assert shifted.ui == {"h3_reference_range": [{"start_frame": 39, "length": 56, "source_seconds": 10.0}]}
     remaining = utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, start_at_timestamp=1.0)
     assert remaining.result[4] == 209
-    torch.testing.assert_close(remaining.result[5].get_components().images[-1], frames[-1])
+    assert remaining.result[5].get_components().images is remaining.result[0]
     with pytest.raises(ValueError, match="past the end"):
         utils_nodes.UC_MiniMaxH3RefVid.execute(video, start_at_timestamp=10.0)
 
@@ -747,6 +746,237 @@ def test_h3_reference_components_round_seconds_and_preserve_audio_start():
     assert short.result[4] == 5
     assert short.result[1]["waveform"].shape[-1] == 7200
     assert torch.count_nonzero(short.result[1]["waveform"]) == 0
+
+
+@pytest.mark.parametrize("timestamp_format, expected", [
+    ("00.000s", "[00.208s–00.917s] Shake the\n[00.917s–01.625s] bottle."),
+    ("MM:SS.mmm", "[00:00.208–00:00.917] Shake the\n[00:00.917–00:01.625] bottle."),
+])
+def test_h3_whisper_selected_audio_and_timestamp_format(monkeypatch, timestamp_format, expected):
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    frames = torch.zeros(120, 8, 16, 3)
+    waveform = torch.arange(160000, dtype=torch.float32).reshape(1, 1, -1)
+    source_audio = {"waveform": waveform, "sample_rate": 32000}
+    components = types.SimpleNamespace(images=frames, frame_rate=24, audio=source_audio)
+    decodes = []
+    video = types.SimpleNamespace(get_components=lambda: (decodes.append(1), components)[1])
+    model = object()
+    seen = []
+
+    def transcribe(patcher, audio, task, language, *, word_timestamps):
+        assert word_timestamps is True
+        seen.append(audio)
+        assert patcher is model
+        assert (task, language) == ("transcribe", "auto")
+        assert audio["waveform"][0, 0, 0] == 52000  # Actual H3 offset: 39 / 24 seconds.
+        return ["unused plain text"], ['[{"start":0.4,"end":1.8,"text":" Shake the bottle.","words":[{"word":" Shake","start":0.4,"end":0.7},{"word":" the","start":0.7,"end":0.8},{"word":" bottle.","start":0.8,"end":1.8}]}]'], ["en"]
+
+    monkeypatch.setattr(speech, "run_whisper", transcribe)
+    result = utils_nodes.UC_MiniMaxH3RefVid.execute(
+        video, megapixels=0.01, start_at_timestamp=1.0,
+        whisper_model=model, timestamp_format=timestamp_format,
+    )
+    assert result.result[6] == expected
+    assert seen == [result.result[1]]
+    assert seen[0] is result.result[5].get_components().audio
+    assert decodes == [1]
+
+
+@pytest.mark.parametrize("case", ["disconnected", "no_track", "empty_track"])
+def test_h3_whisper_skips_inference_without_model_or_source_audio(monkeypatch, case):
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    def forbidden(*args):
+        pytest.fail("Whisper must not run for a disconnected model or absent source audio")
+
+    monkeypatch.setattr(speech, "run_whisper", forbidden)
+    source_audio = None if case == "no_track" else {
+        "waveform": torch.zeros(1, 2, 0 if case == "empty_track" else 32000), "sample_rate": 32000,
+    }
+    video = types.SimpleNamespace(get_components=lambda: types.SimpleNamespace(
+        images=torch.zeros(24, 8, 16, 3), frame_rate=24, audio=source_audio,
+    ))
+    result = utils_nodes.UC_MiniMaxH3RefVid.execute(
+        video, megapixels=0.01, whisper_model=None if case == "disconnected" else object(),
+    )
+    assert result.result[6] == ""
+    assert result.result[1]["waveform"].numel() > 0
+
+
+def test_h3_whisper_empty_speech_and_errors(monkeypatch):
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    audio = {"waveform": torch.zeros(1, 1, 32000), "sample_rate": 32000}
+    monkeypatch.setattr(speech, "run_whisper", lambda *args, **kwargs: ([""], ["[]"], ["en"]))
+    assert speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 39) == ""
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("transcription failed")
+
+    monkeypatch.setattr(speech, "run_whisper", fail)
+    with pytest.raises(RuntimeError, match="transcription failed"):
+        speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 39)
+
+
+def test_h3_transcript_groups_boundary_words_once_and_omits_padding(monkeypatch):
+    import json
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    words = [
+        {"word": "First", "start": 0, "end": 4 / 24},
+        {"word": " crossing", "start": 4 / 24, "end": 9 / 24},
+        {"word": " boundary", "start": 22 / 24, "end": 22 / 24},
+        {"word": " last.", "start": 37 / 24, "end": 40 / 24},
+        {"word": " synthetic", "start": 39 / 24, "end": 40 / 24},
+    ]
+    monkeypatch.setattr(speech, "run_whisper", lambda *a, **kw: ([""], [json.dumps([{"words": words}])], ["en"]))
+    audio = {"waveform": torch.zeros(1, 1, 60000), "sample_rate": 32000}
+    assert speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 39) == (
+        "[00.000s–00.208s] First\n"
+        "[00.208s–00.917s] crossing\n"
+        "[00.917s–01.625s] boundary last."
+    )
+    assert speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 5) == "[00.000s–00.208s] First crossing"
+    assert speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 22) == (
+        "[00.000s–00.208s] First\n[00.208s–00.917s] crossing"
+    )
+
+
+def test_h3_video_disk_cache_reuses_full_decode_across_ranges(tmp_path, monkeypatch):
+    from utils_collection_video_frame_sampler_test import image_helpers as cache
+    monkeypatch.setattr(cache, "_frame_storage", lambda video: "npz")
+
+    monkeypatch.setattr(cache.folder_paths, "get_temp_directory", lambda: str(tmp_path / "cache"))
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"encoded source video")
+    frames = torch.linspace(0, 1, 100).view(100, 1, 1, 1).expand(100, 8, 16, 3).contiguous()
+    audio = {"waveform": torch.arange(320000, dtype=torch.float32).reshape(1, 1, -1), "sample_rate": 32000}
+    components = cache.Types.VideoComponents(images=frames, frame_rate=Fraction(10), audio=audio)
+    calls = []
+
+    def decode(video):
+        calls.append(video)
+        return components
+
+    monkeypatch.setattr(cache.InputImpl.VideoFromFile, "get_components", decode)
+    video = cache.InputImpl.VideoFromFile(str(source))
+    resizes = []
+    original_resize = image_helpers.resize_nchw
+
+    def resize(*args):
+        resizes.append(1)
+        return original_resize(*args)
+
+    monkeypatch.setattr(image_helpers, "resize_nchw", resize)
+    utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2)
+    assert len(resizes) == 100
+    shifted = utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2, start_at_timestamp=1)
+    assert len(calls) == 1
+    assert len(resizes) == 100  # Neither extraction nor resizing repeats for a new range.
+    assert shifted.result[5].get_components().images is shifted.result[0]
+    assert shifted.result[1]["waveform"][0, 0, 0] == round(39 / 24 * 32000)
+    stored = image_helpers.cached_h3_reference_components(cache.InputImpl.VideoFromFile(str(source)), 0.01)
+    assert stored.images.shape == (100, 64, 160, 3)
+    torch.testing.assert_close(stored.audio["waveform"], audio["waveform"])
+    assert stored.frame_rate == Fraction(10)
+    copied = tmp_path / "copy.mp4"
+    copied.write_bytes(source.read_bytes())
+    image_helpers.cached_h3_reference_components(cache.InputImpl.VideoFromFile(str(copied)), 0.01)
+    assert len(calls) == 1
+    assert len(list((tmp_path / "cache").rglob("*.zip"))) == 1
+    changed = image_helpers.cached_h3_reference_components(video, 0.02)
+    assert changed.images.shape[1:3] != stored.images.shape[1:3]
+    assert len(calls) == 2
+    assert len(resizes) == 200
+    assert len(list((tmp_path / "cache").rglob("*.zip"))) == 2
+    assert not (tmp_path / "cache" / "utilscollection_video_components" / "v2").exists()
+
+
+def test_h3_png_cache_reads_only_selected_frames_and_preserves_audio(tmp_path, monkeypatch):
+    import zipfile
+    from utils_collection_video_frame_sampler_test import image_helpers as cache
+
+    frames = torch.arange(4 * 8 * 16 * 3).reshape(4, 8, 16, 3).remainder(256).float() / 255
+    audio = {"waveform": torch.tensor([[[0.1, -0.2, 0.3]]]), "sample_rate": 32000}
+    path = tmp_path / "frames.zip"
+    cache._write_components(path, "test", frames, frames.shape, audio, Fraction(24), "png8")
+    components = cache._read_components(path, "test")
+    torch.testing.assert_close(components.audio["waveform"], audio["waveform"], rtol=0, atol=0)
+    reads = []
+    original = zipfile.ZipFile.read
+
+    def read(archive, name, *args, **kwargs):
+        reads.append(name)
+        return original(archive, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", read)
+    torch.testing.assert_close(components.images[[3, 1, 3]], frames[[3, 1, 3]], rtol=0, atol=0)
+    assert reads == ["frames/00000003.png8", "frames/00000001.png8"]
+
+
+def test_h3_legacy_video_cache_migrates_without_decoding_source(tmp_path, monkeypatch):
+    from safetensors.torch import save_file
+    from utils_collection_video_frame_sampler_test import image_helpers as cache
+
+    monkeypatch.setattr(cache.folder_paths, "get_temp_directory", lambda: str(tmp_path))
+    monkeypatch.setattr(cache, "_frame_storage", lambda video: "png8")
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"encoded video")
+    video = cache.InputImpl.VideoFromFile(str(source))
+    key = cache.video_source_hash(video)
+    legacy = tmp_path / "utilscollection_video_components" / "v1" / f"{key}.safetensors"
+    legacy.parent.mkdir(parents=True)
+    frames = torch.ones(3, 8, 8, 3)
+    audio = torch.tensor([[[0.125, -0.75]]])
+    save_file({"frames": frames, "audio": audio}, str(legacy), metadata={
+        "source_hash": key, "frame_rate": "24", "sample_rate": "32000",
+    })
+
+    def forbidden(video):
+        pytest.fail("Migration must not decode the source video")
+
+    monkeypatch.setattr(cache.InputImpl.VideoFromFile, "get_components", forbidden)
+    components = cache.cached_video_components(video)
+    torch.testing.assert_close(components.images[:], frames, rtol=0, atol=0)
+    torch.testing.assert_close(components.audio["waveform"], audio, rtol=0, atol=0)
+    assert components.frame_rate == Fraction(24)
+    assert legacy.exists()  # Explicit verified cleanup remains separate.
+
+
+def test_h3_video_cache_invalidates_content_trim_crop_and_recovers(tmp_path, monkeypatch):
+    from utils_collection_video_frame_sampler_test import image_helpers as cache
+    monkeypatch.setattr(cache, "_frame_storage", lambda video: "npz")
+
+    monkeypatch.setattr(cache.folder_paths, "get_temp_directory", lambda: str(tmp_path / "cache"))
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"original")
+    calls = []
+
+    def decode(video):
+        calls.append(video)
+        return cache.Types.VideoComponents(images=torch.zeros(2, 4, 4, 3), frame_rate=Fraction(24), audio=None)
+
+    monkeypatch.setattr(cache.InputImpl.VideoFromFile, "get_components", decode)
+    video = cache.InputImpl.VideoFromFile(str(source))
+    cache.cached_video_components(video)
+    source.write_bytes(b"modified")  # Same path and byte count must not imply a hit.
+    cache.cached_video_components(video)
+    cache.cached_video_components(cache.InputImpl.VideoFromFile(str(source), start_time=1, duration=2))
+    cache.cached_video_components(cache.InputImpl.VideoFromFile(str(source), crop=(0, 0, 4, 4)))
+    cache.cached_video_components(cache.InputImpl.VideoFromFile(str(source), crop=(4, 0, 4, 4)))
+    assert len(calls) == 5
+    path = tmp_path / "cache" / "utilscollection_video_components" / "v2" / f"{cache.video_source_hash(video)}.zip"
+    path.write_bytes(b"incomplete cache")
+    restored = cache.cached_video_components(video)
+    assert len(calls) == 6
+    assert restored.audio is None
+    cache.cached_video_components(video)
+    assert len(calls) == 6
+    # Memory-backed encoded video shares the file's content hash.
+    buffer_video = cache.InputImpl.VideoFromFile(stdlib_io.BytesIO(source.read_bytes()))
+    cache.cached_video_components(buffer_video)
+    assert len(calls) == 6
 
 
 def test_missing_pts_is_rejected_instead_of_estimated(monkeypatch):

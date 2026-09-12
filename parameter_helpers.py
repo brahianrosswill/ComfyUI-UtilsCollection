@@ -18,6 +18,12 @@ def h3_video_length_from_seconds(seconds: float) -> int:
     return frames + (5 - frames % 17) % 17
 
 
+def h3_frame_segments(frame_count: int) -> list[tuple[int, int]]:
+    """Half-open frame groups: the first five frames, then groups of seventeen."""
+    return [(start, min(5 if start == 0 else start + 17, frame_count))
+            for start in [0, *range(5, frame_count, 17)] if start < frame_count]
+
+
 def _middle_band_resolution(
     ratio_width: int,
     ratio_height: int,
