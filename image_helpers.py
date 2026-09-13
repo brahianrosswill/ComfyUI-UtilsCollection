@@ -904,6 +904,48 @@ def prepare_h3_reference_video_components(video, megapixels: float, duration_sec
     return prepare_h3_reference_components(components, megapixels, duration_seconds, start_at_timestamp, spatially_prepared=True)
 
 
+class H3ResizedFrames:
+    """Resize bounded frame batches while the full H3 cache is written."""
+
+    _MAX_BATCH_FRAMES = 64
+    _WORKING_SET_BYTES = 128 * 1024 * 1024
+
+    def __init__(self, frames, width, height):
+        self.frames = frames
+        self.shape = (frames.shape[0], height, width, frames.shape[3])
+        self.ndim = 4
+        element_size = frames.element_size() if isinstance(frames, torch.Tensor) else 4
+        source_bytes = frames.shape[1] * frames.shape[2] * frames.shape[3] * element_size
+        target_bytes = height * width * frames.shape[3] * element_size
+        self.batch_size = max(1, min(
+            self._MAX_BATCH_FRAMES,
+            self._WORKING_SET_BYTES // max(1, 3 * (source_bytes + target_bytes)),
+        ))
+        self._batch_start = -1
+        self._batch = None
+
+    def _source_batch(self, start, end):
+        if isinstance(self.frames, LegacyVideoFrames):
+            return torch.stack([self.frames[index] for index in range(start, end)])
+        return self.frames[start:end]
+
+    def __getitem__(self, index):
+        if not isinstance(index, int):
+            return torch.stack([self[i] for i in index])
+        batch_start = index // self.batch_size * self.batch_size
+        if batch_start != self._batch_start:
+            batch_end = min(batch_start + self.batch_size, self.shape[0])
+            source = self._source_batch(batch_start, batch_end)
+            if tuple(source.shape[1:3]) == self.shape[1:3]:
+                batch = source
+            else:
+                batch = comfy.utils.common_upscale(
+                    source.movedim(-1, 1), self.shape[2], self.shape[1], "bicubic", "center",
+                ).clamp(0, 1).movedim(1, -1).contiguous()
+            self._batch_start, self._batch = batch_start, batch
+        return self._batch[index - self._batch_start]
+
+
 def cached_h3_reference_components(video, megapixels):
     if not math.isfinite(megapixels) or megapixels <= 0:
         raise ValueError("Megapixels must be positive.")
@@ -912,20 +954,12 @@ def cached_h3_reference_components(video, megapixels):
         frames = components.images
         if frames.ndim != 4 or min(frames.shape[:3]) < 1:
             raise ValueError("Reference video must contain non-empty frames.")
-        if isinstance(frames, CachedVideoFrames):
-            frames = frames[:]
-        elif isinstance(frames, LegacyVideoFrames):
-            frames = torch.stack([frames[index] for index in range(frames.shape[0])])
         aspect = frames.shape[2] / frames.shape[1]
         ratio = min(ASPECT_RATIOS.values(), key=lambda value: abs(aspect - value[0] / value[1]))
         width, height = select_video_resolution(*ratio, megapixels, 32, 32, MAX_RESOLUTION)
-        if tuple(frames.shape[1:3]) != (height, width):
-            frames = resize_nchw(
-                frames.movedim(-1, 1), width, height, "lanczos", "center",
-            ).clamp(0, 1).movedim(1, -1).contiguous()
-        return Types.VideoComponents(images=frames, audio=components.audio, frame_rate=components.frame_rate)
+        return Types.VideoComponents(images=H3ResizedFrames(frames, width, height), audio=components.audio, frame_rate=components.frame_rate)
 
-    return cached_video_components(video, {"megapixels": megapixels, "resize": "h3-lanczos-center-v1"}, prepare)
+    return cached_video_components(video, {"megapixels": megapixels, "resize": "h3-bicubic-center-v2"}, prepare)
 
 
 def prepare_h3_reference_components(components, megapixels: float, duration_seconds: float = 0.0, start_at_timestamp: float = 0.0, *, spatially_prepared=False):

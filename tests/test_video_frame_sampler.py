@@ -1011,18 +1011,18 @@ def test_h3_video_disk_cache_reuses_full_decode_across_ranges(tmp_path, monkeypa
     assert isinstance(raw_components.images, cache.CachedVideoFrames)
     assert len(calls) == 1
     resizes = []
-    original_resize = image_helpers.resize_nchw
+    original_resize = image_helpers.comfy.utils.common_upscale
 
     def resize(*args):
-        resizes.append(1)
+        resizes.append((args[0].shape[0], args[0].dtype, args[0].device.type))
         return original_resize(*args)
 
-    monkeypatch.setattr(image_helpers, "resize_nchw", resize)
+    monkeypatch.setattr(image_helpers.comfy.utils, "common_upscale", resize)
     utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2)
-    assert len(resizes) == 1
+    assert resizes == [(64, torch.float32, "cpu"), (36, torch.float32, "cpu")]
     shifted = utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2, start_at_timestamp=1)
     assert len(calls) == 1
-    assert len(resizes) == 1  # Neither extraction nor resizing repeats for a new range.
+    assert len(resizes) == 2  # Neither extraction nor resizing repeats for a new range.
     assert shifted.result[5].get_components().images is shifted.result[0]
     assert shifted.result[1]["waveform"][0, 0, 0] == round(39 / 24 * 32000)
     stored = image_helpers.cached_h3_reference_components(cache.InputImpl.VideoFromFile(str(source)), 0.01)
@@ -1037,7 +1037,7 @@ def test_h3_video_disk_cache_reuses_full_decode_across_ranges(tmp_path, monkeypa
     changed = image_helpers.cached_h3_reference_components(video, 0.02)
     assert changed.images.shape[1:3] != stored.images.shape[1:3]
     assert len(calls) == 1
-    assert len(resizes) == 2
+    assert len(resizes) == 4
     assert len(list((tmp_path / "cache" / "utilscollection_video_components" / "v3").glob("*.zip"))) == 2
     assert (tmp_path / "cache" / "utilscollection_video_components" / "v2").exists()
 
