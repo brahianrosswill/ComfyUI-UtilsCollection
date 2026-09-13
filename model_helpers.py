@@ -2348,8 +2348,14 @@ def transcribe_reference_audio(whisper_model, source_audio, prepared_audio, time
     lines = []
     for phrase in phrases:
         for words in partition_reference_phrase(phrase, counts):
-            start = format_video_timestamp(min(duration, max(0.0, float(words[0]["start"]))), timestamp_format)
-            end = format_video_timestamp(min(duration, max(0.0, float(words[-1]["end"]))), timestamp_format)
+            start_seconds = min(duration, max(0.0, float(words[0]["start"])))
+            end_seconds = min(duration, max(0.0, float(words[-1]["end"])))
+            word_count = sum(any(character.isalnum() for character in word["word"]) for word in words)
+            # Reject stretched hallucinations, accepting loss of very slow speech.
+            if end_seconds - start_seconds > word_count:
+                continue
+            start = format_video_timestamp(start_seconds, timestamp_format)
+            end = format_video_timestamp(end_seconds, timestamp_format)
             text = "".join(word["word"].replace("\r", " ").replace("\n", " ") for word in words).strip()
             lines.append(f"[{start}–{end}] {text}")
     return "\n".join(lines)

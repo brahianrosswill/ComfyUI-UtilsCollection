@@ -927,6 +927,29 @@ def test_h3_syllable_partition_objective(counts, expected):
     assert [[int(word['word']) for word in group] for group in groups] == expected
 
 
+@pytest.mark.parametrize('speech_end, expected', [
+    (7.28, ''),
+    (4.0, '[00.000s–04.000s] Thank you for watching!'),
+    (2.0, '[00.000s–02.000s] Thank you for watching!'),
+])
+def test_h3_transcript_rejects_low_word_rate(monkeypatch, speech_end, expected):
+    import json
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    # Synthetic internal timings reproduce the reported phrase span, not its alignment.
+    tokens = ['Thank', ' you', ' for', ' watching!']
+    words = [{"word": token, "start": i * speech_end / 4, "end": (i + 1) * speech_end / 4}
+             for i, token in enumerate(tokens)]
+    monkeypatch.setattr(speech, 'run_whisper', lambda *a, **kw: ([''], [json.dumps([{"words": words}])], ['en']))
+    audio = {"waveform": torch.ones(1), "sample_rate": 24}
+    assert speech.transcribe_reference_audio(object(), audio, audio, '00.000s', 175) == expected
+    words.extend([{"word": ' You', "start": 7.3, "end": 7.4},
+                  {"word": ' see', "start": 7.4, "end": 7.5},
+                  {"word": ' that?', "start": 7.5, "end": 7.62}])
+    result = speech.transcribe_reference_audio(object(), audio, audio, '00.000s', 192)
+    assert result == '\n'.join(filter(None, [expected, '[07.300s–07.620s] You see that?']))
+
+
 def test_h3_transcript_clamps_crossing_words_and_keeps_zero_duration(monkeypatch):
     import json
     from utils_collection_video_frame_sampler_test import model_helpers as speech
