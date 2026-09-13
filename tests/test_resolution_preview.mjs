@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import { h3VideoLengthFromSeconds, h3ReferenceFrameRange } from "../web/h3_video_length.js";
 
 test("H3 reference range preserves zero start and resolves remaining duration", () => {
@@ -38,4 +40,47 @@ test("collapsed nodes keep their collapsed size", () => {
   const size = [90, 30];
   clampResolutionPreviewSize(size, [220, 246], true);
   assert.deepEqual(size, [90, 30]);
+});
+
+test("video widget previews agree with backend middle-band resolutions before execution", async () => {
+  const source = await readFile(new URL("../web/resolution_preview.js", import.meta.url), "utf8");
+  let extension;
+  vm.runInNewContext(source.replace(/^import[\s\S]*?;\r?$/gm, ""), {
+    app: { registerExtension(value) { extension = value; } },
+    document: { createElement() { return { getContext() { return { measureText(text) { return { width: text.length * 6 }; } }; } }; } },
+    h3VideoLengthFromSeconds,
+    h3ReferenceFrameRange,
+    clampResolutionPreviewSize,
+    resolutionPreviewMinimumSize,
+  });
+  class Node {
+    constructor() {
+      this.size = [180, 220];
+      this.widgets = [
+        { name: "aspect_ratio", value: "4:3" },
+        { name: "megapixels", value: 0.5 },
+        { name: "multiple", value: 32 },
+        { name: "duration_seconds", value: 5 },
+      ];
+    }
+    computeSize() { return [180, 220]; }
+    setSize(size) { this.size = size; }
+    setDirtyCanvas() {}
+  }
+  await extension.beforeRegisterNodeDef(Node, { name: "UC_VideoResolutionSelector" });
+  const node = new Node();
+  node.onNodeCreated();
+  assert.equal(node.__ucResolutionPreview, "864×672 · 124 frames");
+  for (const [ratio, megapixels, backendResolution] of [
+    ["3:4", 0.5, "672×864"],
+    ["21:9", 0.7, "1280×544"],
+    ["9:21", 0.7, "544×1280"],
+  ]) {
+    node.widgets[0].value = ratio;
+    node.widgets[1].value = megapixels;
+    node.onWidgetChanged("aspect_ratio");
+    const previewBeforeExecution = node.__ucResolutionPreview;
+    node.onExecuted({ resolution: [`${backendResolution} · 124 frames`] });
+    assert.equal(previewBeforeExecution, node.__ucResolutionPreview);
+  }
 });
