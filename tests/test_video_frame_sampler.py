@@ -950,6 +950,25 @@ def test_h3_transcript_rejects_low_word_rate(monkeypatch, speech_end, expected):
     assert result == '\n'.join(filter(None, [expected, '[07.300s–07.620s] You see that?']))
 
 
+def test_h3_transcript_word_rate_excludes_pauses(monkeypatch):
+    import json
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    # Same text and outer span as the hallucination regression, but short words
+    # separated by silence must survive. These are synthetic alignment fixtures.
+    words = [
+        {"word": 'Thank', "start": 0.0, "end": 0.3},
+        {"word": ' you', "start": 0.3, "end": 0.5},
+        {"word": ' for', "start": 6.5, "end": 6.7},
+        {"word": ' watching!', "start": 6.7, "end": 7.28},
+    ]
+    monkeypatch.setattr(speech, 'run_whisper', lambda *a, **kw: ([''], [json.dumps([{"words": words}])], ['en']))
+    audio = {"waveform": torch.ones(1), "sample_rate": 24}
+    assert speech.transcribe_reference_audio(object(), audio, audio, '00.000s', 175) == (
+        '[00.000s–07.280s] Thank you for watching!'
+    )
+
+
 def test_h3_transcript_clamps_crossing_words_and_keeps_zero_duration(monkeypatch):
     import json
     from utils_collection_video_frame_sampler_test import model_helpers as speech

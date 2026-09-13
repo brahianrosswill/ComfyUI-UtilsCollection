@@ -2351,8 +2351,12 @@ def transcribe_reference_audio(whisper_model, source_audio, prepared_audio, time
             start_seconds = min(duration, max(0.0, float(words[0]["start"])))
             end_seconds = min(duration, max(0.0, float(words[-1]["end"])))
             word_count = sum(any(character.isalnum() for character in word["word"]) for word in words)
-            # Reject stretched hallucinations, accepting loss of very slow speech.
-            if end_seconds - start_seconds > word_count:
+            aligned_seconds = sum(
+                max(0.0, min(duration, float(word["end"])) - max(0.0, float(word["start"])))
+                for word in words
+            )
+            # Gaps between words are pauses, not evidence of stretched speech.
+            if aligned_seconds > word_count:
                 continue
             start = format_video_timestamp(start_seconds, timestamp_format)
             end = format_video_timestamp(end_seconds, timestamp_format)
