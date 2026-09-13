@@ -880,11 +880,37 @@ def test_h3_transcript_dictionary_counts_and_unknown_phrases(monkeypatch):
     audio = {"waveform": torch.ones(1), "sample_rate": 24}
     result = speech.transcribe_reference_audio(object(), audio, audio, "00.000s", 2400)
     assert [line.split('] ', 1)[1] for line in result.splitlines()] == [
-        'Disappear just like poof,', "then she's gone", 'Addicted,',
-        'it starts with smoking', 'something strong.',
+        'Disappear just like poof,', "then she's gone",
+        'Addicted, it starts with', 'smoking something strong.',
         'zzzxq it starts with smoking something strong.',
         'fire it starts with smoking something strong.',
     ]
+
+
+def test_h3_transcript_single_capital_comma_uses_syllable_grouping(monkeypatch):
+    import json
+    from utils_collection_video_frame_sampler_test import model_helpers as speech
+
+    # Synthetic word timings; the supplied sample contains phrase timings only.
+    tokens = ['Donovan,', ' you', ' see', ' this?', ' Women,', ' oh', ' my', ' god,',
+              " he's", ' so', ' smooth.', ' Women,', ' love', ' that,', ' oh', ' my', ' god.',
+              ' Women,', ' I', ' see.', ' Women,']
+    words = [{"word": token, "start": i / 2, "end": (i + 1) / 2} for i, token in enumerate(tokens)]
+    monkeypatch.setattr(speech, 'run_whisper', lambda *a, **kw: (
+        [''], [json.dumps([{"words": words[:1]}, {"words": words[1:]}])], ['en']))
+    audio = {"waveform": torch.ones(1), "sample_rate": 24}
+    result = speech.transcribe_reference_audio(object(), audio, audio, '00.000s', 2400)
+    assert result.splitlines() == [
+        '[00.000s–02.000s] Donovan, you see this?',
+        '[02.000s–04.000s] Women, oh my god,',
+        "[04.000s–05.500s] he's so smooth.",
+        '[05.500s–07.000s] Women, love that,',
+        '[07.000s–08.500s] oh my god.',
+        '[08.500s–09.000s] Women,',
+        '[09.000s–10.000s] I see.',
+        '[10.000s–10.500s] Women,',
+    ]
+    assert ' '.join(line.split('] ', 1)[1] for line in result.splitlines()) == ''.join(tokens)
 
 
 @pytest.mark.parametrize('counts, expected', [

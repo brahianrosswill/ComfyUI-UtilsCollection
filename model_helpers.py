@@ -2335,7 +2335,8 @@ def transcribe_reference_audio(whisper_model, source_audio, prepared_audio, time
             phrase = []
         phrase.append(word)
         ending = text.rstrip("\"'’”»›)]}）］｝」』】")
-        if ending.endswith(tuple(",，、.。!！?？")):
+        single_capital_comma = len(phrase) == 1 and first_letter.isupper() and ending.endswith(tuple(",，、"))
+        if ending.endswith(tuple(",，、.。!！?？")) and not single_capital_comma:
             phrases.append(phrase)
             phrase = []
     if phrase:
