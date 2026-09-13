@@ -31,6 +31,7 @@ class UC_MiniMaxH3RefVid(io.ComfyNode):
                 io.Float.Input("start_at_timestamp", default=0.0, min=0.0, step=0.1, tooltip="Seconds to skip at the start, for both video and audio. 0 skips nothing; positive values use the same H3 frame-count rounding as duration. Preview frame numbers are zero-based and the end frame is inclusive."),
                 io.Custom("WHISPER_MODEL").Input("whisper_model", optional=True, tooltip="Optional native Whisper Loader output. Transcribes the selected audio in its original language; disconnected skips transcription."),
                 io.Combo.Input("timestamp_format", options=list(VIDEO_FRAME_TIMESTAMP_FORMATS), default="00.000s", optional=True, tooltip="Timestamp formatting for transcribed audio, matching the timeline nodes."),
+                io.Boolean.Input("enable_whisper", default=True, optional=True, tooltip="When false, skips Whisper transcription and returns an empty transcript. Video and audio outputs are unchanged."),
             ],
             outputs=[
                 io.Image.Output("frames", tooltip="Prepared 24 fps frames. Connect to H3 Reference to Video's reference-video input."),
@@ -44,10 +45,10 @@ class UC_MiniMaxH3RefVid(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, video, megapixels=0.5, duration_seconds=0.0, start_at_timestamp=0.0, whisper_model=None, timestamp_format="00.000s"):
+    def execute(cls, video, megapixels=0.5, duration_seconds=0.0, start_at_timestamp=0.0, whisper_model=None, timestamp_format="00.000s", enable_whisper=True):
         components = cached_h3_reference_components(video, megapixels)
         frames, audio, width, height, length, _, preview = prepare_h3_reference_components(components, megapixels, duration_seconds, start_at_timestamp, spatially_prepared=True)
-        transcribed_audio = transcribe_reference_audio(whisper_model, components.audio, audio, timestamp_format, length)
+        transcribed_audio = transcribe_reference_audio(whisper_model, components.audio, audio, timestamp_format, length) if enable_whisper else ""
         prepared_video = InputImpl.VideoFromComponents(
             Types.VideoComponents(images=frames, audio=audio, frame_rate=Fraction(24)),
         )

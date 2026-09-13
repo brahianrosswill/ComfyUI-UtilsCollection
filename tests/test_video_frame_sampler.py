@@ -783,12 +783,12 @@ def test_h3_whisper_selected_audio_and_timestamp_format(monkeypatch, timestamp_f
     assert decodes == [1]
 
 
-@pytest.mark.parametrize("case", ["disconnected", "no_track", "empty_track"])
+@pytest.mark.parametrize("case", ["disconnected", "no_track", "empty_track", "disabled"])
 def test_h3_whisper_skips_inference_without_model_or_source_audio(monkeypatch, case):
     from utils_collection_video_frame_sampler_test import model_helpers as speech
 
     def forbidden(*args):
-        pytest.fail("Whisper must not run for a disconnected model or absent source audio")
+        pytest.fail("Whisper must not run when disabled, disconnected, or without source audio")
 
     monkeypatch.setattr(speech, "run_whisper", forbidden)
     source_audio = None if case == "no_track" else {
@@ -799,6 +799,7 @@ def test_h3_whisper_skips_inference_without_model_or_source_audio(monkeypatch, c
     ))
     result = utils_nodes.UC_MiniMaxH3RefVid.execute(
         video, megapixels=0.01, whisper_model=None if case == "disconnected" else object(),
+        enable_whisper=case != "disabled",
     )
     assert result.result[6] == ""
     assert result.result[1]["waveform"].numel() > 0
