@@ -1019,10 +1019,12 @@ def test_h3_video_disk_cache_reuses_full_decode_across_ranges(tmp_path, monkeypa
 
     monkeypatch.setattr(image_helpers.comfy.utils, "common_upscale", resize)
     utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2)
-    assert resizes == [(64, torch.float32, "cpu"), (36, torch.float32, "cpu")]
+    assert sum(size for size, _, _ in resizes) == len(frames)
+    assert all(dtype == torch.float32 and device == "cpu" for _, dtype, device in resizes)
+    resize_calls = len(resizes)
     shifted = utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2, start_at_timestamp=1)
     assert len(calls) == 1
-    assert len(resizes) == 2  # Neither extraction nor resizing repeats for a new range.
+    assert len(resizes) == resize_calls  # Neither extraction nor resizing repeats for a new range.
     assert shifted.result[5].get_components().images is shifted.result[0]
     assert shifted.result[1]["waveform"][0, 0, 0] == round(39 / 24 * 32000)
     stored = image_helpers.cached_h3_reference_components(cache.InputImpl.VideoFromFile(str(source)), 0.01)
@@ -1037,7 +1039,7 @@ def test_h3_video_disk_cache_reuses_full_decode_across_ranges(tmp_path, monkeypa
     changed = image_helpers.cached_h3_reference_components(video, 0.02)
     assert changed.images.shape[1:3] != stored.images.shape[1:3]
     assert len(calls) == 1
-    assert len(resizes) == 4
+    assert len(resizes) > resize_calls
     assert len(list((tmp_path / "cache" / "utilscollection_video_components" / "v3").glob("*.zip"))) == 2
     assert (tmp_path / "cache" / "utilscollection_video_components" / "v2").exists()
 
@@ -1060,8 +1062,166 @@ def test_h3_png_cache_reads_only_selected_frames_and_preserves_audio(tmp_path, m
         return original(archive, name, *args, **kwargs)
 
     monkeypatch.setattr(zipfile.ZipFile, "read", read)
-    torch.testing.assert_close(components.images[[3, 1, 3]], frames[[3, 1, 3]], rtol=0, atol=0)
+    expected = frames[[3, 1, 3]]
+
+    def forbidden_stack(*args, **kwargs):
+        pytest.fail("Cache selection must fill its final output, not stack retained frames")
+
+    monkeypatch.setattr(torch, "stack", forbidden_stack)
+    torch.testing.assert_close(components.images[[3, 1, 3]], expected, rtol=0, atol=0)
     assert reads == ["frames/00000003.png8", "frames/00000001.png8"]
+    torch.testing.assert_close(components.images[-1], frames[-1], rtol=0, atol=0)
+    assert components.images[0:0].shape == (0, 8, 16, 3)
+
+
+def _encode_h3_fixture(path, codec, audio_tracks=0, variable_rate=False):
+    import av
+
+    with av.open(str(path), "w") as output:
+        stream = output.add_stream(codec, rate=24)
+        stream.width, stream.height = 70, 46
+        stream.pix_fmt = {"mjpeg": "yuvj420p", "libx264": "yuv420p"}.get(codec, "bgr0")
+        stream.time_base = Fraction(1, 24)
+        audio_streams = [output.add_stream("pcm_s16le", rate=48000) for _ in range(audio_tracks)]
+        for track in audio_streams:
+            track.layout = "stereo"
+        for index in range(18):
+            pixels = np.arange(46 * 70 * 3, dtype=np.uint16).reshape(46, 70, 3)
+            pixels = ((pixels + index * 17) % 256).astype(np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            frame.pts = index + (index // 3 if variable_rate else 0)
+            frame.time_base = Fraction(1, 24)
+            for packet in stream.encode(frame):
+                output.mux(packet)
+            for track_index, track in enumerate(audio_streams):
+                samples = np.arange(index * 2000, (index + 1) * 2000, dtype=np.int64)
+                samples = ((samples * (track_index + 1) * 13) % 30000).astype(np.int16)
+                packed = np.column_stack((samples, -samples)).reshape(1, -1)
+                audio_frame = av.AudioFrame.from_ndarray(packed, format="s16", layout="stereo")
+                audio_frame.sample_rate = 48000
+                audio_frame.pts = index * 2000
+                audio_frame.time_base = Fraction(1, 48000)
+                for packet in track.encode(audio_frame):
+                    output.mux(packet)
+        for track in [stream, *audio_streams]:
+            for packet in track.encode(None):
+                output.mux(packet)
+
+
+@pytest.mark.parametrize("codec,tracks,trim,buffered,variable_rate,storage,rotation", [
+    ("ffv1", 2, (0.13, 0.4), False, False, "npz", 0),
+    ("mjpeg", 0, (0, 0), True, False, "png8", 0),
+    ("ffv1", 1, (-0.4, 0), True, True, "png8", 0),
+    ("libx264", 0, (0.13, 0.4), False, False, "npz", 90),
+])
+def test_h3_streamed_decode_matches_core(tmp_path, monkeypatch, codec, tracks, trim, buffered, variable_rate, storage, rotation):
+    cache = image_helpers
+    source = tmp_path / "source.mkv"
+    _encode_h3_fixture(source, codec, tracks, variable_rate)
+    if rotation:
+        import av
+        import shutil
+        import subprocess
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            pytest.skip("FFmpeg CLI needed to create display-matrix rotation fixture")
+        rotated = tmp_path / "rotated.mp4"
+        subprocess.run([ffmpeg, "-v", "error", "-display_rotation:v:0", str(rotation), "-i", str(source), "-c", "copy", str(rotated)], check=True, capture_output=True)
+        source = rotated
+        with av.open(str(source)) as container:
+            assert abs(next(container.decode(video=0)).rotation) == rotation
+    source_value = stdlib_io.BytesIO(source.read_bytes()) if buffered else str(source)
+    video = cache.InputImpl.VideoFromFile(source_value, start_time=trim[0], duration=trim[1], crop=(2, 3, 62, 39))
+    baseline = video.get_components()
+    frames = baseline.images
+    ratio = min(cache.ASPECT_RATIOS.values(), key=lambda value: abs(frames.shape[2] / frames.shape[1] - value[0] / value[1]))
+    width, height = cache.select_video_resolution(*ratio, 0.01, 32, 32, cache.MAX_RESOLUTION)
+    expected = cache.comfy.utils.common_upscale(frames.movedim(-1, 1), width, height, "bicubic", "center").clamp(0, 1).movedim(1, -1)
+    if storage == "png8":
+        expected = expected.mul(255).round().div(255)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Streamed construction must not call Core's full-clip decoder")
+
+    monkeypatch.setattr(cache.InputImpl.VideoFromFile, "get_components", forbidden)
+    monkeypatch.setattr(cache, "_h3_batch_capacity", lambda *args: 3)
+    target = tmp_path / "streamed.zip"
+    cache._write_streamed_h3_components(target, "fixture", video, 0.01, storage)
+    actual = cache._read_components(target, "fixture")
+    torch.testing.assert_close(actual.images[:], expected, rtol=0, atol=0)
+    assert actual.frame_rate == baseline.frame_rate
+    if baseline.audio is None:
+        assert actual.audio is None
+    else:
+        assert actual.audio["sample_rate"] == baseline.audio["sample_rate"]
+        torch.testing.assert_close(actual.audio["waveform"], baseline.audio["waveform"], rtol=0, atol=0)
+    selected = cache.prepare_h3_reference_components(actual, 0.01, 0.2, spatially_prepared=True)
+    oracle = cache.Types.VideoComponents(images=expected, audio=baseline.audio, frame_rate=baseline.frame_rate)
+    expected_selection = cache.prepare_h3_reference_components(oracle, 0.01, 0.2, spatially_prepared=True)
+    torch.testing.assert_close(selected[0], expected_selection[0], rtol=0, atol=0)
+    torch.testing.assert_close(selected[1]["waveform"], expected_selection[1]["waveform"], rtol=0, atol=0)
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_h3_streamed_writer_failure_joins_decoder(tmp_path, monkeypatch):
+    import threading
+
+    source = tmp_path / "source.mkv"
+    _encode_h3_fixture(source, "ffv1", 1)
+    monkeypatch.setattr(image_helpers, "_h3_batch_capacity", lambda *args: 1)
+
+    def fail(*args, **kwargs):
+        raise OSError("test disk failure")
+
+    monkeypatch.setattr(image_helpers.cv2, "imencode", fail)
+    target = tmp_path / "failed.zip"
+    with pytest.raises(OSError, match="test disk failure"):
+        image_helpers._write_streamed_h3_components(target, "fixture", image_helpers.InputImpl.VideoFromFile(str(source)), 0.01, "png8")
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert not any(thread.name == "h3-video-decode" for thread in threading.enumerate())
+
+
+@pytest.mark.parametrize("failure", ["producer", "cancel"])
+def test_h3_prefetch_propagates_failure_and_closes(failure):
+    from contextlib import closing
+    import threading
+
+    closed = threading.Event()
+
+    def produce(stopped):
+        try:
+            for _ in range(20):
+                if stopped.is_set():
+                    return
+                yield torch.zeros(1)
+            raise ValueError("test decoder failure")
+        finally:
+            closed.set()
+
+    with pytest.raises(ValueError, match="test decoder failure|test cancellation"):
+        with image_helpers._prefetch_h3_batches(lambda stopped: closing(produce(stopped))) as batches:
+            for _ in batches:
+                if failure == "cancel":
+                    raise ValueError("test cancellation")
+    assert closed.is_set()
+    assert not any(thread.name == "h3-video-decode" for thread in threading.enumerate())
+
+
+def test_h3_streamed_cache_reuses_ranges(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    _encode_h3_fixture(source, "ffv1", 1)
+    monkeypatch.setattr(image_helpers.folder_paths, "get_temp_directory", lambda: str(tmp_path / "cache"))
+    video = image_helpers.InputImpl.VideoFromFile(str(source))
+    first = image_helpers.prepare_h3_reference_video_components(video, 0.01, 0.2)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Range changes must reuse the prepared cache")
+
+    monkeypatch.setattr(image_helpers, "_write_streamed_h3_components", forbidden)
+    second = image_helpers.prepare_h3_reference_video_components(video, 0.01, 0.4)
+    assert second[4] > first[4]
 
 
 def test_h3_legacy_video_cache_migrates_without_decoding_source(tmp_path, monkeypatch):

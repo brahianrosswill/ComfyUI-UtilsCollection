@@ -4,6 +4,10 @@ import io
 import hashlib
 import json
 import logging
+import queue
+import tempfile
+import threading
+from contextlib import closing, contextmanager
 from pathlib import Path
 import uuid
 import zipfile
@@ -29,6 +33,8 @@ from nodes import MAX_RESOLUTION
 from .helper_functions import ASPECT_RATIOS, resize_nchw
 from .parameter_helpers import h3_video_length_from_seconds, select_video_resolution
 from comfy_api.latest import InputImpl, Types
+from comfy_api.latest._input_impl.video_types import last_decodable_audio_stream, _rotation_quadrant
+from comfy_api.latest._util import normalize_crop_rect
 
 
 BODY_LIMBS = ((1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9),
@@ -754,26 +760,34 @@ class CachedVideoFrames:
             indices = [indices]
         elif isinstance(indices, slice):
             indices = range(*indices.indices(self.shape[0]))
-        decoded = {}
-        frames = []
+        indices = [int(index) % self.shape[0] for index in indices]
+        positions = {}
+        frames = None
         with zipfile.ZipFile(self.path) as archive:
-            for index in indices:
-                index = int(index) % self.shape[0]
-                if index not in decoded:
+            for position, index in enumerate(indices):
+                if index not in positions:
                     data = archive.read(f"frames/{index:08d}.{self.storage}")
                     if self.storage == "png8":
                         array = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
                         if array is None:
                             raise ValueError(f"Invalid cached video frame {index}")
                         array = cv2.cvtColor(array, cv2.COLOR_BGR2RGB)
-                        decoded[index] = torch.from_numpy(array.astype(np.float32) / 255.0)
+                        frame = torch.from_numpy(array).to(torch.float32).div_(255)
                     else:
                         with np.load(io.BytesIO(data), allow_pickle=False) as entry:
-                            decoded[index] = torch.from_numpy(entry["frame"])
-                frames.append(decoded[index])
+                            frame = torch.from_numpy(entry["frame"])
+                    if frames is None:
+                        frames = torch.empty((len(indices), *self.shape[1:]), dtype=frame.dtype)
+                    frames[position].copy_(frame)
+                    positions[index] = position
+                    del frame
+                else:
+                    frames[position].copy_(frames[positions[index]])
+        if frames is None:
+            frames = torch.empty((0, *self.shape[1:]), dtype=torch.float32)
         if scalar:
             return frames[0]
-        return torch.stack(frames)
+        return frames
 
 
 class LegacyVideoFrames:
@@ -825,8 +839,9 @@ def _read_components(path, key):
         frames = CachedVideoFrames(path, manifest["shape"], manifest["storage"])
         audio = None
         if manifest["sample_rate"] is not None:
-            audio = {"waveform": torch.from_numpy(np.load(io.BytesIO(archive.read("audio.npy")), allow_pickle=False)),
-                     "sample_rate": manifest["sample_rate"]}
+            with archive.open("audio.npy") as entry:
+                audio = {"waveform": torch.from_numpy(np.load(entry, allow_pickle=False)),
+                         "sample_rate": manifest["sample_rate"]}
     return Types.VideoComponents(images=frames, audio=audio, frame_rate=Fraction(manifest["frame_rate"]))
 
 
@@ -850,13 +865,268 @@ def _write_components(path, key, frames, shape, audio, rate, storage):
                     np.savez_compressed(buffer, frame=array)
                     data = buffer.getvalue()
                 archive.writestr(f"frames/{index:08d}.{storage}", data)
+                del array
             if audio is not None:
-                buffer = io.BytesIO()
-                np.save(buffer, audio["waveform"].cpu().numpy(), allow_pickle=False)
-                archive.writestr("audio.npy", buffer.getvalue(), compress_type=zipfile.ZIP_DEFLATED)
+                info = zipfile.ZipInfo("audio.npy")
+                info.compress_type = zipfile.ZIP_DEFLATED
+                with archive.open(info, "w", force_zip64=True) as entry:
+                    np.save(entry, audio["waveform"].cpu().numpy(), allow_pickle=False)
             archive.writestr("manifest.json", json.dumps({
                 "version": 2, "source_hash": key, "shape": list(shape), "storage": storage,
                 "frame_rate": str(rate), "sample_rate": audio["sample_rate"] if audio is not None else None,
+            }))
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _h3_batch_capacity(source_shape, target_shape, dtype):
+    """Budget producer staging/resize plus one queued and one writer-owned batch."""
+    source_pixels = math.prod(source_shape)
+    target_pixels = math.prod(target_shape)
+    source_bytes = source_pixels * dtype.itemsize
+    # Float normalization, resize output, two downstream outputs, and staging.
+    per_frame = source_bytes + source_pixels * 4 + target_pixels * 4 * 3
+    # Conversion/alignment and frame encoding scratch are not batch-sized.
+    scratch = 4 * source_bytes + target_pixels * 24
+    available = comfy.model_management.get_free_memory(torch.device("cpu"))
+    budget = min(H3ResizedFrames._WORKING_SET_BYTES, int(available // 4))
+    capacity = min(H3ResizedFrames._MAX_BATCH_FRAMES, (budget - scratch) // max(1, per_frame))
+    if capacity < 1:
+        logging.warning("H3 video: one frame exceeds the available working-buffer target; using one frame.")
+    return max(1, capacity)
+
+
+def _resize_h3_batch(source, width, height):
+    if source.dtype == torch.uint8:
+        source = source.float().div_(255)
+    if tuple(source.shape[1:3]) == (height, width):
+        return source
+    return comfy.utils.common_upscale(
+        source.movedim(-1, 1), width, height, "bicubic", "center",
+    ).clamp_(0, 1).movedim(1, -1)
+
+
+@contextmanager
+def _prefetch_h3_batches(factory):
+    """One producer, one pending batch; closing always joins the owner thread."""
+    pending = queue.Queue(maxsize=1)
+    stopped = threading.Event()
+
+    def send(value):
+        while not stopped.is_set():
+            try:
+                pending.put(value, timeout=0.05)
+                return
+            except queue.Full:
+                pass
+
+    def produce():
+        try:
+            with factory(stopped) as batches:
+                for batch in batches:
+                    if stopped.is_set():
+                        break
+                    send((batch, None))
+                    del batch
+            send((None, None))
+        except BaseException as error:
+            send((None, error))
+
+    def consume():
+        while True:
+            throw_exception_if_processing_interrupted()
+            try:
+                batch, error = pending.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if error is not None:
+                raise error
+            if batch is None:
+                return
+            yield batch
+            del batch
+
+    worker = threading.Thread(target=produce, name="h3-video-decode")
+    worker.start()
+    try:
+        yield consume()
+    finally:
+        stopped.set()
+        worker.join()
+
+
+def _decode_h3_batches(video, megapixels, audio_file, details, stopped):
+    """Installed Core's file decode semantics, without full-clip tensor assembly."""
+    source = video.get_stream_source()
+    with av.open(source, mode="r") as container:
+        stream = video._get_first_video_stream(container)
+        stream.thread_type = "AUTO"
+        start, duration = video.get_active_trim_window()
+        start_pts = int(start / stream.time_base)
+        end_pts = int((start + duration) / stream.time_base)
+        if start_pts:
+            container.seek(start_pts, stream=stream)
+        audio_stream = last_decodable_audio_stream(container)
+        streams = [stream]
+        if audio_stream is not None:
+            streams.append(audio_stream)
+            resampler = av.audio.resampler.AudioResampler(format="fltp")
+        details["rate"] = Fraction(stream.average_rate) if stream.average_rate else Fraction(1)
+        details["sample_rate"] = None
+        details["samples"] = 0
+        image_format = None
+        crop = video._VideoFromFile__crop
+        crop_rect = None
+        crop_resolved = False
+        align_graph = None
+        video_done, audio_done = False, audio_stream is None
+        has_audio = False
+        staging = None
+        used = 0
+        for packet in container.demux(*streams):
+            if stopped.is_set():
+                return
+            throw_exception_if_processing_interrupted()
+            if video_done and audio_done:
+                break
+            if packet.stream.type == "video" and not video_done:
+                try:
+                    for frame in packet.decode():
+                        if stopped.is_set():
+                            return
+                        if frame.pts < start_pts:
+                            continue
+                        if duration and frame.pts >= end_pts:
+                            video_done = True
+                            break
+                        if image_format is None:
+                            alpha = any(comp.is_alpha for comp in frame.format.components) or frame.format.name == "pal8"
+                            byte_format = frame.format.name in ("yuvj420p", "yuvj422p", "yuvj444p", "rgb24", "rgba", "pal8")
+                            image_format = ("rgba" if alpha else "rgb24") if byte_format else ("gbrapf32le" if alpha else "gbrpf32le")
+                        if image_format in ("gbrpf32le", "gbrapf32le") and frame.width % 32:
+                            if align_graph is None:
+                                pad_w, pad_h = ((frame.width + 31) // 32) * 32, ((frame.height + 31) // 32) * 32
+                                graph = av.filter.Graph()
+                                src = graph.add_buffer(width=frame.width, height=frame.height, format=frame.format.name, time_base=stream.time_base)
+                                pad = graph.add("pad", f"{pad_w}:{pad_h}:0:0")
+                                fill = graph.add("fillborders", f"left=0:right={pad_w - frame.width}:top=0:bottom={pad_h - frame.height}:mode=smear")
+                                sink = graph.add("buffersink")
+                                src.link_to(pad)
+                                pad.link_to(fill)
+                                fill.link_to(sink)
+                                graph.configure()
+                                align_graph = graph, src, sink
+                            align_graph[1].push(frame)
+                            pixels = np.ascontiguousarray(align_graph[2].pull().to_ndarray(format=image_format)[:frame.height, :frame.width])
+                        else:
+                            pixels = frame.to_ndarray(format=image_format)
+                        rotation = _rotation_quadrant(frame)
+                        if rotation:
+                            pixels = np.rot90(pixels, k=rotation, axes=(0, 1)).copy()
+                        if crop is not None:
+                            if not crop_resolved:
+                                crop_rect = normalize_crop_rect(*crop, pixels.shape[1], pixels.shape[0])
+                                crop_resolved = True
+                            if crop_rect is not None:
+                                x, y, crop_width, crop_height = crop_rect
+                                pixels = np.ascontiguousarray(pixels[y:y + crop_height, x:x + crop_width])
+                        pixels = pixels[..., :3]
+                        tensor = torch.from_numpy(pixels)
+                        if staging is None:
+                            aspect = pixels.shape[1] / pixels.shape[0]
+                            ratio = min(ASPECT_RATIOS.values(), key=lambda value: abs(aspect - value[0] / value[1]))
+                            width, height = select_video_resolution(*ratio, megapixels, 32, 32, MAX_RESOLUTION)
+                            capacity = _h3_batch_capacity(tensor.shape, (height, width, 3), tensor.dtype)
+                            staging = torch.empty((capacity, *tensor.shape), dtype=tensor.dtype)
+                        staging[used].copy_(tensor)
+                        used += 1
+                        del tensor, pixels
+                        if used == len(staging):
+                            # Output cannot alias reusable staging while a writer owns it.
+                            output = _resize_h3_batch(staging, width, height)
+                            if output is staging:
+                                output = staging.clone()
+                            yield output
+                            del output
+                            used = 0
+                except av.error.InvalidDataError:
+                    logging.info("pyav decode error")
+            elif packet.stream.type == "audio" and not audio_done:
+                for decoded in packet.decode():
+                    for frame in resampler.resample(decoded):
+                        if duration and frame.time > start + duration:
+                            audio_done = True
+                            break
+                        samples = frame.to_ndarray()
+                        if not has_audio:
+                            skip = max(0, int((start - frame.pts * audio_stream.time_base) * audio_stream.sample_rate))
+                            if skip >= frame.samples:
+                                continue
+                            samples = samples[..., skip:]
+                            has_audio = True
+                        if duration:
+                            samples = samples[..., :max(0, int(duration * audio_stream.sample_rate) - details["samples"])]
+                        details["sample_rate"] = int(audio_stream.sample_rate) if audio_stream.sample_rate else 1
+                        details["channels"] = samples.shape[0]
+                        details["samples"] += samples.shape[1]
+                        audio_file.write(np.ascontiguousarray(samples.T).data)
+                    if audio_done:
+                        break
+        if used:
+            yield _resize_h3_batch(staging[:used], width, height)
+
+
+def _write_spooled_h3_audio(archive, audio_file, details):
+    """Convert interleaved spool to existing channel-major NPY in bounded reads."""
+    channels, samples = details["channels"], details["samples"]
+    info = zipfile.ZipInfo("audio.npy")
+    info.compress_type = zipfile.ZIP_DEFLATED
+    with archive.open(info, "w", force_zip64=True) as entry:
+        np.lib.format.write_array_header_1_0(entry, {"descr": "<f4", "fortran_order": False, "shape": (1, channels, samples)})
+        for channel in range(channels):
+            audio_file.seek(0)
+            for start in range(0, samples, 65536):
+                throw_exception_if_processing_interrupted()
+                count = min(65536, samples - start)
+                chunk = np.frombuffer(audio_file.read(count * channels * 4), dtype=np.float32).reshape(count, channels)
+                entry.write(np.ascontiguousarray(chunk[:, channel]).data)
+
+
+def _write_streamed_h3_components(path, key, video, megapixels, storage):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    details = {}
+    try:
+        with tempfile.TemporaryFile(dir=path.parent) as audio_file, zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
+            # Closing the generator releases its container even on consumer failure.
+            def factory(stopped):
+                return closing(_decode_h3_batches(video, megapixels, audio_file, details, stopped))
+            count = 0
+            with _prefetch_h3_batches(factory) as batches:
+                for batch in batches:
+                    for frame in batch:
+                        throw_exception_if_processing_interrupted()
+                        array = frame.numpy()
+                        if storage == "png8":
+                            rgb = np.rint(np.clip(array, 0, 1) * 255).astype(np.uint8)
+                            ok, encoded = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 3])
+                            if not ok:
+                                raise ValueError("Video frame PNG encoding failed")
+                            archive.writestr(f"frames/{count:08d}.png8", encoded)
+                        else:
+                            with archive.open(f"frames/{count:08d}.npz", "w", force_zip64=True) as entry:
+                                np.savez_compressed(entry, frame=array)
+                        count += 1
+                    shape = (count, *batch.shape[1:])
+                    del frame, array, batch
+            if not count:
+                raise ValueError("Reference video must contain non-empty frames.")
+            if details["sample_rate"] is not None:
+                _write_spooled_h3_audio(archive, audio_file, details)
+            archive.writestr("manifest.json", json.dumps({
+                "version": 2, "source_hash": key, "shape": list(shape), "storage": storage,
+                "frame_rate": str(details["rate"]), "sample_rate": details["sample_rate"],
             }))
         os.replace(temporary, path)
     finally:
@@ -888,6 +1158,9 @@ def cached_video_components(video, preparation=None, prepare=None):
     elif legacy.is_file():
         # Migrate frame-by-frame, never materializing the old multi-GB tensor.
         components = read_legacy_components(legacy, source_key)
+    elif preparation is not None and preparation.get("resize") == "h3-bicubic-center-v2":
+        _write_streamed_h3_components(path, key, video, preparation["megapixels"], storage)
+        return _read_components(path, key)
     else:
         components = video.get_components()
     if prepare is not None:
@@ -914,19 +1187,17 @@ class H3ResizedFrames:
         self.frames = frames
         self.shape = (frames.shape[0], height, width, frames.shape[3])
         self.ndim = 4
-        element_size = frames.element_size() if isinstance(frames, torch.Tensor) else 4
-        source_bytes = frames.shape[1] * frames.shape[2] * frames.shape[3] * element_size
-        target_bytes = height * width * frames.shape[3] * element_size
-        self.batch_size = max(1, min(
-            self._MAX_BATCH_FRAMES,
-            self._WORKING_SET_BYTES // max(1, 3 * (source_bytes + target_bytes)),
-        ))
+        dtype = frames.dtype if isinstance(frames, torch.Tensor) else torch.float32
+        self.batch_size = _h3_batch_capacity(frames.shape[1:], self.shape[1:], dtype)
         self._batch_start = -1
         self._batch = None
 
     def _source_batch(self, start, end):
         if isinstance(self.frames, LegacyVideoFrames):
-            return torch.stack([self.frames[index] for index in range(start, end)])
+            output = torch.empty((end - start, *self.frames.shape[1:]), dtype=torch.float32)
+            for position, index in enumerate(range(start, end)):
+                output[position].copy_(self.frames[index])
+            return output
         return self.frames[start:end]
 
     def __getitem__(self, index):
@@ -934,14 +1205,10 @@ class H3ResizedFrames:
             return torch.stack([self[i] for i in index])
         batch_start = index // self.batch_size * self.batch_size
         if batch_start != self._batch_start:
+            self._batch = None
             batch_end = min(batch_start + self.batch_size, self.shape[0])
             source = self._source_batch(batch_start, batch_end)
-            if tuple(source.shape[1:3]) == self.shape[1:3]:
-                batch = source
-            else:
-                batch = comfy.utils.common_upscale(
-                    source.movedim(-1, 1), self.shape[2], self.shape[1], "bicubic", "center",
-                ).clamp(0, 1).movedim(1, -1).contiguous()
+            batch = _resize_h3_batch(source, self.shape[2], self.shape[1])
             self._batch_start, self._batch = batch_start, batch
         return self._batch[index - self._batch_start]
 
