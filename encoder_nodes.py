@@ -3535,8 +3535,9 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     optional=True,
                     tooltip=(
                         "Qwen-only fusion contract. Active method: with frames, socket N targets Picture N and every batch "
-                        "item is another source; an unmatched socket errors. With native references, one image on "
-                        "fusion_image_1 broadcasts to every reference Picture; otherwise flattened fusion images pair by "
+                        "item is another source; an unmatched socket errors. With one native reference, all fusion images "
+                        "combine with that Picture. With multiple references, one image on fusion_image_1 broadcasts to "
+                        "every reference Picture; otherwise flattened fusion images pair by "
                         "index and extras beyond the reference count are ignored. Without frames or references, all fusion "
                         "images combine into Picture 1. Method off keeps them as separate Pictures, except native-reference "
                         "mode ignores them. Video blocks are never fusion targets."

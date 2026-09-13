@@ -3553,12 +3553,12 @@ def execute_advanced_minimax_h3_image_to_video(
     base_vlm_images.extend(
         prepare_vlm_image(image, vlm_resolution) for image in flat_references
     )
-    default_media_image = None
+    default_media_index = None
     if default_single_visual:
         if first_frame is not None:
-            default_media_image = base_vlm_images[0]
+            default_media_index = 0
         elif flat_references:
-            default_media_image = base_vlm_images[int(last_frame is not None)]
+            default_media_index = int(last_frame is not None)
         elif video_frames is None:
             raise ValueError(
                 "MiniMax H3 default media config requires a first frame, reference image 1, or video."
@@ -3584,8 +3584,8 @@ def execute_advanced_minimax_h3_image_to_video(
         if media_config is not None:
             collapse_default_picture = default_single_visual and video_frames is None
             presentation_images = (
-                [default_media_image]
-                if collapse_default_picture and default_media_image is not None
+                [images[default_media_index]]
+                if collapse_default_picture and default_media_index is not None
                 else ([] if collapse_default_picture else images)
             )
             default_video_frames = None
@@ -3701,6 +3701,8 @@ def execute_advanced_minimax_h3_image_to_video(
                 (socket_number - 1, socket_images)
                 for socket_number, socket_images in fusion_socket_batches
             ]
+        elif len(base_vlm_images) == 1:
+            fusion_slot_batches = [(0, fusion_vlm_images)]
         elif (
             len(fusion_socket_batches) == 1
             and fusion_socket_batches[0][0] == 1

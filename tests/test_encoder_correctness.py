@@ -1607,6 +1607,39 @@ def test_advanced_minimax_h3_reference_fusion_pairs_flattened_inputs():
     )
 
 
+@pytest.mark.parametrize("token_fusion", [False, True])
+@pytest.mark.parametrize("default_media", [False, True])
+@pytest.mark.parametrize("role", ["reference", "first_frame"])
+def test_minimax_h3_single_picture_receives_all_fusion_images(monkeypatch, token_fusion, default_media, role):
+    clip = _MiniMaxH3TestClip()
+    captured = []
+
+    def capture_slots(clip, canonical, slots, *_args, **_kwargs):
+        assert len(slots) == 1 and slots[0][0] == 0
+        captured.extend([canonical, *slots[0][1]])
+        return clip.encode_from_tokens_scheduled(canonical)
+
+    if token_fusion:
+        monkeypatch.setattr(encoder_helpers, "encode_token_fused_visual_slots", capture_slots)
+    image = torch.full((1, 4, 6, 3), 0.25)
+    fusion = [torch.full_like(image, value) for value in (0.5, 0.75, 1.0)]
+    role_inputs = {"reference_images": {"reference_image_1": image}} if role == "reference" else {"first_frame": image}
+    # Native-reference fan-in includes all autogrow sockets as well as their batches.
+    fusion_inputs = {"fusion_image_1": torch.cat(fusion[:2]), "fusion_image_2": fusion[2]} if role == "reference" else {"fusion_image_1": torch.cat(fusion)}
+    node = encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTokenFusion if token_fusion else UC_AdvancedMiniMaxH3ImageToVideo
+    output = node.execute(
+        clip, prompt="subject", width=64, height=32, length=5,
+        ref_image_size="none", vlm_resolution=0, fusion_images=fusion_inputs,
+        visual_fusion_config={"visual_fusion_method": "linear"},
+        media_config=encoder_helpers.build_minimax_h3_media_config(None) if default_media else None,
+        enable_caching="disabled", **role_inputs,
+    )
+    tokens = captured if token_fusion else clip.encoded_tokens
+    values = [[float(entry[0]["data"].mean()) for entry in item["qwen3vl_32b"][0] if encoder_helpers.is_image_token(entry)] for item in tokens]
+    assert np.allclose(values, [[0.25], [0.5], [0.75], [1.0]], atol=0.004)
+    assert "minimax_refs" not in output.result[0][0][1]
+
+
 def test_advanced_minimax_h3_reference_fusion_singleton_broadcasts():
     clip = _MiniMaxH3TestClip()
     vae = _RecordingMiniMaxVAE()
