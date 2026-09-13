@@ -904,23 +904,6 @@ def prepare_h3_reference_video_components(video, megapixels: float, duration_sec
     return prepare_h3_reference_components(components, megapixels, duration_seconds, start_at_timestamp, spatially_prepared=True)
 
 
-class H3SizedFrames:
-    """Resize source frames individually while constructing the full-clip cache."""
-
-    def __init__(self, frames, width, height):
-        self.frames = frames
-        self.shape = (frames.shape[0], height, width, frames.shape[3])
-        self.ndim = 4
-
-    def __getitem__(self, index):
-        if not isinstance(index, int):
-            return torch.stack([self[i] for i in index])
-        frame = self.frames[index]
-        if tuple(frame.shape[:2]) == self.shape[1:3]:
-            return frame
-        return resize_nchw(frame.unsqueeze(0).movedim(-1, 1), self.shape[2], self.shape[1], "lanczos", "center").clamp(0, 1).movedim(1, -1)[0].contiguous()
-
-
 def cached_h3_reference_components(video, megapixels):
     if not math.isfinite(megapixels) or megapixels <= 0:
         raise ValueError("Megapixels must be positive.")
@@ -929,10 +912,18 @@ def cached_h3_reference_components(video, megapixels):
         frames = components.images
         if frames.ndim != 4 or min(frames.shape[:3]) < 1:
             raise ValueError("Reference video must contain non-empty frames.")
+        if isinstance(frames, CachedVideoFrames):
+            frames = frames[:]
+        elif isinstance(frames, LegacyVideoFrames):
+            frames = torch.stack([frames[index] for index in range(frames.shape[0])])
         aspect = frames.shape[2] / frames.shape[1]
         ratio = min(ASPECT_RATIOS.values(), key=lambda value: abs(aspect - value[0] / value[1]))
         width, height = select_video_resolution(*ratio, megapixels, 32, 32, MAX_RESOLUTION)
-        return Types.VideoComponents(images=H3SizedFrames(frames, width, height), audio=components.audio, frame_rate=components.frame_rate)
+        if tuple(frames.shape[1:3]) != (height, width):
+            frames = resize_nchw(
+                frames.movedim(-1, 1), width, height, "lanczos", "center",
+            ).clamp(0, 1).movedim(1, -1).contiguous()
+        return Types.VideoComponents(images=frames, audio=components.audio, frame_rate=components.frame_rate)
 
     return cached_video_components(video, {"megapixels": megapixels, "resize": "h3-lanczos-center-v1"}, prepare)
 

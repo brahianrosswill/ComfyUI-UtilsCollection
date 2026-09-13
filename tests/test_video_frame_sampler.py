@@ -1007,6 +1007,9 @@ def test_h3_video_disk_cache_reuses_full_decode_across_ranges(tmp_path, monkeypa
 
     monkeypatch.setattr(cache.InputImpl.VideoFromFile, "get_components", decode)
     video = cache.InputImpl.VideoFromFile(str(source))
+    raw_components = cache.cached_video_components(video)
+    assert isinstance(raw_components.images, cache.CachedVideoFrames)
+    assert len(calls) == 1
     resizes = []
     original_resize = image_helpers.resize_nchw
 
@@ -1016,10 +1019,10 @@ def test_h3_video_disk_cache_reuses_full_decode_across_ranges(tmp_path, monkeypa
 
     monkeypatch.setattr(image_helpers, "resize_nchw", resize)
     utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2)
-    assert len(resizes) == 100
+    assert len(resizes) == 1
     shifted = utils_nodes.UC_MiniMaxH3RefVid.execute(video, megapixels=0.01, duration_seconds=2, start_at_timestamp=1)
     assert len(calls) == 1
-    assert len(resizes) == 100  # Neither extraction nor resizing repeats for a new range.
+    assert len(resizes) == 1  # Neither extraction nor resizing repeats for a new range.
     assert shifted.result[5].get_components().images is shifted.result[0]
     assert shifted.result[1]["waveform"][0, 0, 0] == round(39 / 24 * 32000)
     stored = image_helpers.cached_h3_reference_components(cache.InputImpl.VideoFromFile(str(source)), 0.01)
@@ -1030,13 +1033,13 @@ def test_h3_video_disk_cache_reuses_full_decode_across_ranges(tmp_path, monkeypa
     copied.write_bytes(source.read_bytes())
     image_helpers.cached_h3_reference_components(cache.InputImpl.VideoFromFile(str(copied)), 0.01)
     assert len(calls) == 1
-    assert len(list((tmp_path / "cache").rglob("*.zip"))) == 1
+    assert len(list((tmp_path / "cache" / "utilscollection_video_components" / "v3").glob("*.zip"))) == 1
     changed = image_helpers.cached_h3_reference_components(video, 0.02)
     assert changed.images.shape[1:3] != stored.images.shape[1:3]
-    assert len(calls) == 2
-    assert len(resizes) == 200
-    assert len(list((tmp_path / "cache").rglob("*.zip"))) == 2
-    assert not (tmp_path / "cache" / "utilscollection_video_components" / "v2").exists()
+    assert len(calls) == 1
+    assert len(resizes) == 2
+    assert len(list((tmp_path / "cache" / "utilscollection_video_components" / "v3").glob("*.zip"))) == 2
+    assert (tmp_path / "cache" / "utilscollection_video_components" / "v2").exists()
 
 
 def test_h3_png_cache_reads_only_selected_frames_and_preserves_audio(tmp_path, monkeypatch):
