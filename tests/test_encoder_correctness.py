@@ -619,8 +619,12 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_minimax_h3_fusion_selector_preserves_legacy_defaults(monkeypatch, legacy):
-    node = encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTokenFusion if legacy else UC_AdvancedMiniMaxH3ImageToVideo
+@pytest.mark.parametrize("temporal", [False, True])
+def test_minimax_h3_fusion_selector_preserves_legacy_defaults(monkeypatch, legacy, temporal):
+    if temporal:
+        node = encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTemporalTokenFusion if legacy else encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTemporalFusion
+    else:
+        node = encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTokenFusion if legacy else UC_AdvancedMiniMaxH3ImageToVideo
     schema = node.define_schema()
     selector = schema.inputs[-1]
     assert selector.id == "fusion_method"
@@ -629,7 +633,9 @@ def test_minimax_h3_fusion_selector_preserves_legacy_defaults(monkeypatch, legac
     calls = []
 
     def execute(*args, **kwargs):
-        calls.append(kwargs["token_fusion"])
+        assert kwargs.get("temporal_fusion", False) is temporal
+        assert not kwargs.get("token_fusion" if temporal else "temporal_token_fusion", False)
+        calls.append(kwargs["temporal_token_fusion" if temporal else "token_fusion"])
         return [], {}
 
     monkeypatch.setattr(encoder_nodes, "execute_advanced_minimax_h3_image_to_video", execute)
@@ -638,7 +644,7 @@ def test_minimax_h3_fusion_selector_preserves_legacy_defaults(monkeypatch, legac
     node.execute(object(), fusion_method="conds_fusion")
     node.execute(object(), fusion_method="token_fusion")
     assert calls == [legacy, False, True]
-    with pytest.raises(ValueError, match="Unsupported MiniMax H3 fusion method"):
+    with pytest.raises(ValueError, match="Unsupported MiniMax H3 .*fusion method"):
         node.execute(object(), fusion_method="unknown")
     assert len(calls) == 3
 
@@ -2457,7 +2463,7 @@ def test_temporal_node_schemas_keep_standard_sockets_except_picture_fusion():
     assert not standard.is_experimental
     assert not encoder_nodes.UC_AdvancedMiniMaxH3ImageToVideo.EXPERIMENTAL
     assert not encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTokenFusion.GET_SCHEMA().is_experimental
-    expected = [value.id for value in standard.inputs if value.id not in ("fusion_images", "fusion_method")] + ["text_blend_config"]
+    expected = [value.id for value in standard.inputs if value.id not in ("fusion_images", "fusion_method")] + ["text_blend_config", "fusion_method"]
     for node in (encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTemporalFusion, encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTemporalTokenFusion):
         schema = node.GET_SCHEMA()
         assert schema.is_experimental

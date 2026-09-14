@@ -4014,7 +4014,6 @@ class UC_AdvMiniMaxH3ImageToVideoTokenFusion(UC_AdvancedMiniMaxH3ImageToVideo):
 
 class UC_AdvMiniMaxH3ImageToVideoTemporalFusion(UC_AdvancedMiniMaxH3ImageToVideo):
     _EXPERIMENTAL = None
-    TEMPORAL_TOKEN_FUSION = False
 
     @classmethod
     def define_schema(cls):
@@ -4022,9 +4021,12 @@ class UC_AdvMiniMaxH3ImageToVideoTemporalFusion(UC_AdvancedMiniMaxH3ImageToVideo
         schema.node_id = "UC_AdvMiniMaxH3ImageToVideoTemporalFusion"
         schema.is_experimental = True
         schema.display_name = "Adv MiniMax H3 Image to Video (Temporal Fusion)"
-        schema.description = "Experimentally fuses corresponding video visual blocks after separate Qwen encodes, preserving the ordinary video token budget."
+        schema.description = "Experimentally fuses corresponding video visual blocks before or after Qwen encoding, preserving the ordinary video token budget."
+        selector = next(value for value in schema.inputs if value.id == "fusion_method")
+        selector.tooltip = "Temporal fusion target: corresponding video visual blocks. conds_fusion blends their conditioning after separate Qwen encodes; token_fusion blends their features and DeepStack before one Qwen encode per schedule. Temporal density and consensus/spatial settings remain in their existing configurators."
         schema.inputs = [value for value in schema.inputs if value.id not in ("fusion_images", "fusion_method")]
         schema.inputs.append(TextBlendConfig.Input("text_blend_config", optional=True, tooltip="Temporal consensus settings. Disconnected uses custom index consensus with norm rescaling."))
+        schema.inputs.append(selector)
         return schema
 
     @classmethod
@@ -4035,7 +4037,11 @@ class UC_AdvMiniMaxH3ImageToVideoTemporalFusion(UC_AdvancedMiniMaxH3ImageToVideo
         vlm_resolution=384, vlm_video_resolution=384, media_config=None,
         video=None, audio=None, audio_vae=None, text_blend_config=None,
         enable_caching="all",
+        fusion_method=None,
     ):
+        fusion_method = cls.DEFAULT_FUSION_METHOD if fusion_method is None else fusion_method
+        if fusion_method not in ("conds_fusion", "token_fusion"):
+            raise ValueError(f"Unsupported MiniMax H3 temporal fusion method: {fusion_method}")
         conditioning, latent = execute_advanced_minimax_h3_image_to_video(
             clip, vae, prompt, width, height, length,
             first_frame=first_frame, last_frame=last_frame, reference_images=reference_images,
@@ -4043,7 +4049,7 @@ class UC_AdvMiniMaxH3ImageToVideoTemporalFusion(UC_AdvancedMiniMaxH3ImageToVideo
             ref_image_size=ref_image_size, vlm_resolution=vlm_resolution,
             vlm_video_resolution=vlm_video_resolution, media_config=media_config,
             video=video, audio=audio, audio_vae=audio_vae,
-            temporal_fusion=True, temporal_token_fusion=cls.TEMPORAL_TOKEN_FUSION,
+            temporal_fusion=True, temporal_token_fusion=fusion_method == "token_fusion",
             text_blend_config=text_blend_config,
             enable_caching=enable_caching,
         )
@@ -4051,17 +4057,18 @@ class UC_AdvMiniMaxH3ImageToVideoTemporalFusion(UC_AdvancedMiniMaxH3ImageToVideo
 
 
 class UC_AdvMiniMaxH3ImageToVideoTemporalTokenFusion(UC_AdvMiniMaxH3ImageToVideoTemporalFusion):
-    TEMPORAL_TOKEN_FUSION = True
+    DEFAULT_FUSION_METHOD = "token_fusion"
 
     @classmethod
     def define_schema(cls):
         schema = super().define_schema()
         schema.node_id = "UC_AdvMiniMaxH3ImageToVideoTemporalTokenFusion"
         schema.display_name = "Adv MiniMax H3 Image to Video (Temporal TokenFusion)"
+        schema.is_deprecated = True
         for value in schema.inputs:
             if value.id == "enable_caching":
                 value.tooltip = 'Preserves joint Qwen encoding and caches the complete post-Qwen result. Prompt or media changes invalidate it. Pre-Qwen tokens and DeepStack are never saved. VAE caching follows the selected media mode.'
-        schema.description = "Experimentally fuses corresponding video features and DeepStack before one Qwen encode per schedule, preserving the ordinary video token budget."
+        schema.description = "Deprecated: use Adv MiniMax H3 Image to Video (Temporal Fusion) with fusion_method set to token_fusion. Existing workflows retain temporal token_fusion by default."
         return schema
 
 
