@@ -3754,6 +3754,18 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                     ),
                 ),
                 io.Combo.Input("enable_caching", options=list(H3_CACHE_MODES), default="all", tooltip='All modes preserve joint Qwen encoding. Enabled modes cache the complete encoded presentation; prompt or media changes invalidate it. Images/video modes select matching VAE outputs; all includes audio VAE outputs. Raw tokens and DeepStack are never saved.'),
+                MiniMaxH3MediaConfig.Input(
+                    "media_config", optional=True,
+                    tooltip="Optionally formats Picture timestamps, sets Qwen Video sampling, and controls Video motion guidance. Its default Picture constructor matches Core handling.",
+                ),
+                io.Image.Input("video", optional=True, tooltip="Complete Video frame batch at 24 fps. The configurator controls Qwen sampling and full, spaced, or disabled VAE motion guidance."),
+                io.Audio.Input("audio", optional=True, tooltip="Optional H3 reference audio. Missing audio from a video is ignored."),
+                io.Vae.Input("audio_vae", optional=True, lazy=True, tooltip="Required only when audio is present. Skipped when audio is absent; otherwise resamples and encodes the reference audio."),
+                io.Combo.Input(
+                    "fusion_method", options=["conds_fusion", "token_fusion"],
+                    default=cls.DEFAULT_FUSION_METHOD, optional=True,
+                    tooltip="conds_fusion blends visual conditioning after Qwen encoding. token_fusion blends visual tokens and DeepStack before a joint Qwen encode. The visual fusion config controls the blend itself.",
+                ),
                 io.Autogrow.Input(
                     "reference_images",
                     template=reference_template,
@@ -3776,18 +3788,6 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                         "images combine into Picture 1. Method off keeps them as separate Pictures, except native-reference "
                         "mode ignores them. Video blocks are never fusion targets."
                     ),
-                ),
-                MiniMaxH3MediaConfig.Input(
-                    "media_config", optional=True,
-                    tooltip="Optionally formats Picture timestamps, sets Qwen Video sampling, and controls Video motion guidance. Its default Picture constructor matches Core handling.",
-                ),
-                io.Image.Input("video", optional=True, tooltip="Complete Video frame batch at 24 fps. The configurator controls Qwen sampling and full, spaced, or disabled VAE motion guidance."),
-                io.Audio.Input("audio", optional=True, tooltip="Optional H3 reference audio. Missing audio from a video is ignored."),
-                io.Vae.Input("audio_vae", optional=True, lazy=True, tooltip="Required only when audio is present. Skipped when audio is absent; otherwise resamples and encodes the reference audio."),
-                io.Combo.Input(
-                    "fusion_method", options=["conds_fusion", "token_fusion"],
-                    default=cls.DEFAULT_FUSION_METHOD, optional=True,
-                    tooltip="conds_fusion blends visual conditioning after Qwen encoding. token_fusion blends visual tokens and DeepStack before a joint Qwen encode. The visual fusion config controls the blend itself.",
                 ),
             ],
             outputs=[
@@ -3904,12 +3904,12 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True),
                 io.Boolean.Input("semantic_anchor", default=False, tooltip="Prefixes each encoded visual slot with its numbered <Picture N>: semantic anchor."),
+                io.Combo.Input("fusion_method", options=["conds_fusion", "token_fusion"], default=cls.DEFAULT_FUSION_METHOD, optional=True, tooltip="Select pre- or post-encoding spatial fusion at each resolution and batch lane. Subsequent complete-conditioning consensus is unchanged."),
                 io.Autogrow.Input(
                     "image_inputs",
                     template=autogrow_template,
                     tooltip="One batched socket equals separate visual sources. Multiple batched sockets form index-aligned lanes; singleton sockets broadcast.",
                 ),
-                io.Combo.Input("fusion_method", options=["conds_fusion", "token_fusion"], default=cls.DEFAULT_FUSION_METHOD, optional=True, tooltip="Select pre- or post-encoding spatial fusion at each resolution and batch lane. Subsequent complete-conditioning consensus is unchanged."),
             ],
             outputs=[io.Conditioning.Output()],
         )

@@ -824,8 +824,10 @@ def test_fusion_selectors_preserve_deprecated_child_defaults(monkeypatch, family
     assert issubclass(child, parent)
     for node, default in ((parent, False), (child, True)):
         schema = node.define_schema()
-        assert schema.inputs[-1].id == "fusion_method"
-        assert schema.inputs[-1].default == ("token_fusion" if default else "conds_fusion")
+        selector = next(value for value in schema.inputs if value.id == "fusion_method")
+        assert selector.default == ("token_fusion" if default else "conds_fusion")
+        if family == "consensus":
+            assert schema.inputs[-1].id == "image_inputs"
         if default:
             assert schema.is_deprecated
         node.execute(**kwargs)

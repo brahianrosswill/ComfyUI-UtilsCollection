@@ -572,13 +572,13 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
             "vlm_resolution",
             "vlm_video_resolution",
             "enable_caching",
-            "reference_images",
-        "fusion_images",
         "media_config",
         "video",
         "audio",
             "audio_vae",
         "fusion_method",
+        "reference_images",
+        "fusion_images",
     ]
     assert inputs["vae"].optional is True
     assert inputs["first_frame"].optional is True
@@ -626,8 +626,9 @@ def test_minimax_h3_fusion_selector_preserves_legacy_defaults(monkeypatch, legac
     else:
         node = encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTokenFusion if legacy else UC_AdvancedMiniMaxH3ImageToVideo
     schema = node.define_schema()
-    selector = schema.inputs[-1]
-    assert selector.id == "fusion_method"
+    selector = next(value for value in schema.inputs if value.id == "fusion_method")
+    if not temporal:
+        assert [value.id for value in schema.inputs[-2:]] == ["reference_images", "fusion_images"]
     assert selector.default == ("token_fusion" if legacy else "conds_fusion")
     assert schema.is_deprecated is legacy
     calls = []
