@@ -1983,6 +1983,8 @@ class UC_WeightedTextEncodeSystemPrompt(io.ComfyNode):
 
 
 class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
+    DEFAULT_FUSION_METHOD = "conds_fusion"
+
     @classmethod
     def define_schema(cls):
         autogrow_template = io.Autogrow.TemplatePrefix(
@@ -2047,6 +2049,7 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
                 io.Boolean.Input("semantic_anchor", default=False, tooltip="Prefixes each encoded visual slot with its numbered <Picture N>: semantic anchor."),
                 io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
+                io.Combo.Input("fusion_method", options=["conds_fusion", "token_fusion"], default=cls.DEFAULT_FUSION_METHOD, optional=True, tooltip="Fuse visual conditioning after encoding, or visual features and DeepStack before joint encoding. Off/no-image behavior remains unchanged."),
             ],
             outputs=[
                 io.Conditioning.Output(),
@@ -2054,7 +2057,30 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8, semantic_anchor: bool = False) -> io.NodeOutput:
+    def execute(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8, semantic_anchor: bool = False, fusion_method=None) -> io.NodeOutput:
+        method = cls.DEFAULT_FUSION_METHOD if fusion_method is None else fusion_method
+        if method not in ("conds_fusion", "token_fusion"):
+            raise ValueError(f"Unsupported visual fusion method: {method}")
+        execute = cls._execute_token_fusion if method == "token_fusion" else cls._execute_conds_fusion
+        return execute(
+            clip=clip,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            vlm_resolution=vlm_resolution,
+            image_inputs=image_inputs,
+            visual_fusion_config=visual_fusion_config,
+            formula=formula,
+            padding_method=padding_method,
+            vae_resolution=vae_resolution,
+            ref_latent_mode=ref_latent_mode,
+            vae=vae,
+            multiplier=multiplier,
+            vae_dimension_multiple=vae_dimension_multiple,
+            semantic_anchor=semantic_anchor,
+        )
+
+    @classmethod
+    def _execute_conds_fusion(cls, clip, prompt, system_prompt, vlm_resolution, image_inputs: io.Autogrow.Type, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, vae_dimension_multiple=8, semantic_anchor: bool = False) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
         minimax_h3 = is_minimax_h3_text_encoder(clip)
@@ -2359,6 +2385,99 @@ class UC_AdvancedVisualConditioningEncode(io.ComfyNode):
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
         return io.NodeOutput(conditioning)
+
+
+    @classmethod
+    def _execute_token_fusion(
+        cls,
+        clip,
+        prompt,
+        vlm_resolution,
+        image_inputs,
+        visual_fusion_config=None,
+        formula="",
+        padding_method="zero-pad",
+        vae_resolution="Fast (1024)",
+        ref_latent_mode="off",
+        vae=None,
+        multiplier=1.0,
+        vae_dimension_multiple=8,
+        semantic_anchor=False,
+        system_prompt="",
+    ):
+        config = visual_fusion_config or {"visual_fusion_method": "off"}
+        if config.get("visual_fusion_method", "off") == "off":
+            kwargs = dict(
+                clip=clip,
+                prompt=prompt,
+                vlm_resolution=vlm_resolution,
+                image_inputs=image_inputs,
+                visual_fusion_config=visual_fusion_config,
+                formula=formula,
+                padding_method=padding_method,
+                vae_resolution=vae_resolution,
+                ref_latent_mode=ref_latent_mode,
+                vae=vae,
+                multiplier=multiplier,
+                vae_dimension_multiple=vae_dimension_multiple,
+                semantic_anchor=semantic_anchor,
+            )
+            kwargs["system_prompt"] = system_prompt
+            return cls._execute_conds_fusion(**kwargs)
+
+        _, active_images, _ = extract_and_flatten_images(image_inputs)
+        if not active_images:
+            kwargs = dict(
+                clip=clip,
+                prompt=prompt,
+                vlm_resolution=vlm_resolution,
+                image_inputs=image_inputs,
+                visual_fusion_config=visual_fusion_config,
+                formula=formula,
+                padding_method=padding_method,
+                vae_resolution=vae_resolution,
+                ref_latent_mode=ref_latent_mode,
+                vae=vae,
+                multiplier=multiplier,
+                vae_dimension_multiple=vae_dimension_multiple,
+                semantic_anchor=semantic_anchor,
+            )
+            kwargs["system_prompt"] = system_prompt
+            return cls._execute_conds_fusion(**kwargs)
+        if is_minimax_h3_text_encoder(clip) and ref_latent_mode != "off":
+            raise ValueError(
+                "MiniMax H3 reference latents require Core's MiniMax H3 reference conditioning node; set ref_latent_mode to off."
+            )
+        conditioning, _ = execute_token_fusion_visual_conditioning(
+            clip,
+            prompt,
+            active_images,
+            config,
+            vlm_resolution,
+            system_prompt,
+            multiplier,
+            True,
+        )
+        ref_latents = []
+        if vae is not None and ref_latent_mode != "off":
+            resolutions = {
+                "Ultra (512)": 512,
+                "Turbo (768)": 768,
+                "Fast (1024)": 1024,
+                "Balanced (1280)": 1280,
+                "Detailed (1536)": 1536,
+            }
+            for image in active_images:
+                if "single" in ref_latent_mode and ref_latents:
+                    break
+                samples = image.movedim(-1, 1)
+                target = None if vae_resolution == "Original" else resolutions[vae_resolution]
+                prepared = prepare_vae_reference_image(samples, target, vae_dimension_multiple)
+                ref_latents.append(vae.encode(prepared.movedim(1, -1)[:, :, :, :3]))
+        return io.NodeOutput(
+            apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
+        )
+
 
 
 class TextEncodeEditScaledAdv(io.ComfyNode):
@@ -2956,6 +3075,8 @@ class Krea2WeightPatch:
         return types.MethodType(krea2_attn_forward_weight, obj)
 
 class UC_Krea2TokenAttentionWeight(io.ComfyNode):
+    DEFAULT_FUSION_METHOD = "conds_fusion"
+
     @classmethod
     def define_schema(cls):
         autogrow_template = io.Autogrow.TemplatePrefix(
@@ -3027,6 +3148,7 @@ class UC_Krea2TokenAttentionWeight(io.ComfyNode):
                 io.Float.Input("multiplier", default=1.0, min=-1000.0, max=1000.0, step=0.1, tooltip="Overall multiplier applied to the final conditioning vector."),
                 io.Int.Input("vae_dimension_multiple", default=8, min=4, max=256, step=4, advanced=True, tooltip="Pixel multiple used to align reference images before VAE encoding."),
                 io.Autogrow.Input("image_inputs", template=autogrow_template, tooltip="Multimodal images. Maps active inputs sequentially to variables (a, b, c, ...)."),
+                io.Combo.Input("fusion_method", options=["conds_fusion", "token_fusion"], default=cls.DEFAULT_FUSION_METHOD, optional=True, tooltip="Select pre- or post-encoding visual fusion. Experimental attention weighting and off/no-image behavior remain unchanged."),
             ],
             outputs=[
                 io.Model.Output(),
@@ -3036,7 +3158,32 @@ class UC_Krea2TokenAttentionWeight(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: int, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
+    def execute(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: int, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0, vae_dimension_multiple=8, fusion_method=None) -> io.NodeOutput:
+        method = cls.DEFAULT_FUSION_METHOD if fusion_method is None else fusion_method
+        if method not in ("conds_fusion", "token_fusion"):
+            raise ValueError(f"Unsupported visual fusion method: {method}")
+        execute = cls._execute_token_fusion if method == "token_fusion" else cls._execute_conds_fusion
+        return execute(
+            model=model,
+            clip=clip,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            attention_weights=attention_weights,
+            image_inputs=image_inputs,
+            vlm_resolution=vlm_resolution,
+            visual_fusion_config=visual_fusion_config,
+            formula=formula,
+            padding_method=padding_method,
+            vae_resolution=vae_resolution,
+            ref_latent_mode=ref_latent_mode,
+            vae=vae,
+            multiplier=multiplier,
+            strength=strength,
+            vae_dimension_multiple=vae_dimension_multiple,
+        )
+
+    @classmethod
+    def _execute_conds_fusion(cls, model, clip, prompt, system_prompt, attention_weights, image_inputs: io.Autogrow.Type, vlm_resolution: int, visual_fusion_config: dict = None, formula: str = "", padding_method: str = "zero-pad", vae_resolution="Fast (1024)", ref_latent_mode="off", vae=None, multiplier: float = 1.0, strength: float = 1.0, vae_dimension_multiple=8) -> io.NodeOutput:
         # Collect, extract, and parse all active (non-null) connected images sequentially (including batched images)
         _, active_images, _ = extract_and_flatten_images(image_inputs)
 
@@ -3291,6 +3438,91 @@ class UC_Krea2TokenAttentionWeight(io.ComfyNode):
 
         conditioning = apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
 
+        return io.NodeOutput(model_clone, conditioning)
+
+
+    @classmethod
+    def _execute_token_fusion(
+        cls, model, clip, prompt, system_prompt, attention_weights, image_inputs,
+        vlm_resolution, visual_fusion_config=None, formula="",
+        padding_method="zero-pad", vae_resolution="Fast (1024)",
+        ref_latent_mode="off", vae=None, multiplier=1.0, strength=1.0,
+        vae_dimension_multiple=8,
+    ):
+        config = visual_fusion_config or {"visual_fusion_method": "off"}
+        if config.get("visual_fusion_method", "off") == "off":
+            return cls._execute_conds_fusion(
+                model, clip, prompt, system_prompt, attention_weights, image_inputs,
+                vlm_resolution, visual_fusion_config, formula, padding_method,
+                vae_resolution, ref_latent_mode, vae, multiplier, strength,
+                vae_dimension_multiple,
+            )
+        _, active_images, _ = extract_and_flatten_images(image_inputs)
+        if not active_images:
+            return cls._execute_conds_fusion(
+                model, clip, prompt, system_prompt, attention_weights, image_inputs,
+                vlm_resolution, visual_fusion_config, formula, padding_method,
+                vae_resolution, ref_latent_mode, vae, multiplier, strength,
+                vae_dimension_multiple,
+            )
+        terms = [
+            (match.group(1).strip(), float(match.group(2)))
+            for match in re.finditer(r"\(([^():]+):(-?\d*\.?\d+)\)", attention_weights)
+        ]
+        if any(not math.isfinite(weight) or weight < 0 for _, weight in terms):
+            raise ValueError("Krea2 attention weights must be finite and non-negative.")
+        conditioning, token_sources = execute_token_fusion_visual_conditioning(
+            clip, prompt, active_images, config, vlm_resolution, system_prompt, multiplier, True
+        )
+        token_list = token_sources[0][next(iter(token_sources[0]))][0]
+        ids = [
+            -1 if isinstance(token, dict)
+            else int(token[0] if isinstance(token, tuple) else token)
+            for token in token_list
+        ]
+        mapping = build_token_to_conditioning_map(token_list, conditioning[0][0])
+        weight_pairs = []
+        for phrase, weight in terms:
+            bias = math.log(max(weight, 1e-6)) * strength
+            for variant in (" " + phrase, phrase):
+                sub = krea2_token_ids(clip, variant)
+                start, end = krea2_user_content_span(sub)
+                if start is not None:
+                    sub = sub[start:end]
+                matches = find_subsequence(ids, sub, 0, len(ids))
+                if matches:
+                    for match in matches:
+                        for offset in range(len(sub)):
+                            index = match + offset
+                            if index < len(mapping) and mapping[index][0] >= 0:
+                                weight_pairs.append((mapping[index][0], bias))
+                    break
+        model_clone = model.clone()
+        if weight_pairs:
+            diffusion_model = model_clone.get_model_object("diffusion_model")
+            transformer_options = model_clone.model_options.get("transformer_options", {}).copy()
+            transformer_options["krea2_token_weights"] = weight_pairs
+            model_clone.model_options["transformer_options"] = transformer_options
+            for index, block in enumerate(diffusion_model.blocks):
+                if hasattr(block, "attn"):
+                    patched = Krea2WeightPatch().__get__(block.attn, block.attn.__class__)
+                    model_clone.add_object_patch(f"diffusion_model.blocks.{index}.attn.forward", patched)
+        ref_latents = []
+        if vae is not None and ref_latent_mode != "off":
+            resolutions = {
+                "Ultra (512)": 512, "Turbo (768)": 768, "Fast (1024)": 1024,
+                "Balanced (1280)": 1280, "Detailed (1536)": 1536,
+            }
+            for image in active_images:
+                if "single" in ref_latent_mode and ref_latents:
+                    break
+                samples = image.movedim(-1, 1)
+                target = None if vae_resolution == "Original" else resolutions[vae_resolution]
+                prepared = prepare_vae_reference_image(samples, target, vae_dimension_multiple)
+                ref_latents.append(vae.encode(prepared.movedim(1, -1)[:, :, :, :3]))
+        conditioning = apply_parallel_ref_latents(
+            clip, conditioning, ref_latents, ref_latent_mode
+        )
         return io.NodeOutput(model_clone, conditioning)
 
 
@@ -3625,8 +3857,8 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
 class UC_AdvancedVisConEncoder(io.ComfyNode):
     NODE_ID = "UC_AdvancedVisConEncoder"
     DISPLAY_NAME = "Advanced Visual Consensus Encoder"
-    TOKEN_FUSION = False
-    CONFIG_TOOLTIP = "Required joint configuration. Spatial fusion completes independently at every resolution before complete-conditioning consensus."
+    DEFAULT_FUSION_METHOD = "conds_fusion"
+    CONFIG_TOOLTIP = "Required joint configuration. The selected fusion_method completes spatial fusion independently at every resolution before complete-conditioning consensus."
 
     @classmethod
     def define_schema(cls):
@@ -3677,6 +3909,7 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
                     template=autogrow_template,
                     tooltip="One batched socket equals separate visual sources. Multiple batched sockets form index-aligned lanes; singleton sockets broadcast.",
                 ),
+                io.Combo.Input("fusion_method", options=["conds_fusion", "token_fusion"], default=cls.DEFAULT_FUSION_METHOD, optional=True, tooltip="Select pre- or post-encoding spatial fusion at each resolution and batch lane. Subsequent complete-conditioning consensus is unchanged."),
             ],
             outputs=[io.Conditioning.Output()],
         )
@@ -3696,7 +3929,11 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
         multiplier=1.0,
         vae_dimension_multiple=8,
         semantic_anchor=False,
+        fusion_method=None,
     ) -> io.NodeOutput:
+        method = cls.DEFAULT_FUSION_METHOD if fusion_method is None else fusion_method
+        if method not in ("conds_fusion", "token_fusion"):
+            raise ValueError(f"Unsupported visual fusion method: {method}")
         conditioning = execute_advanced_visual_consensus(
             clip,
             prompt,
@@ -3710,7 +3947,7 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
             multiplier,
             vae_dimension_multiple,
             apply_parallel_ref_latents,
-            token_fusion=cls.TOKEN_FUSION,
+            token_fusion=method == "token_fusion",
             semantic_anchor=semantic_anchor,
         )
         return io.NodeOutput(conditioning)
@@ -3719,8 +3956,15 @@ class UC_AdvancedVisConEncoder(io.ComfyNode):
 class UC_AdvancedVisConEncoderTokenFusion(UC_AdvancedVisConEncoder):
     NODE_ID = "UC_AdvancedVisConEncoderTokenFusion"
     DISPLAY_NAME = "Advanced Visual Consensus Encoder (TokenFusion)"
-    TOKEN_FUSION = True
+    DEFAULT_FUSION_METHOD = "token_fusion"
     CONFIG_TOOLTIP = "Required joint configuration. At each resolution, TokenFusion fuses visual and DeepStack tokens before one conditioning encode; complete-conditioning consensus then combines the encoded resolution samples."
+
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.is_deprecated = True
+        schema.description = "Deprecated: use Advanced Visual Consensus Encoder with fusion_method set to token_fusion. Existing workflows retain token_fusion by default."
+        return schema
 
 
 class UC_VLMInputEmbeds(UC_Qwen3VLInputEmbeds):
@@ -3781,126 +4025,43 @@ for _deprecated_node in (
     _mark_deprecated_node(_deprecated_node)
 
 
-class _TokenFusionConditioningNode(io.ComfyNode):
-    BASE_NODE = None
-    NODE_ID = ""
-    DISPLAY_NAME = ""
-    USE_SYSTEM_PROMPT = False
-    DEPRECATED = False
+class UC_AdvancedVisualConditioningEncodeTokenFusion(UC_AdvancedVisualConditioningEncode):
+    DEFAULT_FUSION_METHOD = "token_fusion"
+    NODE_ID = "UC_AdvancedVisualConditioningEncodeTokenFusion"
+    DISPLAY_NAME = "Advanced Visual Conditioning Encode (TokenFusion)"
 
     @classmethod
     def define_schema(cls):
-        schema = cls.BASE_NODE.define_schema()
+        schema = super().define_schema()
         schema.node_id = cls.NODE_ID
         schema.display_name = cls.DISPLAY_NAME
-        schema.is_deprecated = cls.DEPRECATED
+        schema.is_deprecated = True
+        schema.description = "Deprecated: use Advanced Visual Conditioning Encode with fusion_method set to token_fusion. Existing workflows retain token_fusion by default."
         return schema
 
     @classmethod
     def execute(
-        cls,
-        clip,
-        prompt,
-        vlm_resolution,
-        image_inputs,
-        visual_fusion_config=None,
-        formula="",
-        padding_method="zero-pad",
-        vae_resolution="Fast (1024)",
-        ref_latent_mode="off",
-        vae=None,
-        multiplier=1.0,
-        vae_dimension_multiple=8,
-        semantic_anchor=False,
-        system_prompt="",
+        cls, clip, prompt, vlm_resolution, image_inputs, visual_fusion_config=None,
+        formula="", padding_method="zero-pad", vae_resolution="Fast (1024)",
+        ref_latent_mode="off", vae=None, multiplier=1.0, vae_dimension_multiple=8,
+        semantic_anchor=False, system_prompt="", fusion_method=None,
     ):
-        config = visual_fusion_config or {"visual_fusion_method": "off"}
-        if config.get("visual_fusion_method", "off") == "off":
-            kwargs = dict(
-                clip=clip,
-                prompt=prompt,
-                vlm_resolution=vlm_resolution,
-                image_inputs=image_inputs,
-                visual_fusion_config=visual_fusion_config,
-                formula=formula,
-                padding_method=padding_method,
-                vae_resolution=vae_resolution,
-                ref_latent_mode=ref_latent_mode,
-                vae=vae,
-                multiplier=multiplier,
-                vae_dimension_multiple=vae_dimension_multiple,
-                semantic_anchor=semantic_anchor,
-            )
-            if cls.USE_SYSTEM_PROMPT:
-                kwargs["system_prompt"] = system_prompt
-            return cls.BASE_NODE.execute(**kwargs)
-
-        _, active_images, _ = extract_and_flatten_images(image_inputs)
-        if not active_images:
-            kwargs = dict(
-                clip=clip,
-                prompt=prompt,
-                vlm_resolution=vlm_resolution,
-                image_inputs=image_inputs,
-                visual_fusion_config=visual_fusion_config,
-                formula=formula,
-                padding_method=padding_method,
-                vae_resolution=vae_resolution,
-                ref_latent_mode=ref_latent_mode,
-                vae=vae,
-                multiplier=multiplier,
-                vae_dimension_multiple=vae_dimension_multiple,
-                semantic_anchor=semantic_anchor,
-            )
-            if cls.USE_SYSTEM_PROMPT:
-                kwargs["system_prompt"] = system_prompt
-            return cls.BASE_NODE.execute(**kwargs)
-        if is_minimax_h3_text_encoder(clip) and ref_latent_mode != "off":
-            raise ValueError(
-                "MiniMax H3 reference latents require Core's MiniMax H3 reference conditioning node; set ref_latent_mode to off."
-            )
-        conditioning, _ = execute_token_fusion_visual_conditioning(
-            clip,
-            prompt,
-            active_images,
-            config,
-            vlm_resolution,
-            system_prompt if cls.USE_SYSTEM_PROMPT else None,
-            multiplier,
-            cls.USE_SYSTEM_PROMPT,
+        return super().execute(
+            clip=clip, prompt=prompt, system_prompt=system_prompt,
+            vlm_resolution=vlm_resolution, image_inputs=image_inputs,
+            visual_fusion_config=visual_fusion_config, formula=formula,
+            padding_method=padding_method, vae_resolution=vae_resolution,
+            ref_latent_mode=ref_latent_mode, vae=vae, multiplier=multiplier,
+            vae_dimension_multiple=vae_dimension_multiple,
+            semantic_anchor=semantic_anchor, fusion_method=fusion_method,
         )
-        ref_latents = []
-        if vae is not None and ref_latent_mode != "off":
-            resolutions = {
-                "Ultra (512)": 512,
-                "Turbo (768)": 768,
-                "Fast (1024)": 1024,
-                "Balanced (1280)": 1280,
-                "Detailed (1536)": 1536,
-            }
-            for image in active_images:
-                if "single" in ref_latent_mode and ref_latents:
-                    break
-                samples = image.movedim(-1, 1)
-                target = None if vae_resolution == "Original" else resolutions[vae_resolution]
-                prepared = prepare_vae_reference_image(samples, target, vae_dimension_multiple)
-                ref_latents.append(vae.encode(prepared.movedim(1, -1)[:, :, :, :3]))
-        return io.NodeOutput(
-            apply_parallel_ref_latents(clip, conditioning, ref_latents, ref_latent_mode)
-        )
-
-
-class UC_AdvancedVisualConditioningEncodeTokenFusion(_TokenFusionConditioningNode):
-    BASE_NODE = UC_AdvancedVisualConditioningEncode
-    NODE_ID = "UC_AdvancedVisualConditioningEncodeTokenFusion"
-    DISPLAY_NAME = "Advanced Visual Conditioning Encode (TokenFusion)"
-    USE_SYSTEM_PROMPT = True
 
 
 class UC_Krea2TokenAttentionWeightTokenFusion(UC_Krea2TokenAttentionWeight):
+    DEFAULT_FUSION_METHOD = "token_fusion"
     NODE_ID = "UC_Krea2TokenAttentionWeightTokenFusion"
     DISPLAY_NAME = "Krea2 Token Attention Weight (TokenFusion)"
-    DEPRECATED = False
+    DEPRECATED = True
 
     @classmethod
     def define_schema(cls):
@@ -3909,91 +4070,9 @@ class UC_Krea2TokenAttentionWeightTokenFusion(UC_Krea2TokenAttentionWeight):
         schema.display_name = cls.DISPLAY_NAME
         schema.is_deprecated = cls.DEPRECATED
         schema.is_experimental = True
+        schema.description = "Deprecated: use Krea2 Token Attention Weight with fusion_method set to token_fusion. Existing workflows retain token_fusion by default; attention weighting remains experimental."
         return schema
 
-    @classmethod
-    def execute(
-        cls, model, clip, prompt, system_prompt, attention_weights, image_inputs,
-        vlm_resolution, visual_fusion_config=None, formula="",
-        padding_method="zero-pad", vae_resolution="Fast (1024)",
-        ref_latent_mode="off", vae=None, multiplier=1.0, strength=1.0,
-        vae_dimension_multiple=8,
-    ):
-        config = visual_fusion_config or {"visual_fusion_method": "off"}
-        if config.get("visual_fusion_method", "off") == "off":
-            return super().execute(
-                model, clip, prompt, system_prompt, attention_weights, image_inputs,
-                vlm_resolution, visual_fusion_config, formula, padding_method,
-                vae_resolution, ref_latent_mode, vae, multiplier, strength,
-                vae_dimension_multiple,
-            )
-        _, active_images, _ = extract_and_flatten_images(image_inputs)
-        if not active_images:
-            return super().execute(
-                model, clip, prompt, system_prompt, attention_weights, image_inputs,
-                vlm_resolution, visual_fusion_config, formula, padding_method,
-                vae_resolution, ref_latent_mode, vae, multiplier, strength,
-                vae_dimension_multiple,
-            )
-        terms = [
-            (match.group(1).strip(), float(match.group(2)))
-            for match in re.finditer(r"\(([^():]+):(-?\d*\.?\d+)\)", attention_weights)
-        ]
-        if any(not math.isfinite(weight) or weight < 0 for _, weight in terms):
-            raise ValueError("Krea2 attention weights must be finite and non-negative.")
-        conditioning, token_sources = execute_token_fusion_visual_conditioning(
-            clip, prompt, active_images, config, vlm_resolution, system_prompt, multiplier, True
-        )
-        token_list = token_sources[0][next(iter(token_sources[0]))][0]
-        ids = [
-            -1 if isinstance(token, dict)
-            else int(token[0] if isinstance(token, tuple) else token)
-            for token in token_list
-        ]
-        mapping = build_token_to_conditioning_map(token_list, conditioning[0][0])
-        weight_pairs = []
-        for phrase, weight in terms:
-            bias = math.log(max(weight, 1e-6)) * strength
-            for variant in (" " + phrase, phrase):
-                sub = krea2_token_ids(clip, variant)
-                start, end = krea2_user_content_span(sub)
-                if start is not None:
-                    sub = sub[start:end]
-                matches = find_subsequence(ids, sub, 0, len(ids))
-                if matches:
-                    for match in matches:
-                        for offset in range(len(sub)):
-                            index = match + offset
-                            if index < len(mapping) and mapping[index][0] >= 0:
-                                weight_pairs.append((mapping[index][0], bias))
-                    break
-        model_clone = model.clone()
-        if weight_pairs:
-            diffusion_model = model_clone.get_model_object("diffusion_model")
-            transformer_options = model_clone.model_options.get("transformer_options", {}).copy()
-            transformer_options["krea2_token_weights"] = weight_pairs
-            model_clone.model_options["transformer_options"] = transformer_options
-            for index, block in enumerate(diffusion_model.blocks):
-                if hasattr(block, "attn"):
-                    patched = Krea2WeightPatch().__get__(block.attn, block.attn.__class__)
-                    model_clone.add_object_patch(f"diffusion_model.blocks.{index}.attn.forward", patched)
-        ref_latents = []
-        if vae is not None and ref_latent_mode != "off":
-            resolutions = {
-                "Ultra (512)": 512, "Turbo (768)": 768, "Fast (1024)": 1024,
-                "Balanced (1280)": 1280, "Detailed (1536)": 1536,
-            }
-            for image in active_images:
-                if "single" in ref_latent_mode and ref_latents:
-                    break
-                samples = image.movedim(-1, 1)
-                target = None if vae_resolution == "Original" else resolutions[vae_resolution]
-                prepared = prepare_vae_reference_image(samples, target, vae_dimension_multiple)
-                ref_latents.append(vae.encode(prepared.movedim(1, -1)[:, :, :, :3]))
-        conditioning = apply_parallel_ref_latents(
-            clip, conditioning, ref_latents, ref_latent_mode
-        )
-        return io.NodeOutput(model_clone, conditioning)
 
 
 class UC_AdvMiniMaxH3ImageToVideoTokenFusion(UC_AdvancedMiniMaxH3ImageToVideo):

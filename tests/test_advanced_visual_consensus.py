@@ -69,8 +69,8 @@ def test_fresh_node_ids_names_and_socket_types():
     assert list(_inputs(UC_AdvancedVisConEncoderTokenFusion)) == list(
         _inputs(UC_AdvancedVisConEncoder)
     )
-    assert UC_AdvancedVisConEncoder.TOKEN_FUSION is False
-    assert UC_AdvancedVisConEncoderTokenFusion.TOKEN_FUSION is True
+    assert _inputs(UC_AdvancedVisConEncoder)["fusion_method"].default == "conds_fusion"
+    assert _inputs(UC_AdvancedVisConEncoderTokenFusion)["fusion_method"].default == "token_fusion"
     assert "fuses visual and DeepStack tokens before one conditioning encode" in (
         _inputs(UC_AdvancedVisConEncoderTokenFusion)[
             "visual_consensus_config"

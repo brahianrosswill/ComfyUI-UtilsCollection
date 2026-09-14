@@ -795,6 +795,50 @@ def test_token_fusion_alternative_nodes_have_distinct_ids_and_matching_sockets()
         assert [value.id for value in alternative_schema.outputs] == [value.id for value in original_schema.outputs]
 
 
+@pytest.mark.parametrize("family", ["visual", "krea2", "consensus"])
+def test_fusion_selectors_preserve_deprecated_child_defaults(monkeypatch, family):
+    parent, child = {
+        "visual": (encoder_nodes.UC_AdvancedVisualConditioningEncode, encoder_nodes.UC_AdvancedVisualConditioningEncodeTokenFusion),
+        "krea2": (encoder_nodes.UC_Krea2TokenAttentionWeight, encoder_nodes.UC_Krea2TokenAttentionWeightTokenFusion),
+        "consensus": (encoder_nodes.UC_AdvancedVisConEncoder, encoder_nodes.UC_AdvancedVisConEncoderTokenFusion),
+    }[family]
+    calls = []
+    if family == "consensus":
+        def execute(*args, **kwargs):
+            calls.append(kwargs["token_fusion"])
+            return []
+        monkeypatch.setattr(encoder_nodes, "execute_advanced_visual_consensus", execute)
+        kwargs = dict(clip=None, prompt="", system_prompt="", vlm_resolution=384, image_inputs={}, visual_consensus_config={})
+    else:
+        def conds(cls, **kwargs):
+            calls.append(False)
+            return encoder_nodes.io.NodeOutput([])
+        def tokens(cls, **kwargs):
+            calls.append(True)
+            return encoder_nodes.io.NodeOutput([])
+        monkeypatch.setattr(parent, "_execute_conds_fusion", classmethod(conds))
+        monkeypatch.setattr(parent, "_execute_token_fusion", classmethod(tokens))
+        kwargs = dict(clip=None, prompt="", system_prompt="", vlm_resolution=384, image_inputs={})
+        if family == "krea2":
+            kwargs.update(model=None, attention_weights="")
+    assert issubclass(child, parent)
+    for node, default in ((parent, False), (child, True)):
+        schema = node.define_schema()
+        assert schema.inputs[-1].id == "fusion_method"
+        assert schema.inputs[-1].default == ("token_fusion" if default else "conds_fusion")
+        if default:
+            assert schema.is_deprecated
+        node.execute(**kwargs)
+        node.execute(**kwargs, fusion_method="conds_fusion")
+        node.execute(**kwargs, fusion_method="token_fusion")
+        assert calls[-3:] == [default, False, True]
+        with pytest.raises(ValueError, match="Unsupported visual fusion method"):
+            node.execute(**kwargs, fusion_method="unknown")
+    if family == "visual":
+        child.execute(None, "", 384, {})
+        assert calls[-1] is True
+
+
 def test_token_fusion_minimax_slots_share_one_final_encode(monkeypatch, caplog):
     calls = {"process": 0, "encode": 0}
     caplog.set_level("INFO")
