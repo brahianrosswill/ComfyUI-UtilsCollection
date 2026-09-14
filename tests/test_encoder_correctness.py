@@ -578,6 +578,7 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
         "video",
         "audio",
             "audio_vae",
+        "fusion_method",
     ]
     assert inputs["vae"].optional is True
     assert inputs["first_frame"].optional is True
@@ -615,6 +616,31 @@ def test_advanced_minimax_h3_node_schema_separates_visual_roles():
         "positive",
         None,
     ]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_minimax_h3_fusion_selector_preserves_legacy_defaults(monkeypatch, legacy):
+    node = encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTokenFusion if legacy else UC_AdvancedMiniMaxH3ImageToVideo
+    schema = node.define_schema()
+    selector = schema.inputs[-1]
+    assert selector.id == "fusion_method"
+    assert selector.default == ("token_fusion" if legacy else "conds_fusion")
+    assert schema.is_deprecated is legacy
+    calls = []
+
+    def execute(*args, **kwargs):
+        calls.append(kwargs["token_fusion"])
+        return [], {}
+
+    monkeypatch.setattr(encoder_nodes, "execute_advanced_minimax_h3_image_to_video", execute)
+    # Old saved prompts have no fusion_method input. Their algorithms must not change.
+    node.execute(object())
+    node.execute(object(), fusion_method="conds_fusion")
+    node.execute(object(), fusion_method="token_fusion")
+    assert calls == [legacy, False, True]
+    with pytest.raises(ValueError, match="Unsupported MiniMax H3 fusion method"):
+        node.execute(object(), fusion_method="unknown")
+    assert len(calls) == 3
 
 
 def test_minimax_h3_media_config_schema_and_payload():
@@ -2431,7 +2457,7 @@ def test_temporal_node_schemas_keep_standard_sockets_except_picture_fusion():
     assert not standard.is_experimental
     assert not encoder_nodes.UC_AdvancedMiniMaxH3ImageToVideo.EXPERIMENTAL
     assert not encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTokenFusion.GET_SCHEMA().is_experimental
-    expected = [value.id for value in standard.inputs if value.id != "fusion_images"] + ["text_blend_config"]
+    expected = [value.id for value in standard.inputs if value.id not in ("fusion_images", "fusion_method")] + ["text_blend_config"]
     for node in (encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTemporalFusion, encoder_nodes.UC_AdvMiniMaxH3ImageToVideoTemporalTokenFusion):
         schema = node.GET_SCHEMA()
         assert schema.is_experimental

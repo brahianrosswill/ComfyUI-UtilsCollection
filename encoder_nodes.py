@@ -3405,6 +3405,8 @@ class UC_MiniMaxH3VLMGuide(io.ComfyNode):
 
 
 class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
+    DEFAULT_FUSION_METHOD = "conds_fusion"
+
     @classmethod
     def define_schema(cls):
         reference_template = io.Autogrow.TemplateNames(
@@ -3550,6 +3552,11 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
                 io.Image.Input("video", optional=True, tooltip="Complete Video frame batch at 24 fps. The configurator controls Qwen sampling and full, spaced, or disabled VAE motion guidance."),
                 io.Audio.Input("audio", optional=True, tooltip="Optional H3 reference audio. Missing audio from a video is ignored."),
                 io.Vae.Input("audio_vae", optional=True, lazy=True, tooltip="Required only when audio is present. Skipped when audio is absent; otherwise resamples and encodes the reference audio."),
+                io.Combo.Input(
+                    "fusion_method", options=["conds_fusion", "token_fusion"],
+                    default=cls.DEFAULT_FUSION_METHOD, optional=True,
+                    tooltip="conds_fusion blends visual conditioning after Qwen encoding. token_fusion blends visual tokens and DeepStack before a joint Qwen encode. The visual fusion config controls the blend itself.",
+                ),
             ],
             outputs=[
                 io.Conditioning.Output(display_name="positive"),
@@ -3584,7 +3591,11 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
         audio=None,
         audio_vae=None,
         enable_caching="all",
+        fusion_method=None,
     ) -> io.NodeOutput:
+        fusion_method = cls.DEFAULT_FUSION_METHOD if fusion_method is None else fusion_method
+        if fusion_method not in ("conds_fusion", "token_fusion"):
+            raise ValueError(f"Unsupported MiniMax H3 fusion method: {fusion_method}")
         conditioning, latent = execute_advanced_minimax_h3_image_to_video(
             clip,
             vae,
@@ -3606,6 +3617,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
             audio=audio,
             audio_vae=audio_vae,
             enable_caching=enable_caching,
+            token_fusion=fusion_method == "token_fusion",
         )
         return io.NodeOutput(conditioning, latent)
 
@@ -3985,37 +3997,19 @@ class UC_Krea2TokenAttentionWeightTokenFusion(UC_Krea2TokenAttentionWeight):
 
 
 class UC_AdvMiniMaxH3ImageToVideoTokenFusion(UC_AdvancedMiniMaxH3ImageToVideo):
+    DEFAULT_FUSION_METHOD = "token_fusion"
+
     @classmethod
     def define_schema(cls):
         schema = super().define_schema()
         schema.node_id = "UC_AdvMiniMaxH3ImageToVideoTokenFusion"
         schema.display_name = "Adv MiniMax H3 Image to Video (TokenFusion)"
+        schema.is_deprecated = True
+        schema.description = "Deprecated: use Advanced MiniMax H3 Image to Video with fusion_method set to token_fusion. Existing workflows retain token_fusion by default."
         for value in schema.inputs:
             if value.id == "enable_caching":
                 value.tooltip = 'Preserves joint Qwen encoding and caches the complete post-Qwen result. Prompt or media changes invalidate it. Pre-Qwen tokens and DeepStack are never saved. VAE caching follows the selected media mode.'
         return schema
-
-    @classmethod
-    def execute(
-        cls, clip, vae=None, prompt=None, width=None, height=None, length=None, first_frame=None,
-        last_frame=None, reference_images=None, fusion_images=None,
-        visual_fusion_config=None, multiplier=1.0, ref_image_size="match",
-        vlm_resolution=384, vlm_video_resolution=384, media_config=None,
-        video=None, audio=None, audio_vae=None,
-        enable_caching="all",
-    ):
-        conditioning, latent = execute_advanced_minimax_h3_image_to_video(
-            clip, vae, prompt, width, height, length,
-            first_frame=first_frame, last_frame=last_frame,
-            reference_images=reference_images, fusion_images=fusion_images,
-            visual_fusion_config=visual_fusion_config, multiplier=multiplier,
-            ref_image_size=ref_image_size, vlm_resolution=vlm_resolution,
-            vlm_video_resolution=vlm_video_resolution,
-            media_config=media_config, video=video, audio=audio,
-            audio_vae=audio_vae, token_fusion=True,
-            enable_caching=enable_caching,
-        )
-        return io.NodeOutput(conditioning, latent)
 
 
 class UC_AdvMiniMaxH3ImageToVideoTemporalFusion(UC_AdvancedMiniMaxH3ImageToVideo):
@@ -4029,7 +4023,7 @@ class UC_AdvMiniMaxH3ImageToVideoTemporalFusion(UC_AdvancedMiniMaxH3ImageToVideo
         schema.is_experimental = True
         schema.display_name = "Adv MiniMax H3 Image to Video (Temporal Fusion)"
         schema.description = "Experimentally fuses corresponding video visual blocks after separate Qwen encodes, preserving the ordinary video token budget."
-        schema.inputs = [value for value in schema.inputs if value.id != "fusion_images"]
+        schema.inputs = [value for value in schema.inputs if value.id not in ("fusion_images", "fusion_method")]
         schema.inputs.append(TextBlendConfig.Input("text_blend_config", optional=True, tooltip="Temporal consensus settings. Disconnected uses custom index consensus with norm rescaling."))
         return schema
 
