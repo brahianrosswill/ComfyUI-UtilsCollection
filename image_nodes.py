@@ -2358,3 +2358,21 @@ class UC_ListToImageBatch(io.ComfyNode):
         return io.NodeOutput(batched)
 
 
+class UC_ImageBatchToList(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="UC_ImageBatchToList",
+            display_name="Image Batch to List",
+            category="utils",
+            inputs=[
+                io.Image.Input("images"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="images", is_output_list=True, tooltip="Splits the input image batch into a list of individual images."),
+            ]
+        )
+
+    @classmethod
+    def execute(cls, images):
+        return ([images[i].unsqueeze(0) for i in range(images.shape[0])], )

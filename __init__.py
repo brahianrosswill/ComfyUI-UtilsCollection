@@ -126,6 +126,7 @@ class SamplingUtils(ComfyExtension):
             UC_HighResolutionTileSplit,
             UC_HighResolutionTileAccumulator,
             UC_ListToImageBatch,
+            UC_ImageBatchToList,
             UC_FromList,
             UC_SwitchInverseNode,
             UC_SoftSwitchInverseNode,
