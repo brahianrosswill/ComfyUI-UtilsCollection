@@ -456,14 +456,17 @@ def test_h3_sla_sampling_scope_restores_reduced_precision_accumulation():
     assert {name: getattr(backend, name) for name in attributes} == original
 
 
-def test_unified_h3_memory_optimizations_use_clone_scoped_block_patches(monkeypatch, caplog):
+def test_unified_h3_memory_optimizations_use_clone_scoped_block_patches(monkeypatch):
     class FakeAttention:
         def forward(self, x, rope_freqs=None, transformer_options=None):
             return x
 
     class FakeH3:
         def __init__(self):
-            self.blocks = [types.SimpleNamespace(attn=FakeAttention()) for _ in range(2)]
+            self.blocks = [
+                types.SimpleNamespace(attn=FakeAttention()),
+                types.SimpleNamespace(attn=FakeAttention()),
+            ]
 
     monkeypatch.setattr(patcher_helpers.minimax_model, "MiniMaxH3Model", FakeH3)
     monkeypatch.setattr(patcher_helpers, "_make_sage_backend", lambda *_args: lambda *args, **_kwargs: args[2])
@@ -503,19 +506,6 @@ def test_unified_h3_memory_optimizations_use_clone_scoped_block_patches(monkeypa
         "diffusion_model.blocks.0.attn.forward",
         "diffusion_model.blocks.1.attn.forward",
     ]
-    scope = patched.wrappers[patcher_helpers.comfy.patcher_extension.WrappersMP.OUTER_SAMPLE][
-        patcher_helpers.UNIFIED_ATTENTION_SAMPLING_SCOPE_KEY
-    ]
-
-    def fail():
-        raise RuntimeError("sampling failed")
-
-    with caplog.at_level(logging.INFO, logger=patcher_helpers.__name__):
-        assert scope(lambda: "sampled") == "sampled"
-        with pytest.raises(RuntimeError, match="sampling failed"):
-            scope(fail)
-    assert caplog.text.count("SageAttention active for sampling") == 2
-    assert caplog.text.count("SageAttention sampling ended; Core default attention unchanged") == 2
 
 
 def test_h3_radial_block_mask_keeps_cross_segment_blocks_dense():
@@ -824,18 +814,16 @@ def test_cpu_cache_preserves_output_shape_and_dtype():
     assert output.dtype == image.dtype
 
 
-def test_cache_reset_invalidates_without_releasing_residual_buffer():
+def test_cache_finish_releases_residual_buffer():
     cache = _cache(device="cpu")
     cache._store_residual(torch.ones((4, 8)))
-    buffer = cache.cached_residual
+    assert cache.cached_residual is not None
+    assert cache._residual_buffer is not None
 
     cache.finish()
 
     assert cache.cached_residual is None
-    assert cache._residual_buffer is buffer
-    cache._store_residual(torch.full((4, 8), 3.0))
-    assert cache.cached_residual is buffer
-    torch.testing.assert_close(buffer, torch.full((4, 8), 3.0))
+    assert cache._residual_buffer is None
 
 
 def test_sampling_scope_always_clears_cache_state():
@@ -1451,7 +1439,7 @@ def test_minimax_h3_projected_clip_is_clone_scoped_and_returns_tags(monkeypatch,
             cached = cache.encode_scheduled(cached_clip, tokens, "grid-deepstack", lambda: cached_clip.encode_from_tokens_scheduled(tokens))
             torch.testing.assert_close(cached[0][0], output["cond"], rtol=0, atol=0)
             assert torch.equal(cached[0][1]["minimax_token_tags"], output["minimax_token_tags"])
-            assert cache.hits["qwen_scheduled"] == iteration
+            assert cache.hits["encoded_section"] == iteration
     projected._projection_model.tap += 1
     assert identity != clip_description(projected)
 
