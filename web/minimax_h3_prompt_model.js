@@ -85,12 +85,15 @@ export function compilePrompt(state) {
     throw new Error("Saved prompt state has an unsupported format.");
   }
   const blocks = [];
+  const soundHeaders = { overall_soundscape: [], non_diegetic_music: [] };
   state.headers.forEach((header, index) => {
     const body = header.text.trim();
     if (!body) return;
     const name = header.name.trim().replace(/:$/, "");
     if (!name || /[\r\n:]/.test(name)) throw new Error(`Header ${index + 1}: enter one label without a colon.`);
-    blocks.push(`${name}:\n${body}`);
+    const block = `${name}:\n${body}`;
+    if (Object.hasOwn(soundHeaders, name)) soundHeaders[name].push(block);
+    else blocks.push(block);
   });
   const timeline = [];
   state.segments.forEach((segment, index) => {
@@ -102,7 +105,8 @@ export function compilePrompt(state) {
     if (end <= start) throw new Error(`Segment ${index + 1}: end must be later than start.`);
     timeline.push(`[${formatTime(start, state.precision)}-${formatTime(end, state.precision)}]:\n${lines.join("\n")}`);
   });
-  if (timeline.length) blocks.push(`Timeline:\n${timeline.join("\n\n")}`);
+  if (timeline.length) blocks.push(`detailed_description:\nTimeline:\n${timeline.join("\n\n")}`);
+  for (const name of Object.keys(soundHeaders)) blocks.push(...soundHeaders[name]);
   return blocks.join("\n\n");
 }
 

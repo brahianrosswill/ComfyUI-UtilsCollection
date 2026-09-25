@@ -27,9 +27,10 @@ def test_node_exposes_socketless_editor_state_and_string_output():
 def test_headers_and_chronological_channels_compile_without_empty_fields():
     state = default_h3_prompt_state()
     state["headers"] = [
+        {"name": "non_diegetic_music", "text": "Low strings."},
         {"name": "subject_definitions", "text": "- <Subject 1>: A dancer."},
+        {"name": "overall_soundscape", "text": "Stage ambience."},
         {"name": "summary", "text": "A stage performance."},
-        {"name": "overall_soundscape", "text": "  "},
     ]
     state["segments"] = [{
         "start": "0", "end": "01:02.5",
@@ -43,10 +44,12 @@ def test_headers_and_chronological_channels_compile_without_empty_fields():
     assert compile_h3_prompt(json.dumps(state)) == (
         "subject_definitions:\n- <Subject 1>: A dancer.\n\n"
         "summary:\nA stage performance.\n\n"
-        "Timeline:\n[00:00.00-01:02.50]:\n"
+        "detailed_description:\nTimeline:\n[00:00.00-01:02.50]:\n"
         "[VISUAL]: Camera follows <Subject 1>.\n"
         "[SPEECH]: <Subject 1>: \"Go.\"\n"
-        "[SOUNDS]: Footsteps."
+        "[SOUNDS]: Footsteps.\n\n"
+        "overall_soundscape:\nStage ambience.\n\n"
+        "non_diegetic_music:\nLow strings."
     )
 
 
@@ -61,7 +64,7 @@ def test_three_decimal_timeline_allows_gaps_and_omits_empty_segment():
         }},
     ]
     assert compile_h3_prompt(json.dumps(state)) == (
-        "Timeline:\n[00:07.125-00:08.500]:\n[MUSIC]: Low strings."
+        "detailed_description:\nTimeline:\n[00:07.125-00:08.500]:\n[MUSIC]: Low strings."
     )
 
 

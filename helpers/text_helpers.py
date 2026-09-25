@@ -46,6 +46,7 @@ def compile_h3_prompt(serialized: str) -> str:
     if not isinstance(headers, list) or not isinstance(segments, list):
         raise ValueError("prompt_state: headers and segments must be lists.")
     blocks = []
+    sound_headers = {"overall_soundscape": [], "non_diegetic_music": []}
     for index, header in enumerate(headers, 1):
         if not isinstance(header, dict) or not isinstance(header.get("name"), str) or not isinstance(header.get("text"), str):
             raise ValueError(f"Header {index}: invalid name or text.")
@@ -55,7 +56,11 @@ def compile_h3_prompt(serialized: str) -> str:
         name = header["name"].strip().removesuffix(":")
         if not name or "\n" in name or "\r" in name or ":" in name:
             raise ValueError(f"Header {index}: enter one label without a colon.")
-        blocks.append(f"{name}:\n{text}")
+        block = f"{name}:\n{text}"
+        if name in sound_headers:
+            sound_headers[name].append(block)
+        else:
+            blocks.append(block)
     timeline = []
     for index, segment in enumerate(segments, 1):
         if not isinstance(segment, dict) or not isinstance(segment.get("channels"), dict):
@@ -75,7 +80,9 @@ def compile_h3_prompt(serialized: str) -> str:
             raise ValueError(f"Segment {index}: end must be later than start.")
         timeline.append(f"[{_h3_format_time(start, precision)}-{_h3_format_time(end, precision)}]:\n" + "\n".join(lines))
     if timeline:
-        blocks.append("Timeline:\n" + "\n\n".join(timeline))
+        blocks.append("detailed_description:\nTimeline:\n" + "\n\n".join(timeline))
+    for name in sound_headers:
+        blocks.extend(sound_headers[name])
     return "\n\n".join(blocks)
 
 
