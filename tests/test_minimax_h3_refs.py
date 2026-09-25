@@ -62,6 +62,10 @@ def test_image_batch_fuses_prepared_vae_latents_into_one_ref():
     single = model_helpers.create_minimax_h3_image_refs(images[:1], _VisualVae(), "pooled", 2)[0]
     assert pooled["latent"].shape == single["latent"].shape
 
+    separate = model_helpers.create_minimax_h3_image_refs(images, _VisualVae(), fuse_images=False)
+    assert len(separate) == 8
+    assert all(ref["kind"] == "image" for ref in separate)
+
 
 def test_video_uses_native_five_plus_seventeen_frame_contract():
     vae = _VisualVae()

@@ -672,6 +672,33 @@ def find_minimax_h3_clip_continuation_join(
     )
 
 
+def _trailing_continuation_window(
+    image_batches: Sequence[torch.Tensor],
+    audio_batches: Sequence[dict | None],
+    needed_frames: int,
+) -> tuple[torch.Tensor, dict | None]:
+    """Extract only trailing frames and audio needed for overlap matching without full concatenation."""
+    if not image_batches:
+        raise ValueError("Cannot window empty continuation batches.")
+    selected_images = []
+    selected_audio = []
+    frames_accum = 0
+    effective_needed = max(1, needed_frames)
+    for img, aud in zip(reversed(image_batches), reversed(audio_batches)):
+        selected_images.append(img)
+        selected_audio.append(aud)
+        frames_accum += img.shape[0]
+        if frames_accum >= effective_needed:
+            break
+    selected_images.reverse()
+    selected_audio.reverse()
+    images, audio = accumulate_minimax_h3_clip_continuations(selected_images, selected_audio)
+    if images.shape[0] > effective_needed:
+        excess = images.shape[0] - effective_needed
+        images, audio = trim_minimax_h3_clip_continuation(images, audio, excess, 0)
+    return images, audio
+
+
 def trim_minimax_h3_clip_continuation_batch(
     image_batches: Sequence[torch.Tensor], audio_batches: Sequence[dict | None],
     threshold: float, maximum_frames: int,
@@ -687,7 +714,6 @@ def trim_minimax_h3_clip_continuation_batch(
     trimmed_images = [image_batches[0]]
     trimmed_audio = [audio_batches[0]]
     for index, (images, audio) in enumerate(zip(image_batches[1:], audio_batches[1:]), start=1):
-        previous = torch.cat(trimmed_images, dim=0)
         media = None if continuation_batches is None else continuation_batches[index]
         frames = None
         if media is not None:
@@ -695,10 +721,13 @@ def trim_minimax_h3_clip_continuation_batch(
         prune_range = float(continuation_prune_range)
         if not 0.0 <= prune_range <= 100.0:
             raise ValueError("MiniMax H3 continuation prune range must be from 0 to 100 percent.")
+        needed_window = int(maximum_frames)
+        if frames is not None and prune_range > 0:
+            needed_window += round(frames.shape[0] * (prune_range / 2) / 100.0) + 2
+        previous, previous_audio = _trailing_continuation_window(trimmed_images, trimmed_audio, needed_window)
         initial_prune = 0
         search_previous, search_images = previous, images
         search_frames = frames
-        previous_audio = accumulate_minimax_h3_clip_continuations(trimmed_images, trimmed_audio)[1]
         search_previous_audio, search_audio = previous_audio, audio
         if frames is not None and prune_range > 0:
             initial_prune = min(previous.shape[0] - 1, images.shape[0] - 1, round(frames.shape[0] * (prune_range / 2) / 100.0))
@@ -1142,11 +1171,30 @@ def _compress_minimax_h3_visual_ref(ref: dict, compression: str, grid_long_edge:
     return {**ref, "latent": latent, "metadata": metadata}
 
 
-def create_minimax_h3_image_refs(images: torch.Tensor, vae, compression: str = "encode", grid_long_edge: int = 16, refine_steps: int = 100, description: str = "", clip=None, vlm_resolution: int = 384, vlm_reference_start: int = 17) -> list[dict]:
+def create_minimax_h3_image_refs(images: torch.Tensor, vae, compression: str = "encode", grid_long_edge: int = 16, refine_steps: int = 100, description: str = "", clip=None, vlm_resolution: int = 384, vlm_reference_start: int = 17, fuse_images: bool = True) -> list[dict]:
     if not torch.is_tensor(images) or images.ndim != 4 or images.shape[0] < 1:
         raise ValueError("MiniMax H3 Ref images must be a non-empty BHWC image batch.")
     if vae is None or not callable(getattr(vae, "encode", None)):
         raise ValueError("MiniMax H3 Ref images require a visual VAE input.")
+    if not fuse_images:
+        refs = []
+        for index, image in enumerate(images):
+            source = image.unsqueeze(0)
+            prepared = prepare_minimax_h3_reference_image(source, 2048, 2048, "max")
+            latent = _validate_visual_latent(vae.encode(prepared), "image")
+            metadata = {"description": description, "source": "image"}
+            ref = {"kind": "image", "latent": latent, "metadata": metadata}
+            if clip is not None:
+                ref["vlm_embedding"], ref["vlm_tags"] = encode_minimax_h3_ref_vlm(
+                    clip, "image", source, vlm_resolution, vlm_reference_start + index
+                )
+                metadata.update({
+                    "vlm_presentation": "image_numbered",
+                    "vlm_resolution": vlm_resolution,
+                    "vlm_reference_number": vlm_reference_start + index,
+                })
+            refs.append(_compress_minimax_h3_visual_ref(ref, compression, grid_long_edge, None, refine_steps))
+        return refs
     fused = None
     output_dtype = None
     for index, image in enumerate(images):
