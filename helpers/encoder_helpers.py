@@ -45,9 +45,11 @@ from comfy.text_encoders.minimax import token_tags_from_embeds_info
 _VISUAL_ENCODER_PATH_LOCK = threading.RLock()
 MINIMAX_H3_MEDIA_STRUCTURE = "<<picture>>: <<visual>>"
 MINIMAX_H3_VIDEO_LATENT_MODES = (
+    "pooled",
+    "refined",
     "full video",
-    "even keyframes",
     "off",
+    "even keyframes",
 )
 _MINIMAX_H3_MEDIA_KEYWORDS = {"time", "picture", "visual", "shot"}
 _MINIMAX_H3_REQUIRED_MEDIA_KEYWORDS = {"picture", "visual"}
@@ -505,6 +507,8 @@ def build_minimax_h3_media_config(
     timestamps, timestamp_format="0.0s", structure=MINIMAX_H3_MEDIA_STRUCTURE,
     video_fps=2, video_latent_mode="even keyframes",
     video_latent_keyframes=4, temporal_density=1, temporal_fusion_method="consensus",
+    video_reference_resolution=256, video_latent_fps=2.0,
+    refine_steps=100,
 ):
     if isinstance(timestamp_format, list):
         timestamp_format = timestamp_format[0] if timestamp_format else "0.0s"
@@ -530,6 +534,21 @@ def build_minimax_h3_media_config(
     video_latent_keyframes = int(video_latent_keyframes)
     if not 2 <= video_latent_keyframes <= 213:
         raise ValueError("MiniMax H3 video latent keyframes must be an integer from 2 to 213.")
+    if isinstance(video_reference_resolution, list):
+        video_reference_resolution = video_reference_resolution[0] if video_reference_resolution else 256
+    if isinstance(video_reference_resolution, bool) or not isinstance(video_reference_resolution, numbers.Integral) or video_reference_resolution < 32 or video_reference_resolution % 32:
+        raise ValueError("MiniMax H3 video reference resolution must be at least 32, in multiples of 32.")
+    video_reference_resolution = int(video_reference_resolution)
+    if isinstance(video_latent_fps, list):
+        video_latent_fps = video_latent_fps[0] if video_latent_fps else 2.0
+    if isinstance(video_latent_fps, bool) or not isinstance(video_latent_fps, (int, float)) or not (0.0 < float(video_latent_fps) <= 24.0):
+        raise ValueError("MiniMax H3 video latent fps must be a positive number up to 24.0.")
+    video_latent_fps = float(video_latent_fps)
+    if isinstance(refine_steps, list):
+        refine_steps = refine_steps[0] if refine_steps else 100
+    if isinstance(refine_steps, bool) or not isinstance(refine_steps, numbers.Integral) or refine_steps < 1:
+        raise ValueError("MiniMax H3 refine steps must be an integer of at least 1.")
+    refine_steps = int(refine_steps)
     if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
         raise ValueError(f"Unsupported video timestamp format: {timestamp_format}")
     structure = _validate_minimax_h3_media_structure(structure)
@@ -550,6 +569,9 @@ def build_minimax_h3_media_config(
         "video_fps": video_fps,
         "video_latent_mode": video_latent_mode,
         "video_latent_keyframes": video_latent_keyframes,
+        "video_reference_resolution": video_reference_resolution,
+        "video_latent_fps": video_latent_fps,
+        "refine_steps": refine_steps,
         "temporal_density": int(temporal_density),
         "temporal_fusion_method": temporal_fusion_method,
     }
@@ -586,6 +608,28 @@ def _validate_minimax_h3_media_config(media_config, output_frame_count):
         or not 2 <= video_latent_keyframes <= 213
     ):
         raise ValueError("MiniMax H3 media config requires video_latent_keyframes from 2 to 213.")
+    video_reference_resolution = media_config.get("video_reference_resolution", 256)
+    if (
+        isinstance(video_reference_resolution, bool)
+        or not isinstance(video_reference_resolution, numbers.Integral)
+        or video_reference_resolution < 32
+        or video_reference_resolution % 32
+    ):
+        raise ValueError("MiniMax H3 media config requires video_reference_resolution of at least 32, in multiples of 32.")
+    video_latent_fps = media_config.get("video_latent_fps", 2.0)
+    if (
+        isinstance(video_latent_fps, bool)
+        or not isinstance(video_latent_fps, (int, float))
+        or not (0.0 < float(video_latent_fps) <= 24.0)
+    ):
+        raise ValueError("MiniMax H3 media config requires video_latent_fps to be a positive number up to 24.0.")
+    refine_steps = media_config.get("refine_steps", 100)
+    if (
+        isinstance(refine_steps, bool)
+        or not isinstance(refine_steps, numbers.Integral)
+        or refine_steps < 1
+    ):
+        raise ValueError("MiniMax H3 media config requires refine_steps to be an integer of at least 1.")
     timestamp_format = media_config.get("timestamp_format")
     if timestamp_format not in VIDEO_FRAME_TIMESTAMP_FORMATS:
         raise ValueError("MiniMax H3 media config has an unsupported timestamp format.")
@@ -3755,6 +3799,8 @@ def execute_advanced_minimax_h3_image_to_video(
     video_fps = 2
     video_latent_mode = None
     video_latent_keyframes = 4
+    video_reference_resolution = 256
+    video_latent_fps = 2.0
     if media_config is not None:
         (
             picture_timestamps,
@@ -3768,6 +3814,9 @@ def execute_advanced_minimax_h3_image_to_video(
             media_config,
             frame_count,
         )
+        video_reference_resolution = media_config.get("video_reference_resolution", 256)
+        video_latent_fps = float(media_config.get("video_latent_fps", 2.0))
+        refine_steps = int(media_config.get("refine_steps", 100))
     video_frames = None
     video_reference = None
     positioned_video_keyframes = []
@@ -3787,10 +3836,34 @@ def execute_advanced_minimax_h3_image_to_video(
             video,
             vae,
             frame_count,
-            encode_reference=resolved_video_latent_mode == "full video",
+            encode_reference=resolved_video_latent_mode in ("full video", "pooled", "refined"),
             cache=cache,
         )
-        if resolved_video_latent_mode == "even keyframes":
+        if resolved_video_latent_mode in ("pooled", "refined") and video_reference is not None:
+            from .model_helpers import (
+                _pool_minimax_h3_visual_latent,
+                _refine_minimax_h3_visual_latent,
+                minimax_h3_ref_resolution_grid,
+            )
+            grid_long_edge = minimax_h3_ref_resolution_grid(video_reference_resolution)
+            source_latent_t = video_reference["latent"].shape[2]
+            target_latent_frames = max(
+                1, min(source_latent_t, round(source_latent_t * (video_latent_fps / 24.0)))
+            ) if "video_latent_fps" in (media_config or {}) else min(source_latent_t, max(1, video_latent_keyframes))
+            pooled_latent = _pool_minimax_h3_visual_latent(
+                video_reference["latent"], grid_long_edge, target_latent_frames
+            )
+            final_latent = _refine_minimax_h3_visual_latent(
+                video_reference["latent"], pooled_latent, refine_steps
+            ) if resolved_video_latent_mode == "refined" else pooled_latent
+            video_reference = {
+                **video_reference,
+                "latent": final_latent,
+                "latent_t": final_latent.shape[2],
+                "latent_h": final_latent.shape[3],
+                "latent_w": final_latent.shape[4],
+            }
+        elif resolved_video_latent_mode == "even keyframes":
             positioned_video_keyframes = prepare_minimax_h3_positioned_video_keyframes(
                 video,
                 vae,

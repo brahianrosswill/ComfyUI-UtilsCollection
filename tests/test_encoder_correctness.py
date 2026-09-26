@@ -677,12 +677,11 @@ def test_minimax_h3_media_config_schema_and_payload():
     assert inputs["video_fps"].min == 1
     assert inputs["video_fps"].max == 24
     assert [value.id for value in schema.inputs][-5:] == [
-        "video_fps", "video_latent_mode", "video_latent_keyframes", "temporal_density", "temporal_fusion_method"
+        "video_fps", "video_latent_mode", "refine_steps", "temporal_density", "temporal_fusion_method"
     ]
-    assert inputs["video_latent_mode"].default == "even keyframes"
-    assert inputs["video_latent_keyframes"].default == 4
-    assert inputs["video_latent_keyframes"].min == 2
-    assert inputs["video_latent_keyframes"].max == 213
+    assert inputs["video_latent_mode"].default == "pooled"
+    assert inputs["video_latent_mode"].options == ["pooled", "refined", "full video", "off"]
+    assert "video_latent_keyframes" not in inputs
     assert "video_structure" not in inputs
     assert "audio" not in inputs
     assert "audio_vae" not in inputs
@@ -1297,6 +1296,79 @@ def test_minimax_h3_video_latent_modes_do_not_change_qwen_video_presentation():
         presentations.append((video_item["data"], video_item["timestamps"]))
     assert all(torch.equal(data, presentations[0][0]) for data, _timestamps in presentations)
     assert all(timestamps == presentations[0][1] for _data, timestamps in presentations)
+
+
+def test_minimax_h3_video_latent_mode_pooled_compresses_reference():
+    class VideoVAE:
+        def encode(self, frames):
+            return torch.ones(1, 24, 7, frames.shape[1] // 16, frames.shape[2] // 16)
+
+    video = torch.ones(22, 128, 128, 3)
+    clip = _MiniMaxH3TestClip()
+    config = encoder_helpers.build_minimax_h3_media_config(
+        None,
+        video_latent_mode="pooled",
+        video_latent_fps=6.0,
+        video_reference_resolution=64,
+    )
+    assert config["video_latent_fps"] == 6.0
+    assert config["video_reference_resolution"] == 64
+    conditioning, _ = encoder_helpers.execute_advanced_minimax_h3_image_to_video(
+        clip,
+        VideoVAE(),
+        "prompt",
+        128,
+        128,
+        22,
+        video=video,
+        media_config=config,
+        enable_caching="disabled",
+    )
+    refs = conditioning[0][1]["minimax_refs"]
+    assert len(refs) == 1
+    ref = refs[0]
+    assert ref["kind"] == "video"
+    assert ref["latent_t"] == 2
+    assert ref["latent"].shape[2] == 2
+    assert ref["latent_h"] == 4
+    assert ref["latent_w"] == 4
+
+
+def test_minimax_h3_video_latent_mode_refined_compresses_reference():
+    class VideoVAE:
+        def encode(self, frames):
+            return torch.ones(1, 24, 7, frames.shape[1] // 16, frames.shape[2] // 16)
+
+    video = torch.ones(22, 128, 128, 3)
+    clip = _MiniMaxH3TestClip()
+    config = encoder_helpers.build_minimax_h3_media_config(
+        None,
+        video_latent_mode="refined",
+        video_latent_fps=6.0,
+        video_reference_resolution=64,
+        refine_steps=2,
+    )
+    assert config["video_latent_mode"] == "refined"
+    assert config["refine_steps"] == 2
+    conditioning, _ = encoder_helpers.execute_advanced_minimax_h3_image_to_video(
+        clip,
+        VideoVAE(),
+        "prompt",
+        128,
+        128,
+        22,
+        video=video,
+        media_config=config,
+        enable_caching="disabled",
+    )
+    refs = conditioning[0][1]["minimax_refs"]
+    assert len(refs) == 1
+    ref = refs[0]
+    assert ref["kind"] == "video"
+    assert ref["latent_t"] == 2
+    assert ref["latent"].shape[2] == 2
+    assert ref["latent_h"] == 4
+    assert ref["latent_w"] == 4
 
 
 @pytest.mark.parametrize("configured_media", [False, True])
