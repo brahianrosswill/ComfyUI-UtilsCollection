@@ -3642,12 +3642,12 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
                 io.Combo.Input(
                     "video_latent_mode",
                     options=["pooled", "refined", "full video", "off"],
-                    default="full video",
+                    default="pooled",
                     tooltip="Controls Video motion guidance. Pooled compresses video references spatially and temporally on the latent side to save VRAM. Refined optimizes the compressed latent to preserve sharper features. Full Video uses uncompressed reference memory. Off sends Video only to Qwen.",
                 ),
                 io.Int.Input(
                     "refine_steps",
-                    default=200,
+                    default=100,
                     min=1,
                     max=1000,
                     step=1,

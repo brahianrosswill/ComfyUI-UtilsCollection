@@ -4902,15 +4902,18 @@ def _h3_sage_forward(self, x, rope_freqs=None, transformer_options=None):
         raise RuntimeError("MiniMax H3 memory optimizations require SageAttention.") from error
 
     token_count = x.shape[0]
-    projected = self.qkv_proj(x).reshape(token_count, 3, self.heads, self.head_dim)
-    q, k, v = (projected[:, index].unsqueeze(0) for index in range(3))
+    inner = self.heads * self.head_dim
+    q, k, v = self.qkv_proj(x).split(inner, dim=-1)
+    q = q.view(1, token_count, self.heads, self.head_dim).contiguous()
+    k = k.view(1, token_count, self.heads, self.head_dim).contiguous()
+    v = v.view(1, token_count, self.heads, self.head_dim).contiguous()
     if rope_freqs is not None:
         qw = comfy.model_management.cast_to(self.q_norm.weight, device=x.device)
         kw = comfy.model_management.cast_to(self.k_norm.weight, device=x.device)
         comfy.quant_ops.ck.rms_rope_split_half_(q, k, rope_freqs, qw, kw, epsilon=self.q_norm.eps, rot_dim=rope_freqs.shape[-3] * 2)
     else:
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        q = self.q_norm(q.view(token_count, self.heads, self.head_dim)).unsqueeze(0).contiguous()
+        k = self.k_norm(k.view(token_count, self.heads, self.head_dim)).unsqueeze(0).contiguous()
     attended = sageattn_qk_int8_pv_fp8_cuda(q, k, v, is_causal=False, tensor_layout="NHD", pv_accum_dtype="fp32+fp32")
     return self.out_proj(attended.to(x.dtype).flatten(2).squeeze(0))
 
