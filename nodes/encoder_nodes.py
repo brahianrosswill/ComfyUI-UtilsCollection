@@ -3622,7 +3622,7 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
                 io.Int.Input(
                     "video_reference_resolution",
                     display_name="Video reference resolution",
-                    default=256,
+                    default=512,
                     min=32,
                     step=32,
                     optional=True,
@@ -3631,7 +3631,7 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
                 io.Float.Input(
                     "video_latent_fps",
                     display_name="Video reference FPS",
-                    default=2.0,
+                    default=24.0,
                     min=0.1,
                     max=24.0,
                     step=0.1,
@@ -3642,12 +3642,12 @@ class UC_MiniMaxH3MediaConfig(io.ComfyNode):
                 io.Combo.Input(
                     "video_latent_mode",
                     options=["pooled", "refined", "full video", "off"],
-                    default="pooled",
+                    default="full video",
                     tooltip="Controls Video motion guidance. Pooled compresses video references spatially and temporally on the latent side to save VRAM. Refined optimizes the compressed latent to preserve sharper features. Full Video uses uncompressed reference memory. Off sends Video only to Qwen.",
                 ),
                 io.Int.Input(
                     "refine_steps",
-                    default=100,
+                    default=200,
                     min=1,
                     max=1000,
                     step=1,
