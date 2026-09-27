@@ -45,9 +45,9 @@ from comfy.text_encoders.minimax import token_tags_from_embeds_info
 _VISUAL_ENCODER_PATH_LOCK = threading.RLock()
 MINIMAX_H3_MEDIA_STRUCTURE = "<<picture>>: <<visual>>"
 MINIMAX_H3_VIDEO_LATENT_MODES = (
+    "full video",
     "pooled",
     "refined",
-    "full video",
     "off",
     "even keyframes",
 )
@@ -946,6 +946,19 @@ def prepare_minimax_h3_reference_video(
         "latent": latent,
         "audio_latent": None,
     }
+
+
+def _minimax_h3_equivalent_square_pool_shape(
+    latent: torch.Tensor, equivalent_resolution: int, latent_frames: int | None
+) -> tuple[int, int, int]:
+    """Calculate target latent shape using equivalent-square area, aligning spatial axes to even numbers."""
+    frames, height, width = latent.shape[2:]
+    target_latent_side = float(equivalent_resolution) / 16.0
+    scale = min(1.0, math.sqrt((target_latent_side * target_latent_side) / (height * width)))
+    target_height = max(2, min(height, int(round(height * scale / 2)) * 2))
+    target_width = max(2, min(width, int(round(width * scale / 2)) * 2))
+    target_frames = frames if latent_frames is None else min(frames, max(1, int(latent_frames)))
+    return target_frames, target_height, target_width
 
 
 def prepare_minimax_h3_positioned_video_keyframes(
@@ -3840,19 +3853,20 @@ def execute_advanced_minimax_h3_image_to_video(
             cache=cache,
         )
         if resolved_video_latent_mode in ("pooled", "refined") and video_reference is not None:
-            from .model_helpers import (
-                _pool_minimax_h3_visual_latent,
-                _refine_minimax_h3_visual_latent,
-                minimax_h3_ref_resolution_grid,
-            )
-            grid_long_edge = minimax_h3_ref_resolution_grid(video_reference_resolution)
+            from .model_helpers import _refine_minimax_h3_visual_latent
             source_latent_t = video_reference["latent"].shape[2]
             target_latent_frames = max(
                 1, min(source_latent_t, round(source_latent_t * (video_latent_fps / 24.0)))
             ) if "video_latent_fps" in (media_config or {}) else min(source_latent_t, max(1, video_latent_keyframes))
-            pooled_latent = _pool_minimax_h3_visual_latent(
-                video_reference["latent"], grid_long_edge, target_latent_frames
+            target_shape = _minimax_h3_equivalent_square_pool_shape(
+                video_reference["latent"], video_reference_resolution, target_latent_frames
             )
+            if target_shape == tuple(video_reference["latent"].shape[2:]):
+                pooled_latent = video_reference["latent"].clone()
+            else:
+                pooled_latent = F.adaptive_avg_pool3d(
+                    video_reference["latent"].to(torch.float32), target_shape
+                ).to(video_reference["latent"].dtype)
             final_latent = _refine_minimax_h3_visual_latent(
                 video_reference["latent"], pooled_latent, refine_steps
             ) if resolved_video_latent_mode == "refined" else pooled_latent

@@ -679,8 +679,8 @@ def test_minimax_h3_media_config_schema_and_payload():
     assert [value.id for value in schema.inputs][-5:] == [
         "video_fps", "video_latent_mode", "refine_steps", "temporal_density", "temporal_fusion_method"
     ]
-    assert inputs["video_latent_mode"].default == "pooled"
-    assert inputs["video_latent_mode"].options == ["pooled", "refined", "full video", "off"]
+    assert inputs["video_latent_mode"].default == "full video"
+    assert inputs["video_latent_mode"].options == ["full video", "pooled", "refined", "off"]
     assert "video_latent_keyframes" not in inputs
     assert "video_structure" not in inputs
     assert "audio" not in inputs
@@ -1369,6 +1369,38 @@ def test_minimax_h3_video_latent_mode_refined_compresses_reference():
     assert ref["latent"].shape[2] == 2
     assert ref["latent_h"] == 4
     assert ref["latent_w"] == 4
+
+
+def test_minimax_h3_video_latent_mode_equivalent_square_preserves_aspect_area():
+    class WidescreenVAE:
+        def encode(self, frames):
+            return torch.ones(1, 24, 7, 4, 8)
+
+    video = torch.ones(22, 72, 128, 3)
+    clip = _MiniMaxH3TestClip()
+    config = encoder_helpers.build_minimax_h3_media_config(
+        None,
+        video_latent_mode="pooled",
+        video_latent_fps=6.0,
+        video_reference_resolution=64,
+    )
+    conditioning, _ = encoder_helpers.execute_advanced_minimax_h3_image_to_video(
+        clip,
+        WidescreenVAE(),
+        "prompt",
+        128,
+        64,
+        22,
+        video=video,
+        media_config=config,
+        enable_caching="disabled",
+    )
+    refs = conditioning[0][1]["minimax_refs"]
+    assert len(refs) == 1
+    ref = refs[0]
+    assert ref["kind"] == "video"
+    assert ref["latent_h"] == 2
+    assert ref["latent_w"] == 6
 
 
 @pytest.mark.parametrize("configured_media", [False, True])
