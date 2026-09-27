@@ -1436,9 +1436,9 @@ def test_clip_continuation_encoder_anchors_tail_start_without_renumbering_pictur
         if call["minimax_ref_items"] and call["minimax_ref_items"][0]["type"] == "video"
     )
     assert [float(frame.mean()) for frame in video_item["data"]] == pytest.approx(
-        [index / 21 for index in [*range(1, 22), 21]]
+        [0 / 21, 12 / 21]
     )
-    assert video_item["timestamps"] == [Fraction(index, 24) for index in [*range(1, 22), 21]]
+    assert video_item["timestamps"] == [Fraction(0, 24), Fraction(12, 24)]
     tokens = clip.encoded_tokens[-1]["qwen3vl_32b"][0]
     text = "".join(entry[0] for entry in tokens if isinstance(entry[0], str))
     assert text.index("<Picture 1>") < text.index("<Picture 2>") < text.index("<Video 1>")
@@ -1662,22 +1662,28 @@ def test_clip_continuation_qwen_video_keeps_interior_tail_before_ordinary_video(
     frames, timestamps = encoder_helpers.minimax_h3_qwen_video_samples(
         continuation, video, 2
     )
-    assert frames.shape == (23, 64, 96, 3)
-    torch.testing.assert_close(frames[:21], continuation[1:])
-    torch.testing.assert_close(frames[21:], torch.ones(2, 64, 96, 3))
+    assert frames.shape == (4, 64, 96, 3)
+    torch.testing.assert_close(frames[:2], continuation[[0, 12]])
+    torch.testing.assert_close(frames[2:], torch.ones(2, 64, 96, 3))
 
     prepended, prepended_timestamps = encoder_helpers.minimax_h3_qwen_video_samples(
         continuation, video, 2, "prepend"
     )
-    assert prepended.shape == (25, 64, 96, 3)
+    assert prepended.shape == (6, 64, 96, 3)
     assert prepended_timestamps == [
-        *[Fraction(index, 24) for index in range(1, 22)],
+        Fraction(0, 24), Fraction(12, 24),
         Fraction(22, 24), Fraction(34, 24), Fraction(46, 24), Fraction(58, 24),
     ]
     assert timestamps == [
-        *[Fraction(index, 24) for index in range(1, 22)],
+        Fraction(0, 24), Fraction(12, 24),
         Fraction(22, 24), Fraction(34, 24),
     ]
+
+    solo_frames, solo_timestamps = encoder_helpers.minimax_h3_qwen_video_samples(
+        continuation, None, 2
+    )
+    assert solo_frames.shape == (2, 64, 96, 3)
+    assert solo_timestamps == [Fraction(0, 24), Fraction(12, 24)]
 
 
 def test_clip_continuation_encoder_keeps_autogrow_inputs_last():
