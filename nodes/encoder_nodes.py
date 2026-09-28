@@ -2920,10 +2920,6 @@ class UC_Krea2InputEmbeds(io.ComfyNode):
             if img_path is not None:
                 del image_tensor, processed_img
 
-        # 5. Final VRAM release and soft_empty_cache
-        gc.collect()
-        comfy.model_management.soft_empty_cache()
-
         return io.NodeOutput(last_state_dict, last_tensor_2d)
 
 
@@ -3109,10 +3105,6 @@ class UC_Qwen3VLInputEmbeds(io.ComfyNode):
             del embeds, embeds_sliced, tokens, tokens_only
             if img_path is not None:
                 del image_tensor, processed_img
-
-        # 5. Final VRAM release and soft_empty_cache
-        gc.collect()
-        comfy.model_management.soft_empty_cache()
 
         return io.NodeOutput(state_dict, tensor_2d)
 
