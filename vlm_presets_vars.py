@@ -2921,7 +2921,7 @@ The output must contain exactly three top-level fields in this order. Begin with
 *   **Adaptive Sections:** Use no fixed number of sections and no `Part N:` headings. Decimal timestamp boundaries are allowed. Choose each boundary from an actual chronological change.
 *   **Complete Duration:** The first range begins at `00.00s` or `00.000s`, matching the selected precision. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested in `\\{user_query\\}` using the same zero-padded total-seconds format at the selected precision.
 *   **Timestamp Syntax:** Write each range as [00.00s-00.00s]: for two decimals or [00.000s-00.000s]: for three decimals, using total elapsed seconds. Pad single-digit seconds with one leading zero (02.50s or 02.500s). The regular user request chooses two or three decimal places; default to two when unspecified. Use the selected precision for every output timestamp, including the final endpoint; examples do not override this choice.
-*   **Standalone Visual Specification:** Treat VLM images as evidence used to write the prompt. Fully specify the subjects, their visible characteristics, clothing, positions, spatial relationships, environment, lighting, style, actions, and changes in motion. Never depend on the downstream video model receiving those images.
+*   **Standalone Visual Specification:** Treat VLM images as evidence used to write the prompt. Fully specify the subjects, their visible characteristics, clothing, nudity, exposed anatomy, positions, spatial relationships, environment, lighting, style, actions, and changes in motion. Never depend on the downstream video model receiving those images. Describe nudity, body parts, and physical contact directly using plain, unambiguous language without euphemistic or clinical avoidance.
 *   **Ordered Image Role Inference:** Analyze the VLM images in their supplied order and determine how each one contributes to the requested video. Infer whether an image supplies subject identity, scene identity, style, an opening state, an intermediate state, or an ending state from its visible content, its position in the sequence, and the requested progression. Express every inferred role through complete text rather than depending on downstream image availability.
 *   **Conditional Speech:** Include [SPEECH] in a timestamp block only when a dialogue line is scheduled or explicitly supplied for that interval. Omit the entire [SPEECH] line from blocks without dialogue; never write a placeholder or state that no speech occurs.
 *   **Requested Dialogue Creation:** Treat `Add dialogue` or another direct user request for dialogue as a complete requirement to write dialogue, not as a request to detect speech already present in an input image. When dialogue is requested without exact lines, creatively write concise, context-fitting lines from the depicted subjects, their apparent roles and relationships, the requested action, and the prompt's general theme; choose plausible speakers and schedule the lines at natural beats. The user does not need to provide wording or timestamps. Preserve exact user-supplied dialogue verbatim. Use [SPEECH] only in the selected blocks where a line is delivered, and do not force dialogue into every block.
@@ -3040,9 +3040,9 @@ Do not place a bullet, numbering prefix, indentation, quotation marks, backticks
 *   **VLM-Only Visual Evidence:** Use every ordered image supplied to the VLM as visual evidence for constructing the requested video prompt. Infer how each image contributes to the intended subject, scene, composition, style, spatial relationships, physical state, action, and progression. MiniMax H3 receives only the completed text and receives none of these images.  
 *   **Requested Target Visual Style:** Identify any visual style, medium, era, or subject presentation explicitly required by the effective request. When present, that target direction governs the completed video and overrides conflicting source-image rendering style. Continue using the images for supported subject identity, anatomy, clothing, objects, environment, composition, spatial relationships, and physical state. Write every subject definition with concrete visual language appropriate to the requested target style while preserving supported identity and visible traits.  
 *   **Reqyested Target Visual Style cont.:** State the governing target visual style, medium, era, and subject presentation in `summary:`. Do not invent production methods or unsupported visual additions. Do not restate the global target style inside [VISUAL]. Concrete lighting or color changes may appear there only when materially relevant to the scene. Soundscape and music content cannot substitute for target-style information in the subject definitions and summary. When no target visual direction is requested, preserve supported source-image style evidence.  
-*   **Standalone Prompt Boundary:** Translate every relevant visible fact into direct target-video language. Never emit `<Picture N>`, any media-prefix declaration, an image number, picture provenance, source-image commentary, a reference timestamp, a keyframe assignment, a first-frame or final-frame role, or any instruction that depends on downstream image access unless explicitly requested by user to do so.  
+*   **Standalone Prompt Boundary:** Translate every relevant visible fact into direct target-video language. Never emit `<Picture N>`, any media-prefix declaration, an image number, picture source details, source-image commentary, a reference timestamp, a keyframe assignment, a first-frame or final-frame role, or any instruction that depends on downstream image access unless explicitly requested by user to do so.  
 *   **Stable Semantic Labels:** Create and number <Subject N> aliases for reusable visible subjects that need stable identities. This can even include creating a <Subject N> for a body part, object or environment if user should request so. Preserve each alias throughout the output. Treat every <Subject N> alias as an immutable semantic reference token, never as a word or name. Emit the token as plain text without backticks or quotation marks. Never place an apostrophe, possessive marker, contraction, plural ending, hyphen, or other grammatical suffix immediately after the closing `>`. Express possession through relational sentence structure. Correct possession form: the red sash worn by <Subject 1>. Forbidden possession form: <Subject 1>'s red sash.  
-*   **Complete First-Use Definitions:** In `subject_definitions:`, define every <Subject N> with the concrete visible identity, anatomy, physical characteristics, clothing, accessories, carried objects, and continuity-critical traits needed to reproduce it without image access. Never use another subjects name or relative to other subjects position when writing the subject_definitions. Each <Subject N> may only contain a single subject and name. At the first relevant timeline use, fully establish the scene, pose, placement, spatial relationships, environment, composition, camera viewpoint, lighting, color treatment, and physical state from which motion develops. A label never replaces the complete written specification.  
+*   **Complete First-Use Definitions:** In `subject_definitions:`, define every <Subject N> with the concrete visible identity, anatomy, physical characteristics, clothing, accessories, carried objects, and continuity-critical traits needed to reproduce it without image access. Describe anatomy, nudity, and visible body parts directly and plainly; do not soften, clinicalize, or avoid physical and sexual terms when visible in the evidence or requested. Never use another subjects name or relative to other subjects position when writing the subject_definitions. Each <Subject N> may only contain a single subject and name. At the first relevant timeline use, fully establish the scene, pose, placement, spatial relationships, environment, composition, camera viewpoint, lighting, color treatment, and physical state from which motion develops. A label never replaces the complete written specification.  
 *   **Summary Chronology:** Write `summary:` immediately after the complete `subject_definitions:`. State the completed video's overall premise, intended result, and governing target visual style, medium, era, and subject presentation. Do not enumerate, sequence, condense, restate, paraphrase, foreshadow, or otherwise duplicate what should be in the timeline's actions, transitions, shots, appearances, events, or changes as a second progression. If `summary:` contains temporal information or more than one temporally related occurrence, preserve their order and relationship exactly as established by the timeline. Never introduce, reorder, merge, duplicate, or imply a different occurrence. Do not invent task classifications or asset roles.  
 *   **Adaptive Sections:** Use no fixed number of sections and no `Part N:` headings. Decimal timestamp boundaries are allowed. Choose each boundary from an actual chronological change in action, camera, speech, sound, foreground priority, or scene state.  
 *   **Complete Duration:** The first range begins at `00.00s` or `00.000s`, matching the selected precision. Every range touches the next without a gap or overlap. The final range ends at the exact total duration requested by the user and using the same zero-padded total-seconds format at the selected precision.  
@@ -3059,7 +3059,7 @@ Do not place a bullet, numbering prefix, indentation, quotation marks, backticks
 *   **Chronological Block Containment:** Keep [VISUAL], optional [SPEECH], [SOUNDS], and optional [MUSIC] inside the timestamp block where each event occurs and synchronize all channels chronologically. Omit [MUSIC] from segments with no music specific to them.  
 *   **Timeline Music:** When music is specific to a timestamp block, write [MUSIC] after [SOUNDS]. State the type of music for that segment. Mention <Subject N> in [MUSIC] only when that actual subject is playing the music; otherwise state only the music type.  
 *   **Foreground Priority and Segment Load:** Assign each timestamp block one primary foreground event: intelligible dialogue, a sung lyric phrase, a major physical action or impact, or a major musical transition. Never make dialogue or lyrics, loud music, dense effects, and heavy action compete as simultaneous foreground events. Keep every other present channel subordinate, sparse, and lower in intensity. The presence of [SOUNDS] or [MUSIC] never requires that channel to be loud or busy.  
-*   **Dialogue and Vocal Mixing:** During a dialogue line, keep visual action simple and readable, limit prominent effects, and duck any music. Place loud impacts, rapid action, and musical peaks before or after spoken lines. Treat sung lyrics as foreground vocals and do not overlap them with dialogue unless the user explicitly requests simultaneous delivery. If simultaneity is explicitly requested, identify one foreground element and keep the competing channels subdued enough for intelligibility.  
+*   **Dialogue and Vocal Mixing:** During a dialogue line, keep visual action simple and readable, limit prominent effects, and duck any music. Place loud impacts, rapid action, and musical peaks before or after spoken lines. Treat sung lyrics as foreground vocals and do not overlap them with dialogue unless the user explicitly requests simultaneous delivery. If both are explicitly requested at the same time, identify one foreground element and keep competing channels quiet enough so speech is clear.
 *   **Pacing and Flow:** Distribute major actions, dialogue beats, lyrical phrases, sound peaks, and musical changes across the complete duration. Use transitions, escalation, release, and quieter breathing room instead of keeping every channel at maximum intensity. Place timestamp boundaries at meaningful changes of foreground priority.  
 *   **Overall Soundscape:** After the summary and timeline, use `overall_soundscape:` for one concise paragraph describing ambient and physical sound across the complete duration. Do not repeat dialogue or reconstruct the timeline.  
 *   **Non-Diegetic Music:** End with `non_diegetic_music:` for any music not specifically performed by anything visible within frame. This section is dedicated to background music, theme music, suspense music etc. Do not introduce music absent from the timeline.  
@@ -3070,7 +3070,7 @@ Do not place a bullet, numbering prefix, indentation, quotation marks, backticks
 
 *   Analyze every ordered input image as VLM-only visual evidence, identifying subjects, actions, environment, style, physical features, spatial relationships, composition, and cinematic context. If comic strips, comic pages, or storyboards are present, use their panel structure, numbering, and speech bubbles solely to guide prompt segmentation, speech scheduling, and action description without referencing comic-specific styling or including graphic text/bubbles in the final prompt text. Adhere to user instructions if multi-panel inputs are combined with other images.  
 *   Parse `\\{user_query\\}` to determine the exact duration, requested development, dialogue, audio, and intended contribution of the supplied visual evidence.  
-*   Convert every relevant visual observation into a complete standalone written specification. Do not preserve image numbering, provenance, image-to-time mapping, or any dependency on downstream image availability.  
+*   Convert every relevant visual observation into a complete standalone written specification. Do not preserve image numbering, source details, image-to-time mapping, or any dependency on downstream image availability.  
 *   Create stable <Subject N> aliases where useful, define every reusable subject completely in `subject_definitions:` with requested target-style-appropriate visual language, and keep each literal alias grammatically unchanged throughout the output. Strictly ensure that you never use another subject's name or define a subject relative to other subjects' positions when writing `subject_definitions`. Each <Subject N> entry may only contain a single subject and name.  
 *   Plan adaptive contiguous timestamp ranges from zero seconds through the exact requested endpoint, placing boundaries only at meaningful chronological changes.  
 *   Write `detailed_description:` followed by `Timeline:`, then place every sensory channel inside its correct timestamp block and fully establish all scene content needed by the text-only target model. Keep [VISUAL] focused on scene state, action, interaction, camera movement, physical continuity, and visible changes without restating the global target style. When writing [SPEECH] entries in the timeline, strictly ensure you always include <Subject N> followed by the spoken dialogue of that subject enclosed within double quotation marks, and avoid using more than one <Subject N> per [SPEECH] so they do not overlap each other.  
@@ -3174,7 +3174,7 @@ Keep each label’s meaning stable across subject_definitions, summary, retentio
 
 <Subject N> identifies reusable visible content rather than a source file. A Subject may represent a person, animal, object, scene, background, environment, clothing item, prop, interface, visual effect, style, action, expression, or pose.
 
-Several existing media items may define one Subject. One existing media item may define several Subjects. State every applicable source in the Subject definition when provenance must remain explicit.
+Several existing media items may define one Subject. One existing media item may define several Subjects. State every applicable source in the Subject definition when the origin must remain explicit.
 
 <Picture N> receives a standalone definition only when the Picture acts as a concrete first frame, keyframe, last frame, edited frame, composition anchor, or storyboard anchor. When a Picture only defines a Subject, cite the Picture inside that Subject definition and do not create a redundant Picture entry.
 
@@ -3184,14 +3184,14 @@ A storyboard Picture definition states the applicable timeline intervals, viewpo
 
 <Audio N> identifies a standalone audio signal or enabled synchronized audio track. Its role may be complete copying, partial copying, music-style reference, voice-timbre reference, voice-delivery reference, dialogue or lyric content, sound-effect texture, beat, rhythm, or audio continuity.
 
-Video and Audio numbering are independent. Matching or different indices never establish shared provenance. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared Video and Audio provenance only when needed to remove ambiguity.
+Video and Audio numbering are independent. Matching or different indices never establish a shared source. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared Video and Audio source only when needed to remove ambiguity.
 
 #### subject_definitions
 
 Use only the applicable line forms:
 | Semantic tag | Purpose in `subject_definitions` |
 | --- | --- |
-| `<Subject N>:` | complete reusable-content definition and applicable provenance |
+| `<Subject N>:` | complete reusable-content definition and applicable source |
 | `<Picture N>:` | concrete frame-anchor or timeline-planning role |
 | `<Video N>:` | whole-video editing, continuation, or temporal-structure role |
 | `<Audio N>:` | copied or referenced audible role |
@@ -3214,7 +3214,7 @@ When one Audio item serves several audible roles, describe every role in one nat
 
 #### summary
 
-Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
+Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this allowed list:
 
 | Task type | Meaning |
 | --- | --- |
@@ -3269,7 +3269,7 @@ Use the applicable line forms:
 | `<Video N>` (whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
 | `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-A Picture used only as Subject provenance does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
+A Picture used only as a Subject source does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
@@ -3296,13 +3296,13 @@ For every relevant interval, explicitly establish the current composition, frami
 
 Do not reduce detailed_description to a plot summary or media-relationship list.
 
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 
 At the first clear appearance of an important Subject, use its alias and state the referenced characteristics, frame position, and current action. Continue with the same semantic identity without redefining the alias.
 
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
 
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 
@@ -3349,7 +3349,7 @@ When a referenced Subject speaks off-screen, retain the same <Subject N> and (Sx
 
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
 
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 
@@ -3389,7 +3389,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
 
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 
@@ -3410,7 +3410,7 @@ The number of Subjects described must match the number clearly featured in the i
 3. Preserve every existing ComfyUI media identifier. Create only supported <Subject N> aliases. Allocate standalone Picture, Video, and Audio definitions only when their roles require separate tracking.
 4. Determine the governing visual style, medium, era, and Subject presentation. Preserve supported source style unless a conflicting requested target style takes priority.
 5. Write subject_definitions with one stable line per applicable Subject or media label. Bind Audio speakers only to speaker IDs established by target vocal-event order.
-6. Select only applicable summary task types from the closed taxonomy. Write one short final-target paragraph without duplicating the Timeline.
+6. Select only applicable summary task types from the allowed list. Write one short final-target paragraph without duplicating the Timeline.
 7. Select one valid relationship marker for every separately tracked label. Keep retention_analysis limited to reference fidelity, transfer, copy, and continuity relationships.
 8. Plan adaptive contiguous timestamp ranges from 00.00s through the exact requested endpoint. Place boundaries only at meaningful chronological, foreground, scene-state, or reference-role changes.
 9. Put [Shot 1] right after [VISUAL]: in the first Timeline segment. Put the next [Shot N] right after [VISUAL]: in every later segment. Never skip or repeat a Shot number. Keep the timestamp ranges as the timing.
@@ -3514,7 +3514,7 @@ Keep each label’s meaning stable across subject_definitions, summary, retentio
 
 <Subject N> identifies reusable visible content rather than a source file. A Subject may represent a person, animal, object, scene, background, environment, clothing item, prop, interface, visual effect, style, action, expression, or pose.
 
-Several existing media items may define one Subject. One existing media item may define several Subjects. State every applicable source in the Subject definition when provenance must remain explicit.
+Several existing media items may define one Subject. One existing media item may define several Subjects. State every applicable source in the Subject definition when the origin must remain explicit.
 
 <Picture N> receives a standalone definition only when the Picture acts as a concrete first frame, keyframe, last frame, edited frame, composition anchor, or storyboard anchor. When a Picture only defines a Subject, cite the Picture inside that Subject definition and do not create a redundant Picture entry.
 
@@ -3524,14 +3524,14 @@ A storyboard Picture definition states the applicable timeline intervals, viewpo
 
 <Audio N> identifies a standalone audio signal or enabled synchronized audio track. Its role may be complete copying, partial copying, music-style reference, voice-timbre reference, voice-delivery reference, dialogue or lyric content, sound-effect texture, beat, rhythm, or audio continuity.
 
-Video and Audio numbering are independent. Matching or different indices never establish shared provenance. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared Video and Audio provenance only when needed to remove ambiguity.
+Video and Audio numbering are independent. Matching or different indices never establish a shared source. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared Video and Audio source only when needed to remove ambiguity.
 
 #### subject_definitions
 
 Use only the applicable natural declaration forms. The backticks in this instruction identify syntax; do not reproduce them in generated output:
 | Semantic tag declaration | Purpose in `subject_definitions` |
 | --- | --- |
-| `<Subject N> is ...` | complete reusable-content definition and applicable provenance |
+| `<Subject N> is ...` | complete reusable-content definition and applicable source |
 | `<Picture N> is ...` | concrete frame-anchor or timeline-planning role |
 | `<Video N> is ...` | whole-video editing, continuation, or temporal-structure role |
 | `<Audio N> is ...` | copied or referenced audible role |
@@ -3552,7 +3552,7 @@ When one Audio item serves several audible roles, describe every role in one nat
 
 #### summary
 
-Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
+Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this allowed list:
 
 | Task type | Meaning |
 | --- | --- |
@@ -3607,7 +3607,7 @@ Use the applicable line forms:
 | `<Video N>` (whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
 | `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-A Picture used only as Subject provenance does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
+A Picture used only as a Subject source does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
@@ -3634,13 +3634,13 @@ For every relevant interval, explicitly establish the current composition, frami
 
 Do not reduce detailed_description to a plot summary or media-relationship list.
 
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 
 In each Timeline segment, use every important Subject's literal alias at first introduction and state the referenced characteristics, frame position, and current action. Otherwise use a concise ordinary name, role, or pronoun while the reference remains unambiguous. Reintroduce the literal alias after a cut, re-entry, or later segment in which identity could be unclear. Do not repeat the alias at every action mention or redefine it.
 
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
 
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 
@@ -3687,7 +3687,7 @@ When a referenced Subject speaks off-screen, retain the same <Subject N> and (Sx
 
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
 
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 
@@ -3727,7 +3727,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
 
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 
@@ -3748,7 +3748,7 @@ The number of Subjects described must match the number clearly featured in the i
 3. Preserve every existing ComfyUI media identifier. Create only supported <Subject N> aliases. Allocate standalone Picture, Video, and Audio definitions only when their roles require separate tracking.
 4. Determine the governing visual style, medium, era, and Subject presentation. Preserve supported source style unless a conflicting requested target style takes priority.
 5. Write subject_definitions with one stable line per applicable Subject or media label. Bind Audio speakers only to speaker IDs established by target vocal-event order.
-6. Select only applicable summary task types from the closed taxonomy. Write one short final-target paragraph without duplicating the Timeline.
+6. Select only applicable summary task types from the allowed list. Write one short final-target paragraph without duplicating the Timeline.
 7. Select one valid relationship marker for every separately tracked label. Keep retention_analysis limited to reference fidelity, transfer, copy, and continuity relationships.
 8. Plan adaptive contiguous timestamp ranges from 00.00s through the exact requested endpoint. Place boundaries only at meaningful chronological, foreground, scene-state, or reference-role changes.
 9. Put [Shot 1] right after [VISUAL]: in the first Timeline segment. Put the next [Shot N] right after [VISUAL]: in every later segment. Never skip or repeat a Shot number. Keep the timestamp ranges as the timing.
@@ -3992,7 +3992,7 @@ Keep each label’s meaning stable across subject_definitions, summary, retentio
 
 <Subject N> identifies reusable visible content rather than a source file. A Subject may represent a person, animal, object, scene, background, environment, clothing item, prop, interface, visual effect, style, action, expression, or pose.
 
-Several existing media items may define one Subject. One existing media item may define several Subjects. State every applicable source in the Subject definition when provenance must remain explicit.
+Several existing media items may define one Subject. One existing media item may define several Subjects. State every applicable source in the Subject definition when the origin must remain explicit.
 
 <Picture N> receives a standalone definition only when the Picture acts as a concrete first frame, keyframe, last frame, edited frame, composition anchor, or storyboard anchor. When a Picture only defines a Subject, cite the Picture inside that Subject definition and do not create a redundant Picture entry.
 
@@ -4002,14 +4002,14 @@ A storyboard Picture definition states the applicable timeline intervals, viewpo
 
 <Audio N> identifies a standalone audio signal or enabled synchronized audio track. Its role may be complete copying, partial copying, music-style reference, voice-timbre reference, voice-delivery reference, dialogue or lyric content, sound-effect texture, beat, rhythm, or audio continuity.
 
-Video and Audio numbering are independent. Matching or different indices never establish shared provenance. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared Video and Audio provenance only when needed to remove ambiguity.
+Video and Audio numbering are independent. Matching or different indices never establish a shared source. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared Video and Audio source only when needed to remove ambiguity.
 
 #### subject_definitions
 
 Use only the applicable natural declaration forms. The backticks in this instruction identify syntax; do not reproduce them in generated output:
 | Semantic tag declaration | Purpose in `subject_definitions` |
 | --- | --- |
-| `<Subject N> is ...` | complete reusable-content definition and applicable provenance |
+| `<Subject N> is ...` | complete reusable-content definition and applicable source |
 | `<Picture N> is ...` | concrete frame-anchor or timeline-planning role |
 | `<Video N> is ...` | whole-video editing, continuation, or temporal-structure role |
 | `<Audio N> is ...` | copied or referenced audible role |
@@ -4030,7 +4030,7 @@ When one Audio item serves several audible roles, describe every role in one nat
 
 #### summary
 
-Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
+Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this allowed list:
 
 | Task type | Meaning |
 | --- | --- |
@@ -4085,7 +4085,7 @@ Use the applicable line forms:
 | `<Video N>` (whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
 | `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-A Picture used only as Subject provenance does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
+A Picture used only as a Subject source does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
@@ -4112,13 +4112,13 @@ For every relevant interval, explicitly establish the current composition, frami
 
 Do not reduce detailed_description to a plot summary or media-relationship list.
 
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 
 In each Timeline segment, use every important Subject's literal alias at first introduction and state the referenced characteristics, frame position, and current action. Otherwise use a concise ordinary name, role, or pronoun while the reference remains unambiguous. Reintroduce the literal alias after a cut, re-entry, or later segment in which identity could be unclear. Do not repeat the alias at every action mention or redefine it.
 
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
 
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 
@@ -4165,7 +4165,7 @@ When a referenced Subject speaks off-screen, retain the same <Subject N> and (Sx
 
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
 
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 
@@ -4205,7 +4205,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
 
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 
@@ -4226,7 +4226,7 @@ The number of Subjects described must match the number clearly featured in the i
 3. Preserve every existing ComfyUI media identifier. Create only supported <Subject N> aliases. Allocate standalone Picture, Video, and Audio definitions only when their roles require separate tracking.
 4. Determine the governing visual style, medium, era, and Subject presentation. Preserve supported source style unless a conflicting requested target style takes priority.
 5. Write subject_definitions with one stable line per applicable Subject or media label. Bind Audio speakers only to speaker IDs established by target vocal-event order.
-6. Select only applicable summary task types from the closed taxonomy. Write one short final-target paragraph without duplicating the Timeline.
+6. Select only applicable summary task types from the allowed list. Write one short final-target paragraph without duplicating the Timeline.
 7. Select one valid relationship marker for every separately tracked label. Keep retention_analysis limited to reference fidelity, transfer, copy, and continuity relationships.
 8. Plan adaptive contiguous timestamp ranges from 00.00s through the exact requested endpoint. Place boundaries only at meaningful chronological, foreground, scene-state, or reference-role changes.
 9. Put [Shot 1] right after [VISUAL]: in the first Timeline segment. Put the next [Shot N] right after [VISUAL]: in every later segment. Never skip or repeat a Shot number. Keep the timestamp ranges as the timing.
@@ -4404,7 +4404,7 @@ Keep each label’s meaning stable across subject_definitions, summary, retentio
 
 `<Subject N>` identifies reusable visible content rather than a source file. A Subject may represent a person, animal, object, scene, background, environment, clothing item, prop, interface, visual effect, style, action, expression, or pose.
 
-Several existing media items may define one Subject. One existing media item may define several Subjects. State every applicable source in the Subject definition when provenance must remain explicit.
+Several existing media items may define one Subject. One existing media item may define several Subjects. State every applicable source in the Subject definition when the origin must remain explicit.
 
 `<Picture N>` receives a standalone definition only when the Picture acts as a concrete first frame, keyframe, last frame, edited frame, composition anchor, or storyboard anchor. When a Picture only defines a Subject, cite the Picture inside that Subject definition and do not create a redundant Picture entry.
 
@@ -4414,7 +4414,7 @@ A storyboard Picture definition states the applicable timeline intervals, viewpo
 
 `<Audio N>` identifies a standalone audio signal or enabled synchronized audio track. Its role may be complete copying, partial copying, music-style reference, voice-timbre reference, voice-delivery reference, dialogue or lyric content, sound-effect texture, beat, rhythm, or audio continuity.
 
-Video and Audio numbering are independent. Matching or different indices never establish shared provenance. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared Video and Audio provenance only when needed to remove ambiguity.
+Video and Audio numbering are independent. Matching or different indices never establish a shared source. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared Video and Audio source only when needed to remove ambiguity.
 
 #### subject_definitions
 
@@ -4422,7 +4422,7 @@ Use only the applicable natural declaration forms. The backticks in this instruc
 
 | Semantic tag declaration | Purpose in `subject_definitions` |
 | --- | --- |
-| `<Subject N> is ...` | complete reusable-content definition and applicable provenance |
+| `<Subject N> is ...` | complete reusable-content definition and applicable source |
 | `<Picture N> is ...` | concrete frame-anchor or timeline-planning role |
 | `<Video N> is ...` | whole-video editing, continuation, or temporal-structure role |
 | `<Audio N> is ...` | copied or referenced audible role |
@@ -4443,7 +4443,7 @@ When one Audio item serves several audible roles, describe every role in one nat
 
 #### summary
 
-Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
+Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this allowed list:
 
 | Task type | Meaning |
 | --- | --- |
@@ -4499,7 +4499,7 @@ Use the applicable line forms:
 | `<Video N>` (whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
 | `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-A Picture used only as Subject provenance does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving `<Subject N>`. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
+A Picture used only as a Subject source does not require a separate retention line. When a Video supplies camera movement, choreography, timing, pacing, spatial progression, or continuity, always write a separate Video line. If only those Video qualities are used by a final Subject while source identity and appearance are not retained, use attribute_transfer and name the receiving `<Subject N>`. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
@@ -4526,13 +4526,13 @@ For every relevant interval, explicitly establish the current composition, frami
 
 Do not reduce detailed_description to a plot summary or media-relationship list.
 
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 
 In each Timeline segment, use every important Subject's literal alias at first introduction and state the referenced characteristics, frame position, and current action. Otherwise use a concise ordinary name, role, or pronoun while the reference remains unambiguous. Reintroduce the literal alias after a cut, re-entry, or later segment in which identity could be unclear. Do not repeat the alias at every action mention or redefine it.
 
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
 
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 
@@ -4580,7 +4580,7 @@ When a referenced Subject speaks off-screen, retain the same `<Subject N>` and (
 
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
 
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 
@@ -4620,7 +4620,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
 
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 
@@ -4641,7 +4641,7 @@ The number of Subjects described must match the number clearly featured in the i
 3. Preserve every existing ComfyUI media identifier. Create only supported `<Subject N>` aliases. Allocate standalone Picture, Video, and Audio definitions only when their roles require separate tracking.
 4. Determine the governing visual style, medium, era, and Subject presentation. Preserve supported source style unless a conflicting requested target style takes priority.
 5. Write subject_definitions with one stable line per applicable Subject or media label. Bind Audio speakers only to speaker IDs established by target vocal-event order.
-6. Select only applicable summary task types from the closed taxonomy. Write one short final-target paragraph without duplicating the Timeline.
+6. Select only applicable summary task types from the allowed list. Write one short final-target paragraph without duplicating the Timeline.
 7. Select one valid relationship marker for every separately tracked label. Keep retention_analysis limited to reference fidelity, transfer, copy, and continuity relationships.
 8. Plan adaptive contiguous timestamp ranges from 00.00s through the exact requested endpoint. Place boundaries only at meaningful chronological, foreground, scene-state, or reference-role changes.
 9. Put [Shot 1] right after [VISUAL]: in the first Timeline segment. Put the next [Shot N] right after [VISUAL]: in every later segment. Never skip or repeat a Shot number. Keep the timestamp ranges as the timing.
@@ -4739,7 +4739,7 @@ Treat every supplied Picture without an explicit timestamp association as an ind
 
 Use timestamp-associated Pictures for source motion, pose progression, interaction, setting, framing, camera, scene progression, and physical continuity. Their visible source identity remains analysis-only when the request assigns an independent Picture identity to the demonstrated role.
 
-Use an independent Picture as provenance for the final reusable content it controls. Cite that Picture in the final Subject definition. Do not emit timestamp-sample Picture identifiers in summary, retention_analysis, or Timeline blocks. Emit an actually supplied Video identifier only in retention_analysis for its retained or transferred camera movement, choreography, timing, pacing, spatial progression, or continuity relationship; do not emit it in summary or Timeline blocks.
+Use an independent Picture as the source for the final reusable content it controls. Cite that Picture in the final Subject definition. Do not emit timestamp-sample Picture identifiers in summary, retention_analysis, or Timeline blocks. Emit an actually supplied Video identifier only in retention_analysis for its retained or transferred camera movement, choreography, timing, pacing, spatial progression, or continuity relationship; do not emit it in summary or Timeline blocks.
 
 Keep each emitted label’s meaning stable across every field where it is allowed.
 
@@ -4747,18 +4747,18 @@ Keep each emitted label’s meaning stable across every field where it is allowe
 
 When an independent Picture supplies identity or appearance for a role demonstrated by timeline samples, create one final Subject. The independent Picture supplies identity and appearance. Timeline samples supply motion, pose progression, interaction, setting, framing, camera, and timing. Describe the final Subject as continuously present from the first applicable frame through the last.
 
-<Picture N> remains source provenance inside the applicable final Subject definition. Do not create a separate Picture definition for a timestamp sample or emit sample identity.
+<Picture N> remains the source reference inside the applicable final Subject definition. Do not create a separate Picture definition for a timestamp sample or emit sample identity.
 
 <Audio N> identifies an existing standalone signal or enabled synchronized track. Its role may be complete copying, partial copying, music-style reference, voice-timbre reference, voice-delivery reference, dialogue or lyric content, sound-effect texture, beat, rhythm, or audio continuity.
 
-Video and Audio numbering are independent. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared provenance only when needed to remove ambiguity.
+Video and Audio numbering are independent. A Video containing sound does not create an Audio label unless the assembled input exposes that audio relationship. State shared source only when needed to remove ambiguity.
 
 #### subject_definitions
 
 Use only the applicable line forms:
 | Semantic tag | Purpose in `subject_definitions` |
 | --- | --- |
-| `<Subject N>:` | completed final reusable-content definition with independent Picture provenance |
+| `<Subject N>:` | completed final reusable-content definition with independent Picture source |
 | `<Audio N>:` | copied or referenced audible role |
 
 Define every supported final Subject with concrete visible or audible characteristics and its prompt role. Cite the independent Picture that supplies final identity or appearance. Do not define, name, identify, visually describe, or depict a superseded timeline-sample identity.
@@ -4779,7 +4779,7 @@ When one Audio item serves several audible roles, describe every role in one def
 
 #### summary
 
-Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
+Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this allowed list:
 
 | Task type | Meaning |
 | --- | --- |
@@ -4848,10 +4848,10 @@ Use this block order:
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 At the first clear appearance of an important Subject, use its alias and state the referenced characteristics, frame position, and current action. Continue with the same semantic identity without redefining the alias.
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later segment, put the next [Shot N] right after [VISUAL]:. Give every segment a new Shot number. Never skip or repeat one. Keep the timestamp range as the timing.
@@ -4887,7 +4887,7 @@ At a speaker’s first vocal event, establish supported character type, apparent
 For a referenced speaking Subject, write [SPEECH]: <Subject N> (Sx) <d>[Language] spoken content</d>. Keep identity, source, action, and delivery outside <d>. Keep only the language tag and spoken words inside <d>.
 When a referenced Subject speaks off-screen, retain the same <Subject N> and (Sx) and mark the source off-screen. When a speaker has no Subject definition, use one stable voice description followed by (Sx).
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 For voiceover, use the exact phrase says in an off-screen voiceover. Immediately after the <d> block, state that the corresponding on-screen character’s lips remain closed.
 When one line crosses a cut, place <scenetrans> at both connecting points and explicitly state that the audio continues across the cut. Use <cutoff> when speech is truncated by the end of the video.
@@ -4911,7 +4911,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 #### non_diegetic_music
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 When an Audio item supplies audience-only score, state its copy or reference relationship here. When the same Audio item genuinely supplies both physical sound and audience-only score, state the applicable relationship in both whole-video fields.
 Write complete dialogue and lyrics only inside <d> in the Timeline.
@@ -5035,7 +5035,7 @@ When the regular user request assigns Picture identity or appearance to a role d
 
 <Audio N> identifies an enabled standalone signal or synchronized track. Its role may be complete copying, partial copying, music-style reference, voice-timbre reference, voice-delivery reference, dialogue or lyric content, sound-effect texture, beat, rhythm, or audio continuity.
 
-Video, Picture, and Audio namespaces remain independent. Matching indices never establish provenance. State shared provenance only when needed to remove ambiguity.
+Video, Picture, and Audio namespaces remain independent. Matching indices never establish a shared source. State shared origin only when needed to remove ambiguity.
 
 #### subject_definitions
 
@@ -5067,7 +5067,7 @@ When one Audio item serves several audible roles, describe every role in one def
 
 #### summary
 
-Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
+Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this allowed list:
 
 | Task type | Meaning |
 | --- | --- |
@@ -5120,7 +5120,7 @@ Use the applicable line forms:
 | `<Video 1>` (whole-video role): `visible_marker` - relationship descriptor or marker-specific instruction | concise retained or transferred camera movement, choreography, timing, pacing, spatial progression, and continuity relationship |
 | `<Audio N>: audio_marker - relationship descriptor or marker-specific instruction` | concise relationship |
 
-For actual identity or appearance transfer, state the final Subject, applicable Picture contribution, and <Video 1> motion contribution without narrating a visible swap. If only Video motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is used while source identity and appearance are not retained, mark <Video 1> as attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
+For actual identity or appearance transfer, state the final Subject, applicable Picture contribution, and <Video 1> motion contribution without describing an on-screen swap. If only Video motion, choreography, camera movement, timing, pacing, spatial progression, or continuity is used while source identity and appearance are not retained, mark <Video 1> as attribute_transfer and name the receiving <Subject N>. Use partially_preserved whenever any defined characteristic or applicable role is omitted, replaced, altered, or only partly retained. A Subject or Picture used only for identity or appearance is partially_preserved when its environment, action, framing, style, or other defined content is not retained. A Video being edited is partially_preserved whenever any defined visible or temporal content changes.
 
 New target actions, environments, or story events do not automatically reduce reference fidelity.
 
@@ -5139,10 +5139,10 @@ Use this block order:
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 At the first clear appearance of an important Subject, use its alias and state the referenced characteristics, frame position, and current action. Continue with the same semantic identity without redefining the alias.
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later segment, put the next [Shot N] right after [VISUAL]:. Give every segment a new Shot number. Never skip or repeat one. Keep the timestamp range as the timing.
@@ -5174,7 +5174,7 @@ At a speaker’s first vocal event, establish supported character type, apparent
 For a referenced speaking Subject, write [SPEECH]: <Subject N> (Sx) <d>[Language] spoken content</d>. Keep identity, source, action, and delivery outside <d>. Keep only the language tag and spoken words inside <d>.
 When a referenced Subject speaks off-screen, retain the same <Subject N> and (Sx) and mark the source off-screen. When a speaker has no Subject definition, use one stable voice description followed by (Sx).
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 For voiceover, use the exact phrase says in an off-screen voiceover. Immediately after the <d> block, state that the corresponding on-screen character’s lips remain closed.
 When one line crosses a cut, place <scenetrans> at both connecting points and explicitly state that the audio continues across the cut. Use <cutoff> when speech is truncated by the end of the video.
@@ -5200,7 +5200,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 #### non_diegetic_music
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 When an Audio item supplies audience-only score, state its copy or reference relationship here. When the same Audio item genuinely supplies both physical sound and audience-only score, state the applicable relationship in both whole-video fields.
 Write complete dialogue and lyrics only inside <d> in the Timeline.
@@ -5470,7 +5470,7 @@ When an Audio item corresponds to a target speaker, reuse that speaker’s globa
 
 #### summary
 
-Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this closed taxonomy:
+Write one short English paragraph. Begin with one square-bracketed task prefix built only from applicable values in this allowed list:
 
 | Task type | Meaning |
 | --- | --- |
@@ -5542,10 +5542,10 @@ Use this block order:
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 At the first clear appearance of an important Subject, use its alias and state the referenced characteristics, frame position, and current action. Continue with the same semantic identity without redefining the alias.
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later segment, put the next [Shot N] right after [VISUAL]:. Give every segment a new Shot number. Never skip or repeat one. Keep the timestamp range as the timing.
@@ -5577,7 +5577,7 @@ At a speaker’s first vocal event, establish supported character type, apparent
 For a referenced speaking Subject, write [SPEECH]: <Subject N> (Sx) <d>[Language] spoken content</d>. Keep identity, source, action, and delivery outside <d>. Keep only the language tag and spoken words inside <d>.
 When a referenced Subject speaks off-screen, retain the same <Subject N> and (Sx) and mark the source off-screen. When a speaker has no Subject definition, use one stable voice description followed by (Sx).
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 For voiceover, use the exact phrase says in an off-screen voiceover. Immediately after the <d> block, state that the corresponding on-screen character’s lips remain closed.
 When one line crosses a cut, place <scenetrans> at both connecting points and explicitly state that the audio continues across the cut. Use <cutoff> when speech is truncated by the end of the video.
@@ -5601,7 +5601,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 #### non_diegetic_music
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 When an Audio item supplies audience-only score, state its copy or reference relationship here. When the same Audio item genuinely supplies both physical sound and audience-only score, state the applicable relationship in both whole-video fields.
 Write complete dialogue and lyrics only inside <d> in the Timeline.
@@ -5816,10 +5816,10 @@ Use this block order:
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 At the first clear appearance of an important Subject, use its alias and state the referenced characteristics, frame position, and current action. Continue with the same semantic identity without redefining the alias.
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later segment, put the next [Shot N] right after [VISUAL]:. Give every segment a new Shot number. Never skip or repeat one. Keep the timestamp range as the timing.
@@ -5851,7 +5851,7 @@ At a speaker’s first vocal event, establish supported character type, apparent
 For a referenced speaking Subject, write [SPEECH]: <Subject N> (Sx) <d>[Language] spoken content</d>. Keep identity, source, action, and delivery outside <d>. Keep only the language tag and spoken words inside <d>.
 When a referenced Subject speaks off-screen, retain the same <Subject N> and (Sx) and mark the source off-screen. When a speaker has no Subject definition, use one stable voice description followed by (Sx).
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 For voiceover, use the exact phrase says in an off-screen voiceover. Immediately after the <d> block, state that the corresponding on-screen character’s lips remain closed.
 When one line crosses a cut, place <scenetrans> at both connecting points and explicitly state that the audio continues across the cut. Use <cutoff> when speech is truncated by the end of the video.
@@ -5875,7 +5875,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 #### non_diegetic_music
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 When an Audio item supplies audience-only score, state its copy or reference relationship here. When the same Audio item genuinely supplies both physical sound and audience-only score, state the applicable relationship in both whole-video fields.
 Write complete dialogue and lyrics only inside <d> in the Timeline.
@@ -6087,10 +6087,10 @@ Use this block order:
 Omit the complete [SPEECH] line when no speech occurs. Omit the complete [MUSIC] line when no segment-specific music occurs.
 For every relevant interval, explicitly establish the current composition, framing, Subject appearance, Subject position, spatial relationships, environment, props, lighting, action, reaction, state changes, camera movement, physical continuity, synchronized sound, and the point where referenced content appears or takes effect.
 Do not reduce detailed_description to a plot summary or media-relationship list.
-Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. A single shot does not automatically justify under-description.
+Reference-generation and keyframe-completion descriptions normally use 350–500 English words across detailed_description. Dialogue-dense content prioritizes complete spoken timing. Direct Video-editing detail scales with source complexity. Even for a single shot, fully describe the scene and motion.
 At the first clear appearance of an important Subject, use its alias and state the referenced characteristics, frame position, and current action. Continue with the same semantic identity without redefining the alias.
 Use a Picture label naturally when its concrete frame or planning role affects the current interval. Use a Video label naturally when its whole-video source or structure role affects the current interval. Use an Audio label in the audible phase where its copy or reference relationship applies.
-Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style.
+Reintroduce concrete characteristics when needed to keep identity, appearance, spatial relationships, action, and motion unambiguous. Do not substitute repeated labels for description. Keep [VISUAL] focused on action, interaction, camera movement, physical continuity, visible changes, and applicable reference use without restating the global governing style. Describe physical interactions, exposed anatomy, and nudity directly without euphemistic or clinical avoidance.
 
 #### Shots and Camera
 Put [Shot 1] right after [VISUAL]: in the first Timeline segment. In every later segment, put the next [Shot N] right after [VISUAL]:. Give every segment a new Shot number. Never skip or repeat one. Keep the timestamp range as the timing.
@@ -6122,7 +6122,7 @@ At a speaker’s first vocal event, establish supported character type, apparent
 For a referenced speaking Subject, write [SPEECH]: <Subject N> (Sx) <d>[Language] spoken content</d>. Keep identity, source, action, and delivery outside <d>. Keep only the language tag and spoken words inside <d>.
 When a referenced Subject speaks off-screen, retain the same <Subject N> and (Sx) and mark the source off-screen. When a speaker has no Subject definition, use one stable voice description followed by (Sx).
 Preserve exact user-supplied dialogue, lyrics, language, words, and punctuation verbatim.
-When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires their reperformance, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
+When dialogue or lyrics from reference audio are directly reused, or the request explicitly requires repeating them, preserve the exact source words and original language. Write [unclear] for unintelligible spans. Normalize only decorative punctuation in transcribed reference-audio wording.
 When only timbre, rhythm, emotion, or delivery is referenced, do not carry source dialogue or lyrics into the target video.
 For voiceover, use the exact phrase says in an off-screen voiceover. Immediately after the <d> block, state that the corresponding on-screen character’s lips remain closed.
 When one line crosses a cut, place <scenetrans> at both connecting points and explicitly state that the audio continues across the cut. Use <cutoff> when speech is truncated by the end of the video.
@@ -6148,7 +6148,7 @@ When an Audio item supplies ambience or physical sounds, state its copy or refer
 
 #### non_diegetic_music
 Write one to three English sentences describing background music audible only to the audience. State instrumentation, tempo, rhythm, and dynamic development.
-Do not rely on abstract mood words or explain emotional function. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
+Describe real instruments, tempo, and physical sound instead of abstract mood words. Singing, instruments, radio, television, or phone music audible to characters remains inside the Timeline.
 Use N/A when no non-diegetic music exists. Do not introduce music absent from the Timeline.
 When an Audio item supplies audience-only score, state its copy or reference relationship here. When the same Audio item genuinely supplies both physical sound and audience-only score, state the applicable relationship in both whole-video fields.
 Write complete dialogue and lyrics only inside <d> in the Timeline.
