@@ -3888,6 +3888,7 @@ class UC_AdvancedMiniMaxH3ImageToVideo(io.ComfyNode):
         audio_vae=None,
         enable_caching="all",
         fusion_method=None,
+        **kwargs,
     ) -> io.NodeOutput:
         fusion_method = cls.DEFAULT_FUSION_METHOD if fusion_method is None else fusion_method
         if fusion_method not in ("conds_fusion", "token_fusion"):
@@ -3971,6 +3972,7 @@ class UC_MiniMaxH3ClipContinuationEncoder(UC_AdvancedMiniMaxH3ImageToVideo):
         audio_vae=None,
         enable_caching="all",
         fusion_method=None,
+        **kwargs,
     ) -> io.NodeOutput:
         fusion_method = cls.DEFAULT_FUSION_METHOD if fusion_method is None else fusion_method
         if fusion_method not in ("conds_fusion", "token_fusion"):
@@ -4265,6 +4267,7 @@ class UC_AdvMiniMaxH3ImageToVideoTemporalFusion(UC_AdvancedMiniMaxH3ImageToVideo
         video=None, audio=None, audio_vae=None, text_blend_config=None,
         enable_caching="all",
         fusion_method=None,
+        **kwargs,
     ):
         fusion_method = cls.DEFAULT_FUSION_METHOD if fusion_method is None else fusion_method
         if fusion_method not in ("conds_fusion", "token_fusion"):
