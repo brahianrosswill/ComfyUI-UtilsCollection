@@ -692,6 +692,8 @@ def test_advanced_minimax_h3_ref_media_node_schema():
     assert schema.node_id == "UC_AdvancedMiniMaxH3RefMediaImageToVideo"
     assert "reference_media" in inputs
     assert inputs["reference_media"].io_type == "MINIMAX_H3_REFERENCE_MEDIA"
+    assert "first_frame" in inputs
+    assert "last_frame" in inputs
     assert "audio_vae" in inputs
     assert "video" not in inputs
     assert "audio" not in inputs

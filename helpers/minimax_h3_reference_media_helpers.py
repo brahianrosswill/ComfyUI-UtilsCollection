@@ -328,7 +328,13 @@ def execute_advanced_minimax_h3_reference_media_image_to_video(
 
     # Build reference items for presentation tokenization
     reference_items = []
-    # 1. Images
+    # 1. Frames & Images
+    if first_frame is not None:
+        vlm_first = prepare_vlm_image(first_frame, vlm_resolution)
+        reference_items.append({"type": "image", "data": vlm_first})
+    if last_frame is not None:
+        vlm_last = prepare_vlm_image(last_frame, vlm_resolution)
+        reference_items.append({"type": "image", "data": vlm_last})
     flat_images = []
     if reference_images is not None:
         if isinstance(reference_images, dict):
@@ -393,8 +399,38 @@ def execute_advanced_minimax_h3_reference_media_image_to_video(
             scaled.append([tensor * multiplier, meta])
         conditioning = scaled
 
-    # Collect references
+    # Collect keyframes and references
+    keyframes = []
+    if first_frame is not None and ref_image_size != "none" and vae is not None:
+        samples = first_frame[..., :3].movedim(-1, 1)
+        samples = comfy.utils.common_upscale(samples, width, height, "lanczos", "disabled")
+        prepared_first = samples.movedim(1, -1)
+        latent_first = vae.encode(prepared_first) if cache is None else cache.encode_vae(vae, prepared_first, media="image")
+        keyframes.append({"resolved_frame_index": 0, "latent": latent_first})
+    if last_frame is not None and ref_image_size != "none" and vae is not None:
+        samples = last_frame[..., :3].movedim(-1, 1)
+        samples = comfy.utils.common_upscale(samples, width, height, "lanczos", "center")
+        prepared_last = samples.movedim(1, -1)
+        latent_last = vae.encode(prepared_last) if cache is None else cache.encode_vae(vae, prepared_last, media="image")
+        keyframes.append({"resolved_frame_index": frame_count - 1, "latent": latent_last})
+
     references = []
+    for img in flat_images:
+        if ref_image_size != "none" and vae is not None:
+            h = max(16, (img.shape[1] // 16) * 16)
+            w = max(16, (img.shape[2] // 16) * 16)
+            prepared_img = img
+            if h != img.shape[1] or w != img.shape[2]:
+                samples = img[..., :3].movedim(-1, 1)
+                samples = comfy.utils.common_upscale(samples, w, h, "lanczos", "center")
+                prepared_img = samples.movedim(1, -1)
+            latent_img = vae.encode(prepared_img) if cache is None else cache.encode_vae(vae, prepared_img, media="image")
+            references.append({
+                "kind": "image",
+                "latent_h": h // 16,
+                "latent_w": w // 16,
+                "latent": latent_img,
+            })
     for _, _, v_ref, _ in prepared_reference_videos:
         if v_ref is not None:
             references.append(v_ref)
@@ -406,6 +442,8 @@ def execute_advanced_minimax_h3_reference_media_image_to_video(
             references.append(a_ref)
 
     metadata = {}
+    if keyframes:
+        metadata["minimax_keyframes"] = keyframes
     if references:
         metadata["minimax_refs"] = references
     metadata["minimax_frame_count"] = frame_count
