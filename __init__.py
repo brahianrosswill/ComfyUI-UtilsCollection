@@ -129,6 +129,7 @@ class SamplingUtils(ComfyExtension):
             UC_TagNormalizeCombine,
             UC_ImageToVideoPrompt,
             UC_MiniMaxH3DynamicPromptBuilder,
+            UC_MiniMaxH3BasePromptBuilder,
             UC_LoadImagePath,
             UC_LoadImageDirectory,
             UC_LoadVideoPath,
