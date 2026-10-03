@@ -767,6 +767,47 @@ def test_minimax_h3_ref_media_image_to_video_with_all_reference_types():
     assert len(img_items) == 1
     assert img_items[0]["data"].ndim == 4
 
+    # Verify all references have strictly even latent spatial dimensions (multiples of 2 for DiT 2x2 patch)
+    refs = conditioning[0][1]["minimax_refs"]
+    for r in refs:
+        if "latent_h" in r and "latent_w" in r:
+            assert r["latent_h"] % 2 == 0, f"latent_h must be even, got {r['latent_h']}"
+            assert r["latent_w"] % 2 == 0, f"latent_w must be even, got {r['latent_w']}"
+
+    # 3. Test with an input image whose dimensions are multiples of 16 but NOT 32 (e.g. 2864x3520 where 2864//16 = 179)
+    unaligned_img = {"reference_image_1": torch.zeros(1, 2864, 3520, 3)}
+    conditioning_unaligned, _ = minimax_h3_reference_media_helpers.execute_advanced_minimax_h3_reference_media_image_to_video(
+        clip=clip,
+        vae=vae,
+        prompt="test prompt",
+        width=1344,
+        height=768,
+        length=124,
+        reference_images=unaligned_img,
+        enable_caching="disabled",
+    )
+    unaligned_refs = conditioning_unaligned[0][1]["minimax_refs"]
+    img_ref = next(r for r in unaligned_refs if r.get("kind") == "image")
+    assert img_ref["latent_h"] % 2 == 0, f"Latent height must be even, got {img_ref['latent_h']}"
+    assert img_ref["latent_w"] % 2 == 0, f"Latent width must be even, got {img_ref['latent_w']}"
+    # Verify DiT patchify_video reshape can succeed without remainder error
+    from comfy.ldm.minimax.model import patchify_video
+    patchified = patchify_video(img_ref["latent"])
+    assert patchified is not None
+
+    # 4. Test reference video temporal frame snapping to 17k+5
+    unaligned_vid = torch.zeros(30, 200, 200, 3)
+    frames, ref_dict = minimax_h3_reference_media_helpers.prepare_minimax_h3_reference_video(
+        unaligned_vid, vae, 124, encode_reference=True
+    )
+    assert frames.shape[0] % 17 == 5, f"Frames must satisfy 17k+5, got {frames.shape[0]}"
+    assert frames.shape[1] % 32 == 0, f"Height must be multiple of 32, got {frames.shape[1]}"
+    assert frames.shape[2] % 32 == 0, f"Width must be multiple of 32, got {frames.shape[2]}"
+    assert ref_dict["latent_h"] % 2 == 0
+    assert ref_dict["latent_w"] % 2 == 0
+    patchified_vid = patchify_video(ref_dict["latent"])
+    assert patchified_vid is not None
+
 
 def test_minimax_h3_media_config_schema_and_payload():
     schema = UC_MiniMaxH3MediaConfig.define_schema()
