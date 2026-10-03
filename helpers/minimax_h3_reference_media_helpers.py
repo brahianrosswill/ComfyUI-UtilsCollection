@@ -60,19 +60,19 @@ def prepare_vlm_image(image: torch.Tensor, vlm_resolution: int) -> torch.Tensor:
     """Prepare a visual tensor for Qwen VLM presentation."""
     if not torch.is_tensor(image) or image.ndim != 4:
         raise ValueError("Expected 4D image tensor.")
-    target = image[0]
+    target = image[:1]
     if target.shape[-1] > 3:
         target = target[..., :3]
-    h, w, c = target.shape
+    b, h, w, c = target.shape
     if 256 <= vlm_resolution <= 4096:
         area = float(h * w)
         scale = math.sqrt(float(vlm_resolution * vlm_resolution) / area)
         th = max(28, round(h * scale / 28) * 28)
         tw = max(28, round(w * scale / 28) * 28)
         if (th, tw) != (h, w):
-            chw = target.permute(2, 0, 1).unsqueeze(0)
+            chw = target.permute(0, 3, 1, 2)
             resized = F.interpolate(chw, size=(th, tw), mode="bilinear", align_corners=False)
-            target = resized.squeeze(0).permute(1, 2, 0)
+            target = resized.permute(0, 2, 3, 1)
     return target
 
 
@@ -338,13 +338,32 @@ def execute_advanced_minimax_h3_reference_media_image_to_video(
     flat_images = []
     if reference_images is not None:
         if isinstance(reference_images, dict):
-            for k, v in reference_images.items():
+            def get_num(k):
+                digits = re.findall(r"\d+", k)
+                return int(digits[0]) if digits else 0
+
+            for k in sorted(reference_images.keys(), key=get_num):
+                v = reference_images[k]
                 if torch.is_tensor(v):
-                    flat_images.append(v)
+                    if v.ndim == 4:
+                        for i in range(v.shape[0]):
+                            flat_images.append(v[i:i+1])
+                    else:
+                        flat_images.append(v)
         elif isinstance(reference_images, (list, tuple)):
             for v in reference_images:
                 if torch.is_tensor(v):
-                    flat_images.append(v)
+                    if v.ndim == 4:
+                        for i in range(v.shape[0]):
+                            flat_images.append(v[i:i+1])
+                    else:
+                        flat_images.append(v)
+        elif torch.is_tensor(reference_images):
+            if reference_images.ndim == 4:
+                for i in range(reference_images.shape[0]):
+                    flat_images.append(reference_images[i:i+1])
+            else:
+                flat_images.append(reference_images)
     for img in flat_images:
         vlm_img = prepare_vlm_image(img, vlm_resolution)
         reference_items.append({"type": "image", "data": vlm_img})
