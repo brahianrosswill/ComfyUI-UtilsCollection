@@ -151,6 +151,8 @@ DESCRIPTIONS = {
     "UC_LogicXOR": "Returns true when an odd number of connected inputs are true.",
     "UC_SigmoidOffsetScheduler": "Creates a curved denoising sigma schedule with adjustable steepness and early/late emphasis; originally made for the Chroma model.",
     "Ideogram4SchedulerPreset": "Provides scheduler and sampling parameters tuned for Ideogram 4 workflows.",
+    "UC_SamplerDMADReNoise": "Few-step re-noise sampler for DMAD/DMD2 distilled models (e.g. 4-step MiniMax H3).",
+    "UC_DMADSchedule": "Shifted linear sigma schedule for DMAD/DMD2 distilled models (e.g. 4-step MiniMax H3).",
 }
 
 

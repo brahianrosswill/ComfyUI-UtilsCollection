@@ -267,6 +267,7 @@ class SamplingUtils(ComfyExtension):
             ColorConvertNode,
             UC_H3LoopSampler,
             UC_H3RefVideoSegments,
+            UC_SamplerDMADReNoise,
             *LOGIC_MATH_NODES,
             *SCHEDULER_NODES,
         ])
