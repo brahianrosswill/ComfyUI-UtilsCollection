@@ -33,6 +33,7 @@ class SamplingUtils(ComfyExtension):
             UC_AdjustedResolutionParameters,
             UC_ResolutionSelectorExtended,
             UC_VideoResolutionSelector,
+            UC_VideoResolutionAndLengthPicker,
             UC_ImageScaleAndResolutionPicker,
             UC_Image_Color_Noise,
             UC_ExtractPrevalentColors,
